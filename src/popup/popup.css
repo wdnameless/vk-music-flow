@@ -53,6 +53,15 @@ input[type=text], input[type=number] {
 }
 .hint { color: #8b8f96; font-size: 12px; margin-bottom: 10px; }
 .hint.small { margin-top: 8px; }
+select {
+  width: 100%;
+  background: #0f0f10;
+  border: 1px solid #3a3a3d;
+  border-radius: 8px;
+  color: #e1e3e6;
+  padding: 7px 9px;
+  font-size: 13px;
+}
 .result { margin-top: 10px; color: #7ec97e; min-height: 18px; }
 .conn { margin-top: 6px; color: #8b8f96; font-size: 11px; }
 .row { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }

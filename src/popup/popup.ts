@@ -1,10 +1,19 @@
-import type { ResponseSample, RuntimeMessage, ScanResult, StateSnapshot } from '../types.js';
+import type {
+  ResponseSample,
+  RuntimeMessage,
+  ScanResult,
+  StateSnapshot,
+  StorageStateResult,
+} from '../types.js';
+import { persistRootHandle, pickDirectory } from '../storage/fs.js';
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 const $btn = (id: string) => document.getElementById(id) as HTMLButtonElement;
 const $in = (id: string) => document.getElementById(id) as HTMLInputElement;
+const $sel = (id: string) => document.getElementById(id) as HTMLSelectElement;
 
 let state: StateSnapshot | null = null;
+let storageState: StorageStateResult | null = null;
 const selected = new Set<string>();
 
 function send<T = unknown>(msg: RuntimeMessage): Promise<T> {
@@ -58,9 +67,13 @@ async function refresh(): Promise<void> {
 function render(): void {
   if (!state) return;
 
-  $('qCount').textContent = String(state.queue.length);
+  $('qCount').textContent = String(state.journal.queued);
+  $('zCount').textContent = String(state.journal.downloading);
   $('dCount').textContent = String(state.doneCount);
   $('fCount').textContent = String(state.failed.length);
+  $('pausedFlag').textContent = state.paused ? 'пауза' : '';
+  $btn('btnPause').disabled = state.paused;
+  $btn('btnResume').disabled = !state.paused;
 
   const qList = $('qList');
   qList.innerHTML = '';
@@ -124,6 +137,75 @@ function render(): void {
 function updateDlBtn(): void {
   $btn('btnDownload').disabled = !selected.size;
 }
+
+/* ---------------- Phase 1 slice A: storage (FSA) ---------------- */
+
+function renderStorage(): void {
+  const el = $('dirState');
+  if (!storageState) {
+    el.textContent = 'Статус хранилища недоступен.';
+    return;
+  }
+  const s = storageState;
+  $sel('storageMode').value = s.mode;
+  const permText: Record<StorageStateResult['permission'], string> = {
+    granted: 'доступ разрешён',
+    prompt: 'нужно подтверждение — открой расширения и разреши',
+    denied: 'доступ запрещён',
+    none: 'папка не выбрана',
+  };
+  const modeText = s.mode === 'fsa' ? 'выбранная папка' : '«Загрузки»';
+  el.textContent = `Режим: ${modeText} · Папка: ${s.rootName ?? '—'} · ${permText[s.permission]}`;
+}
+
+async function refreshStorage(): Promise<void> {
+  try {
+    storageState = await send<StorageStateResult>({ t: 'GET_STORAGE_STATE' });
+  } catch {
+    storageState = null;
+  }
+  renderStorage();
+}
+
+// Must run from a click handler: showDirectoryPicker() requires a user gesture.
+$('btnPickDir').addEventListener('click', async () => {
+  const el = $('dirState');
+  el.textContent = 'Открываю выбор папки…';
+  try {
+    const handle = await pickDirectory();
+    await persistRootHandle(handle);
+    storageState = await send<StorageStateResult>({
+      t: 'PICK_DIR_RESULT',
+      ok: true,
+      rootName: handle.name,
+    });
+  } catch (e) {
+    const msg = (e as Error).message || String(e);
+    el.textContent = /abort/i.test(msg) ? 'Выбор папки отменён.' : 'Ошибка: ' + msg;
+    void refreshStorage();
+  }
+  renderStorage();
+});
+
+$('btnClearDir').addEventListener('click', async () => {
+  try {
+    storageState = await send<StorageStateResult>({ t: 'CLEAR_DIR' });
+  } catch {
+    /* keep last view */
+  }
+  renderStorage();
+});
+
+$('storageMode').addEventListener('change', (e) => {
+  const target = e.target as HTMLSelectElement;
+  const mode = target.value === 'fsa' ? 'fsa' : 'downloads';
+  void (async () => {
+    await send({ t: 'SETTINGS', patch: { storageMode: mode } });
+    await refreshStorage();
+  })();
+});
+
+/* ---------------- scan / library / downloads buttons ---------------- */
 
 $('btnScan').addEventListener('click', async () => {
   const btn = $btn('btnScan');
@@ -207,6 +289,8 @@ $('btnDownload').addEventListener('click', async () => {
   switchTab('dl');
 });
 $('btnRetry').addEventListener('click', () => void send({ t: 'RETRY_FAILED' }));
+$('btnPause').addEventListener('click', () => void send({ t: 'PAUSE' }));
+$('btnResume').addEventListener('click', () => void send({ t: 'RESUME' }));
 $('btnCancel').addEventListener('click', () => void send({ t: 'CANCEL' }));
 $('btnReset').addEventListener('click', async () => {
   if (confirm('Удалить весь собранный каталог?')) {
@@ -264,6 +348,7 @@ void (async function init() {
   } catch {
     /* state may be unavailable */
   }
+  void refreshStorage();
   void refresh();
   setInterval(refresh, 800);
 })();

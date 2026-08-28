@@ -44,10 +44,14 @@
     <section id="tab-dl" class="pane">
       <div class="stats">
         <span>В очереди: <b id="qCount">0</b></span>
+        <span>Идёт: <b id="zCount">0</b></span>
         <span>Готово всего: <b id="dCount">0</b></span>
         <span>Ошибки: <b id="fCount">0</b></span>
+        <span id="pausedFlag" class="muted"></span>
       </div>
       <div class="row">
+        <button id="btnPause">Пауза</button>
+        <button id="btnResume">Продолжить</button>
         <button id="btnRetry">Повторить ошибки</button>
         <button id="btnCancel">Стоп</button>
       </div>
@@ -58,13 +62,26 @@
     </section>
 
     <section id="tab-set" class="pane">
-      <label>Папка внутри «Загрузок»</label>
+      <h3>Хранилище</h3>
+      <div class="row">
+        <button id="btnPickDir">Выбрать папку…</button>
+        <button id="btnClearDir">Сбросить папку</button>
+      </div>
+      <div id="dirState" class="conn"></div>
+      <label>Куда сохранять</label>
+      <select id="storageMode">
+        <option value="downloads">В «Загрузки» (по умолчанию)</option>
+        <option value="fsa">В выбранную папку (любой диск)</option>
+      </select>
+      <p class="hint small">
+        Режим «выбранной папки» пишет файлы напрямую в выбранную директорию на любом диске. Если
+        Chrome снова спросит доступ — разреши его, файлы не уйдут в «Загрузки» молча.
+      </p>
+      <hr />
+      <label>Папка внутри «Загрузок» (для режима «В «Загрузки»»)</label>
       <input id="baseDir" type="text" placeholder="VK Music" spellcheck="false" />
       <div id="pathExample" class="hint small mono"></div>
-      <p class="hint small">
-        Браузер разрешает расширениям сохранять только внутри папки «Загрузки» — выбрать диск/папку
-        вне её Chrome не даст. Вложенность поддерживается: <code>Music/VK</code>.
-      </p>
+      <p class="hint small">Вложенность поддерживается: <code>Music/VK</code>.</p>
       <label>Параллельных загрузок: <b id="concVal">2</b></label>
       <input id="conc" type="range" min="1" max="5" value="2" />
       <label>Пауза между запусками, мс</label>

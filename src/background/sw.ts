@@ -1,13 +1,25 @@
 import { buildTag, stripTag } from '../lib/id3.js';
 import { parseM3U8, type M3U8ParseResult } from '../lib/m3u8.js';
 import { sanitize, pad, sniffExt, concatBytes, sanitizePath } from '../lib/util.js';
+import { computeBackoff, computeStartDelay } from '../lib/backoff.js';
+import { chromeStorageJournalKv, Journal, journalId } from '../lib/journal.js';
+import {
+  clearRootHandle,
+  ensurePermission,
+  loadRootHandle,
+  StoragePermissionError,
+  writeToRoot,
+} from '../storage/fs.js';
+import { DEFAULT_SETTINGS } from '../types.js';
 import type {
   AudioMeta,
   FailedItem,
   FlowState,
+  JournalResponse,
   QueueItem,
   RuntimeMessage,
   StateSnapshot,
+  StorageStateResult,
 } from '../types.js';
 
 const SKEY = 'vmf_state_v1';
@@ -19,21 +31,53 @@ let S: FlowState = {
   queue: [],
   failed: [],
   done: {},
-  settings: { conc: 2, gapMs: 450, baseDir: 'VK Music' },
+  settings: { ...DEFAULT_SETTINGS },
 };
 
 let pumping = false;
-let stopFlag = false;
+let stopFlag = false; // CANCEL: stop loops + drop pending
+let paused = false; // PAUSE: stop new starts, keep in-flight running
+let lastStartAt = 0; // rate limiter anchor (time of last download start)
+
+/** Persistent queue journal in chrome.storage.local (survives SW termination). */
+const journal = new Journal(chromeStorageJournalKv());
 
 async function load(): Promise<void> {
   try {
     const o = await chrome.storage.local.get(SKEY);
     if (o[SKEY]) S = { ...S, ...(o[SKEY] as Partial<FlowState>) };
-    if (!S.settings) S.settings = { conc: 2, gapMs: 450, baseDir: 'VK Music' };
+    // defaults-fill: pre-Phase-1 persisted states lack the new settings keys
+    S.settings = { ...DEFAULT_SETTINGS, ...S.settings };
     if (!S.settings.baseDir) S.settings.baseDir = 'VK Music';
   } catch {
     /* keep defaults */
   }
+  try {
+    await journal.hydrate();
+    await rehydrateQueueFromJournal();
+  } catch {
+    /* journal unavailable — plain in-session queueing still works */
+  }
+}
+
+/** Re-pump every journal line still pending (resume after SW death). */
+async function rehydrateQueueFromJournal(): Promise<void> {
+  let ch = false;
+  for (const e of journal.pendingEntries()) {
+    const doneKey = e.pl + '/' + e.key;
+    if (S.done[doneKey]) {
+      await journal.setStatus(journalId(e), 'done');
+      continue;
+    }
+    if (
+      !S.queue.some((q) => q.pl === e.pl && q.key === e.key) &&
+      !S.failed.some((f) => f.key === e.key && f.pl === e.pl)
+    ) {
+      S.queue.push({ key: e.key, pl: e.pl, idx: e.idx, w: e.w });
+      ch = true;
+    }
+  }
+  if (ch) persist();
 }
 
 let saveT: ReturnType<typeof setTimeout> | undefined;
@@ -89,7 +133,13 @@ function attachToPlaylist(name: string | undefined | null, key: string): void {
   if (!arr.includes(key)) arr.push(key);
 }
 
-type HandlerResult = StateSnapshot | { ok: boolean } | { queued: number } | null;
+type HandlerResult =
+  | StateSnapshot
+  | { ok: boolean }
+  | { queued: number }
+  | JournalResponse
+  | StorageStateResult
+  | null;
 
 async function handle(m: RuntimeMessage): Promise<HandlerResult> {
   switch (m.t) {
@@ -112,6 +162,7 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
     }
     case 'ENQUEUE': {
       stopFlag = false;
+      paused = false;
       const names = m.names || [];
       for (const name of names) {
         const arr = S.playlists[name] || [];
@@ -124,24 +175,61 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
           S.queue.push({ key, pl: name, idx, w });
         });
       }
+      for (const qj of S.queue) await journal.ensure(qj);
       persist();
       pump();
       return { queued: S.queue.length };
     }
     case 'CANCEL': {
       stopFlag = true;
+      paused = false;
       S.queue = [];
+      await journal.dropPending();
       persist();
       return { ok: true };
     }
+    case 'PAUSE': {
+      paused = true;
+      persist();
+      return { ok: true };
+    }
+    case 'RESUME': {
+      paused = false;
+      stopFlag = false;
+      await rehydrateQueueFromJournal();
+      persist();
+      pump();
+      return { ok: true };
+    }
+    case 'GET_JOURNAL': {
+      return journalSnap();
+    }
+    case 'GET_STORAGE_STATE': {
+      return await storageState();
+    }
+    case 'CLEAR_DIR': {
+      await clearRootHandle();
+      S.settings = { ...S.settings, rootName: undefined };
+      persist();
+      return await storageState();
+    }
+    case 'PICK_DIR_RESULT': {
+      if (m.ok && m.rootName) {
+        S.settings = { ...S.settings, rootName: m.rootName, storageMode: 'fsa' };
+      }
+      persist();
+      return await storageState();
+    }
     case 'RETRY_FAILED': {
       stopFlag = false;
+      paused = false;
       const f = S.failed.splice(0, S.failed.length);
       for (const it of f) {
         const doneKey = it.pl + '/' + it.key;
         delete S.done[doneKey];
         if (!S.queue.some((q) => q.pl === it.pl && q.key === it.key)) S.queue.push(it);
       }
+      for (const it of f) await journal.ensure(it);
       persist();
       pump();
       return { ok: true };
@@ -166,6 +254,7 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
         done: {},
         settings: S.settings,
       };
+      await journal.clear();
       persist();
       return { ok: true };
     }
@@ -174,6 +263,16 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
     }
   }
   return null;
+}
+
+function journalSnap(): JournalResponse {
+  return { ok: true, paused, counts: journal.counts(), entries: journal.list() };
+}
+
+async function storageState(): Promise<StorageStateResult> {
+  const h = await loadRootHandle();
+  const permission = h ? await ensurePermission(h, false) : 'none';
+  return { mode: S.settings.storageMode, rootName: S.settings.rootName ?? null, permission };
 }
 
 function snap(): StateSnapshot {
@@ -190,6 +289,8 @@ function snap(): StateSnapshot {
     doneCount: Object.keys(S.done).length,
     settings: S.settings,
     totalAudios: Object.keys(S.audios).length,
+    journal: journal.counts(),
+    paused,
   };
 }
 
@@ -224,16 +325,67 @@ async function pump(): Promise<void> {
   }
 }
 
+/** Rate limiter: keep >= minIntervalMs (+ anti-ban jitter) between download starts. */
+async function gateStart(): Promise<void> {
+  const wait = computeStartDelay(
+    lastStartAt,
+    Math.max(0, +S.settings.minIntervalMs || 0),
+    Math.max(0, +S.settings.jitterMs || 0),
+  );
+  if (wait > 0) await sleep(wait);
+  lastStartAt = Date.now();
+}
+
 async function workerLoop(): Promise<void> {
   while (true) {
-    if (stopFlag) break;
+    if (stopFlag || paused) break;
     const item = S.queue.shift();
     if (!item) break;
+    await gateStart();
+    if (stopFlag || paused) {
+      S.queue.unshift(item);
+      break;
+    }
     persist();
-    try {
-      await runItem(item);
-    } catch (e) {
-      fail(item, e instanceof Error ? e.message : e);
+    const id = journalId(item);
+    await journal.setStatus(id, 'downloading');
+    let attempts = journal.attemptCount(id);
+    const max = Math.max(1, Math.floor(+S.settings.maxAttempts || DEFAULT_SETTINGS.maxAttempts));
+    for (;;) {
+      try {
+        await runItem(item);
+        await journal.setStatus(id, 'done');
+        break;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (e instanceof StoragePermissionError) {
+          // surface per-item, no silent downloads-fallback, no retry storm
+          await journal.noteError(id, msg);
+          await journal.setStatus(id, 'failed');
+          fail(item, msg);
+          break;
+        }
+        attempts++;
+        await journal.bumpAttempt(id, msg);
+        if (attempts >= max) {
+          await journal.setStatus(id, 'failed');
+          fail(item, msg);
+          break;
+        }
+        await sleep(
+          computeBackoff(
+            attempts,
+            Math.max(0, +S.settings.baseBackoffMs || DEFAULT_SETTINGS.baseBackoffMs),
+            Math.max(0, +S.settings.maxBackoffMs || DEFAULT_SETTINGS.maxBackoffMs),
+            Math.max(0, +S.settings.jitterMs),
+          ),
+        );
+        if (stopFlag || paused) {
+          await journal.setStatus(id, 'queued');
+          S.queue.unshift(item);
+          break;
+        }
+      }
     }
     await sleep(+S.settings.gapMs || 400);
   }
@@ -262,9 +414,20 @@ async function runItem(item: QueueItem): Promise<void> {
     if (tag) body = concatBytes([tag, body]);
   }
 
-  const base = sanitizePath(S.settings.baseDir) || 'VK Music';
-  const fname = `${base}/${sanitize(item.pl)}/${pad(item.idx, item.w)} ${sanitize(`${a.artist} - ${a.title}`)}.${ext}`;
-  await saveBlob(body, fname);
+  const label = `${pad(item.idx, item.w)} ${sanitize(`${a.artist} - ${a.title}`)}.${ext}`;
+  if (S.settings.storageMode === 'fsa') {
+    // Write straight into the user-picked folder: <Playlist>/NN. Artist - Title.ext
+    const root = await loadRootHandle();
+    if (!root) throw new StoragePermissionError();
+    const perm = await ensurePermission(root, false);
+    if (perm !== 'granted') {
+      throw new StoragePermissionError(`storage-permission-needed (${perm})`);
+    }
+    await writeToRoot(root, `${sanitize(item.pl)}/${label}`, body);
+  } else {
+    const base = sanitizePath(S.settings.baseDir) || 'VK Music';
+    await saveBlob(body, `${base}/${sanitize(item.pl)}/${label}`);
+  }
 
   S.done[doneKey] = Date.now();
   const fi = S.failed.findIndex((f) => f.key === item.key && f.pl === item.pl);
@@ -388,6 +551,8 @@ chrome.alarms.onAlarm.addListener((al) => {
   }
 });
 chrome.runtime.onStartup.addListener(() => {
+  stopFlag = false;
+  paused = false;
   void load().then(pump);
 });
 chrome.runtime.onInstalled.addListener(() => {
