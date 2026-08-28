@@ -21,6 +21,7 @@ const MOCK_DIR = path.join(HERE, 'mock');
 const CHROMIUM_EXE =
   process.env.VMF_CHROMIUM_EXE || 'D:\\progg\\pw-browsers\\chromium-1234\\chrome-win64\\chrome.exe';
 const hasChromium = existsSync(CHROMIUM_EXE);
+const isCI = !!process.env.CI;
 
 interface HookAudio {
   key: string;
@@ -107,10 +108,25 @@ function startServer(): Promise<void> {
   });
 }
 
-const describeB = hasChromium ? describe : describe.skip;
+const describeB = hasChromium
+  ? describe
+  : // On CI the browser suite must actually run: provisioning lives in
+    // .github/workflows/ci.yml, and a missing binary is a hard failure there,
+    // never a silent skip. Locally (binary at the default path absent) skip.
+    isCI
+    ? describe
+    : describe.skip;
 
 describeB('browser: acquisition on real Chromium (mocks)', () => {
   beforeAll(async () => {
+    if (!hasChromium) {
+      // only reachable on CI (locally the suite is describe.skip'd)
+      throw new Error(
+        `CI must run the 13 browser checks, but no Chromium binary found at ` +
+          `"${CHROMIUM_EXE}" (VMF_CHROMIUM_EXE=${process.env.VMF_CHROMIUM_EXE ?? '<unset>'}). ` +
+          `Check the "Provision Chromium" CI step.`
+      );
+    }
     compiled['hook-main'] = await compiledScript('hook-main');
     compiled['collector'] = await compiledScript('collector');
     await startServer();
