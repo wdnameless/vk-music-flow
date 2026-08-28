@@ -1,50 +1,74 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ru">
-<head><meta charset="UTF-8"><title>collector mock</title><style>.audio_row{height:20px;border-bottom:1px solid #eee}</style></head>
-<body>
-<h1 class="playlist_title">Рок классика</h1>
-<div id="scroller" style="height:100px;overflow-y:auto;border:1px solid #333">
-  <div id="rows"></div>
-</div>
-<script>
-  const sent = [];
-  const listeners = [];
-  window.chrome = {
-    runtime: {
-      sendMessage: async (m) => { sent.push(m); return {}; },
-      onMessage: { addListener: (f) => listeners.push(f) }
-    }
-  };
+  <head>
+    <meta charset="UTF-8" />
+    <title>collector mock</title>
+    <style>
+      .audio_row {
+        height: 20px;
+        border-bottom: 1px solid #eee;
+      }
+    </style>
+  </head>
+  <body>
+    <h1 class="playlist_title">Рок классика</h1>
+    <div id="scroller" style="height: 100px; overflow-y: auto; border: 1px solid #333">
+      <div id="rows"></div>
+    </div>
+    <script>
+      const sent = [];
+      const listeners = [];
+      window.chrome = {
+        runtime: {
+          sendMessage: async (m) => {
+            sent.push(m);
+            return {};
+          },
+          onMessage: { addListener: (f) => listeners.push(f) },
+        },
+      };
 
-  const TOTAL = 40;
-  let added = 0;
-  function row(i) {
-    return '<div class="audio_row" data-audio=\'' + JSON.stringify({
-      id: '77_' + i,
-      artist: 'Артист ' + i,
-      title: 'Песня ' + i,
-      urls: ['https://vk-cdn.net/a' + i + '.mp3'],
-      duration: 200
-    }).replace(/'/g, '&#39;') + '\'></div>';
-  }
-  function fill() {
-    const c = document.getElementById('rows');
-    for (let i = added; i < Math.min(TOTAL, added + 8); i++) c.insertAdjacentHTML('beforeend', row(i));
-    added = Math.min(TOTAL, added + 8);
-  }
-  fill();
-  const sc = document.getElementById('scroller');
-  sc.addEventListener('scroll', () => {
-    if (sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 10 && added < TOTAL) setTimeout(fill, 50);
-  });
+      const TOTAL = 40;
+      let added = 0;
+      function row(i) {
+        return (
+          '<div class="audio_row" data-audio=\'' +
+          JSON.stringify({
+            id: '77_' + i,
+            artist: 'Артист ' + i,
+            title: 'Песня ' + i,
+            urls: ['https://vk-cdn.net/a' + i + '.mp3'],
+            duration: 200,
+          }).replace(/'/g, '&#39;') +
+          "'></div>"
+        );
+      }
+      function fill() {
+        const c = document.getElementById('rows');
+        for (let i = added; i < Math.min(TOTAL, added + 8); i++)
+          c.insertAdjacentHTML('beforeend', row(i));
+        added = Math.min(TOTAL, added + 8);
+      }
+      fill();
+      const sc = document.getElementById('scroller');
+      sc.addEventListener('scroll', () => {
+        if (sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 10 && added < TOTAL)
+          setTimeout(fill, 50);
+      });
 
-  window.__sent = sent;
-  window.__result = null;
-  window.__runScan = () => new Promise((resolve) => {
-    listeners.forEach((f) => f({ cmd: 'SCAN' }, null, (res) => { window.__result = res; resolve(res); }));
-  });
-</script>
-<script src="../../src/content/hook-main.js"></script>
-<script src="../../src/content/collector.js"></script>
-</body>
+      window.__sent = sent;
+      window.__result = null;
+      window.__runScan = () =>
+        new Promise((resolve) => {
+          listeners.forEach((f) =>
+            f({ cmd: 'SCAN' }, null, (res) => {
+              window.__result = res;
+              resolve(res);
+            }),
+          );
+        });
+    </script>
+    <script src="../../src/content/hook-main.js"></script>
+    <script src="../../src/content/collector.js"></script>
+  </body>
 </html>

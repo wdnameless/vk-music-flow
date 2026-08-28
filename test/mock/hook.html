@@ -1,49 +1,59 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ru">
-<head><meta charset="UTF-8"><title>hook mock</title></head>
-<body>
-<h1>Hook simulation</h1>
-<script src="../../src/content/hook-main.js"></script>
-<script>
-  window.__got = { audios: [], lyrics: null };
-  window.addEventListener('message', (e) => {
-    if (!e.data || e.data.src !== 'VKMF') return;
-    if (e.data.t === 'AUDIOS') window.__got.audios.push(...e.data.p);
-    if (e.data.t === 'LYRICS') window.__got.lyrics = e.data.p;
-  });
+  <head>
+    <meta charset="UTF-8" />
+    <title>hook mock</title>
+  </head>
+  <body>
+    <h1>Hook simulation</h1>
+    <script src="../../src/content/hook-main.js"></script>
+    <script>
+      window.__got = { audios: [], lyrics: null };
+      window.addEventListener('message', (e) => {
+        if (!e.data || e.data.src !== 'VKMF') return;
+        if (e.data.t === 'AUDIOS') window.__got.audios.push(...e.data.p);
+        if (e.data.t === 'LYRICS') window.__got.lyrics = e.data.p;
+      });
 
-  const json = JSON.stringify({
-    response: {
-      items: [
-        {
-          id: 101, owner_id: 55,
-          artist: 'Кино', title: 'Группа крови', duration: 289,
-          url: 'https://cs1-1.vk-cdn.net/mp3/x.mp3',
-          album: {
-            title: 'Альбом',
-            thumbs: [
-              { width: 300, height: 300, src: 'https://sun.cdn/small_300x300.jpg' },
-              { width: 600, height: 600, src: 'https://sun.cdn/big_600x600.jpg' }
-            ]
-          }
+      const json = JSON.stringify({
+        response: {
+          items: [
+            {
+              id: 101,
+              owner_id: 55,
+              artist: 'Кино',
+              title: 'Группа крови',
+              duration: 289,
+              url: 'https://cs1-1.vk-cdn.net/mp3/x.mp3',
+              album: {
+                title: 'Альбом',
+                thumbs: [
+                  { width: 300, height: 300, src: 'https://sun.cdn/small_300x300.jpg' },
+                  { width: 600, height: 600, src: 'https://sun.cdn/big_600x600.jpg' },
+                ],
+              },
+            },
+            {
+              id: 102,
+              owner_id: 55,
+              main_artists: [{ name: 'Мастер' }],
+              title: 'Трек два',
+              duration: 180,
+              hls: 'https://userapi.com/hls/index.m3u8',
+            },
+          ],
         },
-        {
-          id: 102, owner_id: 55,
-          main_artists: [{ name: 'Мастер' }],
-          title: 'Трек два', duration: 180,
-          hls: 'https://userapi.com/hls/index.m3u8'
-        }
-      ]
-    },
-    extra: { lyrics: 'текст песни длиннее тридцати символов для валидации', id: 101 }
-  });
+        extra: { lyrics: 'текст песни длиннее тридцати символов для валидации', id: 101 },
+      });
 
-  fetch('data:application/json;charset=utf-8,' + encodeURIComponent(json)).then(r => r.text());
+      fetch('data:application/json;charset=utf-8,' + encodeURIComponent(json)).then((r) =>
+        r.text(),
+      );
 
-  const blob = new Blob([json], { type: 'application/json' });
-  const xhr = new XMLHttpRequest();
-  xhr.open('GET', URL.createObjectURL(blob));
-  xhr.send();
-</script>
-</body>
+      const blob = new Blob([json], { type: 'application/json' });
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', URL.createObjectURL(blob));
+      xhr.send();
+    </script>
+  </body>
 </html>
