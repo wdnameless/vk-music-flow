@@ -124,7 +124,7 @@ describeB('browser: acquisition on real Chromium (mocks)', () => {
       throw new Error(
         `CI must run the 13 browser checks, but no Chromium binary found at ` +
           `"${CHROMIUM_EXE}" (VMF_CHROMIUM_EXE=${process.env.VMF_CHROMIUM_EXE ?? '<unset>'}). ` +
-          `Check the "Provision Chromium" CI step.`
+          `Check the "Provision Chromium" CI step.`,
       );
     }
     compiled['hook-main'] = await compiledScript('hook-main');

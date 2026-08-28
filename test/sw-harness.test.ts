@@ -1,7 +1,17 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { persistRootHandle } from '../src/storage/fs.js';
+import type {
+  JournalEntry,
+  JournalResponse,
+  RootDirHandle,
+  StorageStateResult,
+} from '../src/types.js';
+import { createFakeIndexedDB, makeFakeFsRoot, type FakeFsRoot } from './mock-fs.js';
+
 // Port of test/sw-harness.mjs (v0.2.2 baseline): mocks chrome.*, drives the
 // service-worker pipeline end-to-end and keeps the original 10 checks.
+// Phase 1 appends storage (fsa) + retry cases at the bottom of this file.
 
 type DlListener = (d: { id: number; state?: { current?: string } }) => void;
 
@@ -9,6 +19,7 @@ const captured = new Map<string, Uint8Array>();
 const blobUrls = new Map<string, Blob | Uint8Array>();
 let uid = 0;
 let dlId = 1;
+let flakyCount = 0; // Phase 1 (c): fetch fails twice, then succeeds
 
 const adtsSeg = (): Uint8Array =>
   new Uint8Array([0xff, 0xf1, 0x50, 0x80, ...new Array(60).fill(0x11)]);
@@ -59,6 +70,17 @@ const mockFetch = (async (url: string | URL | Request): Promise<MockResponse> =>
   if (u.endsWith('seg2.aac')) return body(adtsSeg());
   if (u.includes('/direct.mp3')) return body(directWithOldTag);
   if (u.includes('/cover.jpg')) return body(cover);
+  if (u.includes('/flaky.mp3')) {
+    flakyCount++;
+    if (flakyCount <= 2)
+      return {
+        ok: false,
+        status: 503,
+        text: async () => '',
+        arrayBuffer: async () => new ArrayBuffer(0),
+      };
+    return body(adtsSeg());
+  }
   return {
     ok: false,
     status: 404,
@@ -114,8 +136,23 @@ let send: Send = async () => [];
 
 const dlListeners: DlListener[] = [];
 
+const store = new Map<string, unknown>();
+
 const mockChrome = {
-  storage: { local: { get: async () => ({}), set: async () => undefined } },
+  storage: {
+    local: {
+      get: async (keys?: unknown) => {
+        if (typeof keys === 'string') return { [keys]: store.get(keys) };
+        return Object.fromEntries(store);
+      },
+      set: async (items: Record<string, unknown>) => {
+        // deep-clone on write, mirroring chrome's structured-clone isolation
+        for (const [k, v] of Object.entries(items)) {
+          store.set(k, JSON.parse(JSON.stringify(v)) as unknown);
+        }
+      },
+    },
+  },
   runtime: {
     onMessage: {
       addListener: (f: (typeof msgListeners)[number]) => {
@@ -324,5 +361,152 @@ describe('service worker: конвейер загрузки', () => {
 
   it('кастомный baseDir + защита от ".."', () => {
     expect(results.f3).toBe('Music/VK Extra/Тест2/01 Кино - Группа крови.mp3');
+  });
+});
+
+/* ================= Phase 1 additions (run after baseline checks) ================= */
+
+const audioC = {
+  key: '55_103',
+  id: '103',
+  owner: '55',
+  artist: 'Флэйк',
+  title: 'Flaky Song',
+  album: '',
+  year: null,
+  duration: 60,
+  urls: ['https://cdn/flaky.mp3'],
+  covers: [],
+};
+
+const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function pollUntil(fn: () => Promise<boolean>, timeoutMs = 30000): Promise<boolean> {
+  const t0 = Date.now();
+  for (;;) {
+    if (await fn()) return true;
+    if (Date.now() - t0 > timeoutMs) return false;
+    await sleepMs(100);
+  }
+}
+
+async function journalEntry(id: string): Promise<JournalEntry | undefined> {
+  const r = ((await send({ t: 'GET_JOURNAL' }))[0] ?? {}) as Partial<JournalResponse>;
+  return (r.entries ?? []).find((e) => `${e.pl}/${e.key}` === id);
+}
+
+const fsRoot: FakeFsRoot = makeFakeFsRoot('MyMusic');
+
+describe('Phase 1 (a): fsa mode пишет в выбранный каталог', () => {
+  let pickPerm = '';
+  let writtenPath = '';
+  let writtenBytes: Uint8Array | undefined;
+
+  beforeAll(async () => {
+    (globalThis as Record<string, unknown>).indexedDB = createFakeIndexedDB();
+    afterCleanup.push(() => {
+      delete (globalThis as Record<string, unknown>).indexedDB;
+    });
+    // the popup would have picked + persisted the handle on a user gesture;
+    // here we persist it directly into the fake IDB
+    await persistRootHandle(fsRoot.handle as RootDirHandle);
+    const ss = ((await send({ t: 'PICK_DIR_RESULT', ok: true, rootName: 'MyMusic' }))[0] ??
+      {}) as StorageStateResult;
+    pickPerm = ss.permission;
+    await send({ t: 'SETTINGS', patch: { minIntervalMs: 0, jitterMs: 0 } });
+    await send({ t: 'AUDIOS', audios: [audioA], pl: 'ФСА', scanning: true });
+    await send({ t: 'ENQUEUE', names: ['ФСА'] });
+    await pollUntil(async () => fsRoot.writes.has('ФСА/01 Кино - Группа крови.mp3'));
+    writtenPath = [...fsRoot.writes.keys()].find((p) => p.startsWith('ФСА/')) ?? '';
+    writtenBytes = fsRoot.writes.get(writtenPath);
+    await send({ t: 'CANCEL' });
+  }, 60000);
+
+  it('после выбора папки режим fsa активен и permission granted', () => {
+    expect(pickPerm).toBe('granted');
+  });
+
+  it('файл лежит по <Playlist>/NN. Artist - Title.ext (без baseDir)', () => {
+    expect(writtenPath).toBe('ФСА/01 Кино - Группа крови.mp3');
+    expect(fsRoot.dirCreates).toContain('ФСА:create');
+    expect(fsRoot.fileCreates).toContain('ФСА/01 Кино - Группа крови.mp3:create');
+  });
+
+  it('записаны именно байты с ID3-тегом', () => {
+    expect(writtenBytes).toBeTruthy();
+    expect(String.fromCharCode(...writtenBytes!.slice(0, 3))).toBe('ID3');
+    // same body as the downloads-mode file produced earlier
+    const dl = results.captured.get('VK Music/Тест/01 Кино - Группа крови.mp3');
+    expect(dl!.length).toBe(writtenBytes!.length);
+  });
+});
+
+describe('Phase 1 (b): permission prompt → failed с storage-permission-needed, без фолбэка', () => {
+  let entry: JournalEntry | undefined;
+  let dlBefore = 0;
+  let dlAfter = 0;
+  let wrBefore = 0;
+  let wrAfter = 0;
+
+  beforeAll(async () => {
+    fsRoot.perms.query = 'prompt';
+    fsRoot.perms.request = 'prompt';
+    dlBefore = captured.size;
+    wrBefore = fsRoot.writes.size;
+    await send({ t: 'AUDIOS', audios: [audioB], pl: 'ФСА2', scanning: true });
+    await send({ t: 'ENQUEUE', names: ['ФСА2'] });
+    const seen = await pollUntil(
+      async () => (await journalEntry('ФСА2/55_102'))?.status === 'failed',
+    );
+    expect(seen).toBe(true);
+    entry = await journalEntry('ФСА2/55_102');
+    dlAfter = captured.size;
+    wrAfter = fsRoot.writes.size;
+    await send({ t: 'CANCEL' });
+    fsRoot.perms.query = 'granted';
+    fsRoot.perms.request = 'granted';
+  }, 60000);
+
+  it('предмет помечен failed с явной ошибкой прав', () => {
+    expect(entry?.status).toBe('failed');
+    expect(entry?.lastError).toContain('storage-permission-needed');
+    expect(entry?.attempts).toBe(0); // терминальная ошибка: без retry-шторма
+  });
+
+  it('ни chrome.downloads, ни FSA-запись не сработали (нет тихого фолбэка)', () => {
+    expect(dlAfter).toBe(dlBefore);
+    expect(wrAfter).toBe(wrBefore);
+  });
+});
+
+describe('Phase 1 (c): retry — два падения, затем успех (attempts=2 → done)', () => {
+  let entry: JournalEntry | undefined;
+
+  beforeAll(async () => {
+    await send({
+      t: 'SETTINGS',
+      patch: {
+        storageMode: 'downloads',
+        minIntervalMs: 0,
+        jitterMs: 0,
+        baseBackoffMs: 5,
+        maxBackoffMs: 25,
+      },
+    });
+    await send({ t: 'AUDIOS', audios: [audioC], pl: 'Флэки', scanning: true });
+    await send({ t: 'ENQUEUE', names: ['Флэки'] });
+    const seen = await pollUntil(async () => {
+      const e = await journalEntry('Флэки/55_103');
+      return e?.status === 'done' || e?.status === 'failed';
+    });
+    expect(seen).toBe(true);
+    entry = await journalEntry('Флэки/55_103');
+    await send({ t: 'CANCEL' });
+  }, 60000);
+
+  it('загрузка завершилась после 2 ретраев', () => {
+    expect(entry?.status).toBe('done');
+    expect(entry?.attempts).toBe(2);
+    expect(flakyCount).toBeGreaterThanOrEqual(3);
   });
 });
