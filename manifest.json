@@ -4,12 +4,7 @@
   "version": "0.2.2",
   "description": "Выгрузка музыки из ВКонтакте: плейлисты -> папки, ID3-теги, обложки, тексты.",
   "minimum_chrome_version": "111",
-  "permissions": [
-    "downloads",
-    "storage",
-    "scripting",
-    "alarms"
-  ],
+  "permissions": ["downloads", "storage", "scripting", "alarms"],
   "host_permissions": [
     "https://vk.com/*",
     "https://*.vk.com/*",
@@ -23,7 +18,7 @@
     "https://*.vkusercontent.ru/*"
   ],
   "background": {
-    "service_worker": "src/background/sw.js",
+    "service_worker": "src/background/sw.ts",
     "type": "module"
   },
   "action": {
@@ -33,13 +28,13 @@
   "content_scripts": [
     {
       "matches": ["https://vk.com/*", "https://*.vk.com/*", "https://vk.ru/*", "https://*.vk.ru/*"],
-      "js": ["src/content/hook-main.js"],
+      "js": ["src/content/hook-main.ts"],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
       "matches": ["https://vk.com/*", "https://*.vk.com/*", "https://vk.ru/*", "https://*.vk.ru/*"],
-      "js": ["src/content/collector.js"],
+      "js": ["src/content/collector.ts"],
       "run_at": "document_start"
     }
   ]

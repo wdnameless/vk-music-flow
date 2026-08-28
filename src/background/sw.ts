@@ -1,66 +1,106 @@
 import { buildTag, stripTag } from '../lib/id3.js';
-import { parseM3U8 } from '../lib/m3u8.js';
+import { parseM3U8, type M3U8ParseResult } from '../lib/m3u8.js';
 import { sanitize, pad, sniffExt, concatBytes, sanitizePath } from '../lib/util.js';
+import type {
+  AudioMeta,
+  FailedItem,
+  FlowState,
+  QueueItem,
+  RuntimeMessage,
+  StateSnapshot,
+} from '../types.js';
 
 const SKEY = 'vmf_state_v1';
 
-let S = {
+let S: FlowState = {
   audios: {},
   lyrics: {},
   playlists: {},
   queue: [],
   failed: [],
   done: {},
-  settings: { conc: 2, gapMs: 450, baseDir: 'VK Music' }
+  settings: { conc: 2, gapMs: 450, baseDir: 'VK Music' },
 };
 
 let pumping = false;
 let stopFlag = false;
 
-async function load() {
+async function load(): Promise<void> {
   try {
     const o = await chrome.storage.local.get(SKEY);
-    if (o[SKEY]) S = { ...S, ...o[SKEY] };
+    if (o[SKEY]) S = { ...S, ...(o[SKEY] as Partial<FlowState>) };
     if (!S.settings) S.settings = { conc: 2, gapMs: 450, baseDir: 'VK Music' };
     if (!S.settings.baseDir) S.settings.baseDir = 'VK Music';
-  } catch { }
+  } catch {
+    /* keep defaults */
+  }
 }
 
-let saveT = null;
-function persist() {
+let saveT: ReturnType<typeof setTimeout> | undefined;
+function persist(): void {
   clearTimeout(saveT);
   saveT = setTimeout(() => {
-    chrome.storage.local.set({ [SKEY]: JSON.parse(JSON.stringify(S)) }).catch(() => { });
+    chrome.storage.local.set({ [SKEY]: JSON.parse(JSON.stringify(S)) }).catch(() => {
+      /* best-effort */
+    });
   }, 400);
 }
 
-function mergeAudio(a) {
+function mergeAudio(a: AudioMeta): boolean {
   const ex = S.audios[a.key];
-  if (!ex) { S.audios[a.key] = a; return true; }
+  if (!ex) {
+    S.audios[a.key] = a;
+    return true;
+  }
   let ch = false;
-  for (const u of a.urls || []) if (!ex.urls.includes(u)) { ex.urls.push(u); ch = true; }
-  for (const c of a.covers || []) if (!ex.covers.includes(c)) { ex.covers.push(c); ch = true; }
-  if (!ex.artist && a.artist) { ex.artist = a.artist; ch = true; }
-  if (!ex.title && a.title) { ex.title = a.title; ch = true; }
-  if (!ex.album && a.album) { ex.album = a.album; ch = true; }
-  if (!ex.duration && a.duration) { ex.duration = a.duration; ch = true; }
+  for (const u of a.urls || [])
+    if (!ex.urls.includes(u)) {
+      ex.urls.push(u);
+      ch = true;
+    }
+  for (const c of a.covers || [])
+    if (!ex.covers.includes(c)) {
+      ex.covers.push(c);
+      ch = true;
+    }
+  if (!ex.artist && a.artist) {
+    ex.artist = a.artist;
+    ch = true;
+  }
+  if (!ex.title && a.title) {
+    ex.title = a.title;
+    ch = true;
+  }
+  if (!ex.album && a.album) {
+    ex.album = a.album;
+    ch = true;
+  }
+  if (!ex.duration && a.duration) {
+    ex.duration = a.duration;
+    ch = true;
+  }
   return ch;
 }
 
-function attachToPlaylist(name, key) {
+function attachToPlaylist(name: string | undefined | null, key: string): void {
   if (!name) return;
   if (!S.playlists[name]) S.playlists[name] = [];
-  const arr = S.playlists[name];
+  const arr = S.playlists[name]!;
   if (!arr.includes(key)) arr.push(key);
 }
 
-async function handle(m) {
+type HandlerResult = StateSnapshot | { ok: boolean } | { queued: number } | null;
+
+async function handle(m: RuntimeMessage): Promise<HandlerResult> {
   switch (m.t) {
     case 'AUDIOS': {
       let ch = false;
       for (const a of m.audios || []) {
         if (mergeAudio(a)) ch = true;
-        if (m.scanning && m.pl) { attachToPlaylist(m.pl, a.key); ch = true; }
+        if (m.scanning && m.pl) {
+          attachToPlaylist(m.pl, a.key);
+          ch = true;
+        }
       }
       if (ch) persist();
       return { ok: true };
@@ -80,7 +120,7 @@ async function handle(m) {
           const idx = i + 1;
           const doneKey = name + '/' + key;
           if (S.done[doneKey]) return;
-          if (S.queue.some(q => q.pl === name && q.key === key)) return;
+          if (S.queue.some((q) => q.pl === name && q.key === key)) return;
           S.queue.push({ key, pl: name, idx, w });
         });
       }
@@ -100,7 +140,7 @@ async function handle(m) {
       for (const it of f) {
         const doneKey = it.pl + '/' + it.key;
         delete S.done[doneKey];
-        if (!S.queue.some(q => q.pl === it.pl && q.key === it.key)) S.queue.push(it);
+        if (!S.queue.some((q) => q.pl === it.pl && q.key === it.key)) S.queue.push(it);
       }
       persist();
       pump();
@@ -117,7 +157,15 @@ async function handle(m) {
       return { ok: true };
     }
     case 'RESET': {
-      S = { audios: {}, lyrics: {}, playlists: {}, queue: [], failed: [], done: {}, settings: S.settings };
+      S = {
+        audios: {},
+        lyrics: {},
+        playlists: {},
+        queue: [],
+        failed: [],
+        done: {},
+        settings: S.settings,
+      };
       persist();
       return { ok: true };
     }
@@ -128,30 +176,44 @@ async function handle(m) {
   return null;
 }
 
-function snap() {
+function snap(): StateSnapshot {
   return {
     playlists: Object.fromEntries(Object.entries(S.playlists).map(([k, v]) => [k, v.length])),
-    queue: S.queue.map(q => ({ pl: q.pl, idx: q.idx, a: S.audios[q.key] ? { artist: S.audios[q.key].artist, title: S.audios[q.key].title } : null })),
-    failed: S.failed.map(f => ({ pl: f.pl, err: f.error, a: S.audios[f.key] ? { artist: S.audios[f.key].artist, title: S.audios[f.key].title } : null })),
+    queue: S.queue.map((q) => {
+      const au = S.audios[q.key];
+      return { pl: q.pl, idx: q.idx, a: au ? { artist: au.artist, title: au.title } : null };
+    }),
+    failed: S.failed.map((f) => {
+      const au = S.audios[f.key];
+      return { pl: f.pl, err: f.error, a: au ? { artist: au.artist, title: au.title } : null };
+    }),
     doneCount: Object.keys(S.done).length,
     settings: S.settings,
-    totalAudios: Object.keys(S.audios).length
+    totalAudios: Object.keys(S.audios).length,
   };
 }
 
-function fail(item, err) {
-  S.done[item.pl + '/' + item.key] && delete S.done[item.pl + '/' + item.key];
-  if (!S.failed.some(f => f.key === item.key && f.pl === item.pl)) {
-    S.failed.push({ key: item.key, pl: item.pl, idx: item.idx, w: item.w, error: String(err).slice(0, 200), ts: Date.now() });
+function fail(item: QueueItem | FailedItem, err: unknown): void {
+  const doneKey = item.pl + '/' + item.key;
+  if (S.done[doneKey]) delete S.done[doneKey];
+  if (!S.failed.some((f) => f.key === item.key && f.pl === item.pl)) {
+    S.failed.push({
+      key: item.key,
+      pl: item.pl,
+      idx: item.idx,
+      w: item.w,
+      error: String(err).slice(0, 200),
+      ts: Date.now(),
+    });
   } else {
-    const f = S.failed.find(f => f.key === item.key && f.pl === item.pl);
+    const f = S.failed.find((f) => f.key === item.key && f.pl === item.pl)!;
     f.error = String(err).slice(0, 200);
     f.ts = Date.now();
   }
   persist();
 }
 
-async function pump() {
+async function pump(): Promise<void> {
   if (pumping) return;
   pumping = true;
   try {
@@ -162,7 +224,7 @@ async function pump() {
   }
 }
 
-async function workerLoop() {
+async function workerLoop(): Promise<void> {
   while (true) {
     if (stopFlag) break;
     const item = S.queue.shift();
@@ -171,15 +233,15 @@ async function workerLoop() {
     try {
       await runItem(item);
     } catch (e) {
-      fail(item, e && e.message || e);
+      fail(item, e instanceof Error ? e.message : e);
     }
     await sleep(+S.settings.gapMs || 400);
   }
 }
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function runItem(item) {
+async function runItem(item: QueueItem): Promise<void> {
   const a = S.audios[item.key];
   if (!a) throw new Error('трек не найден в каталоге');
   const doneKey = item.pl + '/' + item.key;
@@ -194,7 +256,8 @@ async function runItem(item) {
     const lyrics = S.lyrics[String(a.id)] || '';
     const tag = buildTag(
       { title: a.title, artist: a.artist, album: a.album, year: a.year, track: item.idx },
-      cover, lyrics
+      cover,
+      lyrics,
     );
     if (tag) body = concatBytes([tag, body]);
   }
@@ -204,40 +267,40 @@ async function runItem(item) {
   await saveBlob(body, fname);
 
   S.done[doneKey] = Date.now();
-  const fi = S.failed.findIndex(f => f.key === item.key && f.pl === item.pl);
+  const fi = S.failed.findIndex((f) => f.key === item.key && f.pl === item.pl);
   if (fi !== -1) S.failed.splice(fi, 1);
   persist();
 }
 
-async function rawFetch(url) {
+async function rawFetch(url: string): Promise<Uint8Array> {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return new Uint8Array(await r.arrayBuffer());
 }
 
-async function getAudioBytes(a) {
-  const direct = (a.urls || []).find(u => !/\.m3u8/i.test(u));
+async function getAudioBytes(a: AudioMeta): Promise<Uint8Array> {
+  const direct = (a.urls || []).find((u) => !/\.m3u8/i.test(u));
   if (direct) {
     const b = await rawFetch(direct);
     if (!(b[0] === 0x23 && b[1] === 0x45 && b[2] === 0x58)) return b;
     const txt = new TextDecoder().decode(b);
     return assembleHls(txt, direct);
   }
-  const hls = (a.urls || []).find(u => /\.m3u8/i.test(u)) || (a.urls || [])[0];
+  const hls = (a.urls || []).find((u) => /\.m3u8/i.test(u)) || (a.urls || [])[0];
   if (!hls) throw new Error('нет доступных ссылок');
   const txt = await (await fetch(hls)).text();
   return assembleHls(txt, hls);
 }
 
-async function assembleHls(txt, baseUrl) {
-  let p = parseM3U8(txt, baseUrl);
+async function assembleHls(txt: string, baseUrl: string): Promise<Uint8Array> {
+  let p: M3U8ParseResult = parseM3U8(txt, baseUrl);
   if (p.variant) {
     const r = await fetch(p.variant);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     p = parseM3U8(await r.text(), p.variant);
   }
   if (!p.segments.length) throw new Error('плейлист без сегментов');
-  const parts = [];
+  const parts: Uint8Array[] = [];
   if (p.init) parts.push(await rawFetch(p.init));
   let i = 0;
   for (const s of p.segments) {
@@ -254,28 +317,35 @@ async function assembleHls(txt, baseUrl) {
   return out;
 }
 
-async function getCover(a) {
+async function getCover(a: AudioMeta): Promise<Uint8Array | null> {
   for (const c of (a.covers || []).slice(0, 3)) {
     try {
       const b = await rawFetch(c);
       if (b.length > 1024 && b.length < 4e6) return b;
-    } catch { }
+    } catch {
+      /* try next cover */
+    }
   }
   return null;
 }
 
-const pendingDl = new Map();
+const pendingDl = new Map<number, { res: () => void; rej: (err: Error) => void }>();
 
-chrome.downloads.onChanged.addListener(d => {
+chrome.downloads.onChanged.addListener((d) => {
   const w = pendingDl.get(d.id);
   if (!w) return;
   if (d.state) {
-    if (d.state.current === 'complete') { pendingDl.delete(d.id); w.res(); }
-    else if (d.state.current === 'interrupted') { pendingDl.delete(d.id); w.rej(new Error(d.error || 'прервано')); }
+    if (d.state.current === 'complete') {
+      pendingDl.delete(d.id);
+      w.res();
+    } else if (d.state.current === 'interrupted') {
+      pendingDl.delete(d.id);
+      w.rej(new Error((d.error as unknown as string) || 'прервано'));
+    }
   }
 });
 
-function waitDone(id, timeoutMs) {
+function waitDone(id: number, timeoutMs?: number): Promise<void> {
   return new Promise((res, rej) => {
     pendingDl.set(id, { res, rej });
     setTimeout(() => {
@@ -284,27 +354,44 @@ function waitDone(id, timeoutMs) {
   });
 }
 
-async function saveBlob(bytes, fname) {
-  const blob = new Blob([bytes]);
+async function saveBlob(bytes: Uint8Array, fname: string): Promise<void> {
+  // runtime value is always a Uint8Array backed by a plain ArrayBuffer here
+  const blob = new Blob([bytes as unknown as BlobPart]);
   const url = URL.createObjectURL(blob);
   try {
-    const id = await chrome.downloads.download({ url, filename: fname, conflictAction: 'uniquify' });
+    const id = await chrome.downloads.download({
+      url,
+      filename: fname,
+      conflictAction: 'uniquify',
+    });
     await waitDone(id);
   } finally {
-    try { URL.revokeObjectURL(url); } catch { }
+    try {
+      URL.revokeObjectURL(url);
+    } catch {
+      /* ignore */
+    }
   }
 }
 
-chrome.runtime.onMessage.addListener((m, _sender, sendResponse) => {
-  handle(m).then(r => sendResponse(r)).catch(e => sendResponse({ error: String(e) }));
+chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
+  handle(m as RuntimeMessage)
+    .then((r) => sendResponse(r))
+    .catch((e) => sendResponse({ error: String(e) }));
   return true;
 });
 
 chrome.alarms.create('vmf-pump', { periodInMinutes: 1 });
-chrome.alarms.onAlarm.addListener(al => {
-  if (al.name === 'vmf-pump') { load().then(pump); }
+chrome.alarms.onAlarm.addListener((al) => {
+  if (al.name === 'vmf-pump') {
+    void load().then(pump);
+  }
 });
-chrome.runtime.onStartup.addListener(() => load().then(pump));
-chrome.runtime.onInstalled.addListener(() => load().then(pump));
+chrome.runtime.onStartup.addListener(() => {
+  void load().then(pump);
+});
+chrome.runtime.onInstalled.addListener(() => {
+  void load().then(pump);
+});
 
-load().then(pump);
+void load().then(pump);
