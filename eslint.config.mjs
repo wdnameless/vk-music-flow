@@ -30,7 +30,8 @@ export default tseslint.config(
       // The vanilla-JS prototype used untyped globals; the strict port keeps
       // a few targeted non-null assertions where the runtime already guarantees presence.
       '@typescript-eslint/no-non-null-assertion': 'off',
-      '@typescript-eslint/no-explicit-any': 'warn',
+      // Hard contract: the typed surface may cast via `unknown` but never `any`.
+      '@typescript-eslint/no-explicit-any': 'error',
     },
   },
   {
