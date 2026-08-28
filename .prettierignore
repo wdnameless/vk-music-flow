@@ -3,3 +3,7 @@ node_modules
 .opencode
 package-lock.json
 *.zip
+
+# keep baseline bytes (prettier only normalized EOLs, changing nothing else)
+test/mock/*.html
+src/popup/popup.css
