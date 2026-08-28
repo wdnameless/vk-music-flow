@@ -102,6 +102,7 @@ type Send = (m: unknown) => Promise<unknown[]>;
 const results: {
   st: { playlists: Record<string, number> };
   captured: typeof captured;
+  sizeAfterFirstRun: number;
   f1: string | undefined;
   f2: string | undefined;
   f3: string | undefined;
@@ -207,6 +208,10 @@ beforeAll(async () => {
   await send({ t: 'ENQUEUE', names: ['Тест'] });
   for (let i = 0; i < 40 && captured.size < 2; i++) await new Promise((r) => setTimeout(r, 250));
 
+  // exact snapshot at the baseline's check moment: an unexpected extra
+  // top-level download must fail this, just like `captured.size === 2` did
+  results.sizeAfterFirstRun = captured.size;
+
   const names = [...captured.keys()].sort();
   results.captured = captured;
   results.f1 = names.find((n) => n.endsWith('.mp3'));
@@ -274,7 +279,8 @@ describe('service worker: конвейер загрузки', () => {
   });
 
   it('загружено 2 файла', () => {
-    expect(captured.size).toBeGreaterThanOrEqual(2);
+    // exact baseline parity: exactly two files downloaded after ENQUEUE
+    expect(results.sizeAfterFirstRun).toBe(2);
     expect([...captured.keys()].filter((n) => n.startsWith('VK Music/Тест/')).length).toBe(2);
   });
 
