@@ -1,72 +1,78 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ru">
-<head>
-  <meta charset="UTF-8">
-  <link rel="stylesheet" href="popup.css">
-</head>
-<body>
-  <header>
-    <div class="logo">VK Music Flow</div>
-    <nav>
-      <button class="tab active" data-tab="scan">Скан</button>
-      <button class="tab" data-tab="lib">Плейлисты</button>
-      <button class="tab" data-tab="dl">Загрузки</button>
-      <button class="tab" data-tab="set">⚙</button>
-    </nav>
-  </header>
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <div class="logo">VK Music Flow</div>
+      <nav>
+        <button class="tab active" data-tab="scan">Скан</button>
+        <button class="tab" data-tab="lib">Плейлисты</button>
+        <button class="tab" data-tab="dl">Загрузки</button>
+        <button class="tab" data-tab="set">⚙</button>
+      </nav>
+    </header>
 
-  <section id="tab-scan" class="pane active">
-    <p class="hint">Открой страницу плейлиста или «Моя музыка» на vk.com и нажми кнопку. Расширение само пролистает список и соберёт треки.</p>
-    <label>Имя плейлиста (пусто = взять со страницы)</label>
-    <input id="scanName" type="text" placeholder="Например: Мой рок">
-    <button id="btnScan" class="primary">Сканировать текущую страницу</button>
-    <div class="row" style="margin-top:8px">
-      <button id="btnDiag">Диагностика: скопировать ответы</button>
-    </div>
-    <div id="scanResult" class="result"></div>
-    <div id="diagResult" class="conn"></div>
-    <div id="connState" class="conn"></div>
-  </section>
+    <section id="tab-scan" class="pane active">
+      <p class="hint">
+        Открой страницу плейлиста или «Моя музыка» на vk.com и нажми кнопку. Расширение само
+        пролистает список и соберёт треки.
+      </p>
+      <label>Имя плейлиста (пусто = взять со страницы)</label>
+      <input id="scanName" type="text" placeholder="Например: Мой рок" />
+      <button id="btnScan" class="primary">Сканировать текущую страницу</button>
+      <div class="row" style="margin-top: 8px">
+        <button id="btnDiag">Диагностика: скопировать ответы</button>
+      </div>
+      <div id="scanResult" class="result"></div>
+      <div id="diagResult" class="conn"></div>
+      <div id="connState" class="conn"></div>
+    </section>
 
-  <section id="tab-lib" class="pane">
-    <div class="row">
-      <button id="btnAll">Выбрать все</button>
-      <button id="btnNone">Снять</button>
-      <span id="libTotal" class="muted"></span>
-    </div>
-    <ul id="plList"></ul>
-    <button id="btnDownload" class="primary">Скачать выбранное</button>
-  </section>
+    <section id="tab-lib" class="pane">
+      <div class="row">
+        <button id="btnAll">Выбрать все</button>
+        <button id="btnNone">Снять</button>
+        <span id="libTotal" class="muted"></span>
+      </div>
+      <ul id="plList"></ul>
+      <button id="btnDownload" class="primary">Скачать выбранное</button>
+    </section>
 
-  <section id="tab-dl" class="pane">
-    <div class="stats">
-      <span>В очереди: <b id="qCount">0</b></span>
-      <span>Готово всего: <b id="dCount">0</b></span>
-      <span>Ошибки: <b id="fCount">0</b></span>
-    </div>
-    <div class="row">
-      <button id="btnRetry">Повторить ошибки</button>
-      <button id="btnCancel">Стоп</button>
-    </div>
-    <h3>Очередь</h3>
-    <ul id="qList" class="list"></ul>
-    <h3>Неудачные</h3>
-    <ul id="fList" class="list err"></ul>
-  </section>
+    <section id="tab-dl" class="pane">
+      <div class="stats">
+        <span>В очереди: <b id="qCount">0</b></span>
+        <span>Готово всего: <b id="dCount">0</b></span>
+        <span>Ошибки: <b id="fCount">0</b></span>
+      </div>
+      <div class="row">
+        <button id="btnRetry">Повторить ошибки</button>
+        <button id="btnCancel">Стоп</button>
+      </div>
+      <h3>Очередь</h3>
+      <ul id="qList" class="list"></ul>
+      <h3>Неудачные</h3>
+      <ul id="fList" class="list err"></ul>
+    </section>
 
-  <section id="tab-set" class="pane">
-    <label>Папка внутри «Загрузок»</label>
-    <input id="baseDir" type="text" placeholder="VK Music" spellcheck="false">
-    <div id="pathExample" class="hint small mono"></div>
-    <p class="hint small">Браузер разрешает расширениям сохранять только внутри папки «Загрузки» — выбрать диск/папку вне её Chrome не даст. Вложенность поддерживается: <code>Music/VK</code>.</p>
-    <label>Параллельных загрузок: <b id="concVal">2</b></label>
-    <input id="conc" type="range" min="1" max="5" value="2">
-    <label>Пауза между запусками, мс</label>
-    <input id="gap" type="number" min="100" max="5000" step="50" value="450">
-    <hr>
-    <button id="btnReset" class="danger">Сбросить каталог</button>
-  </section>
+    <section id="tab-set" class="pane">
+      <label>Папка внутри «Загрузок»</label>
+      <input id="baseDir" type="text" placeholder="VK Music" spellcheck="false" />
+      <div id="pathExample" class="hint small mono"></div>
+      <p class="hint small">
+        Браузер разрешает расширениям сохранять только внутри папки «Загрузки» — выбрать диск/папку
+        вне её Chrome не даст. Вложенность поддерживается: <code>Music/VK</code>.
+      </p>
+      <label>Параллельных загрузок: <b id="concVal">2</b></label>
+      <input id="conc" type="range" min="1" max="5" value="2" />
+      <label>Пауза между запусками, мс</label>
+      <input id="gap" type="number" min="100" max="5000" step="50" value="450" />
+      <hr />
+      <button id="btnReset" class="danger">Сбросить каталог</button>
+    </section>
 
-  <script src="popup.js"></script>
-</body>
+    <script type="module" src="popup.ts"></script>
+  </body>
 </html>

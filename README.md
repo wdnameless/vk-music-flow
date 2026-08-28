@@ -2,14 +2,15 @@
 
 Расширение для Chrome (Manifest V3): выгружает музыку из ВКонтакте в максимальном доступном качестве, раскладывает файлы по папкам-плейлистам и прописывает ID3-теги (исполнитель, название, альбом, номер, обложка, текст песни).
 
-Всё работает внутри браузера — без нативных программ, ffmpeg и внешних серверов. Ноль зависимостей, чистый JavaScript.
+Всё работает внутри браузера — без нативных программ, ffmpeg и внешних серверов.
 
 ## Установка
 
-1. Открой `chrome://extensions`
-2. Включи **Режим разработчика** (справа сверху)
-3. **Загрузить распакованное расширение** → выбери эту папку
-4. Перезагрузи вкладки vk.com, если они были открыты
+1. Собрать расширение: `npm install && npm run build`
+2. Открой `chrome://extensions`
+3. Включи **Режим разработчика** (справа сверху)
+4. **Загрузить распакованное расширение** → выбери папку `dist/`
+5. Перезагрузи вкладки vk.com, если они были открыты
 
 ## Как пользоваться
 
@@ -47,13 +48,33 @@ VK закрыл методы `audio.*` официального API для ст�
 ## Структура
 
 ```
-manifest.json
+manifest.json             # MV3 манифест (подключается сборщиком)
 src/
-├── background/sw.js      # каталог, очередь, HLS-сборка, теги, загрузки
-├── content/hook-main.js  # хук сети (MAIN world)
-├── content/collector.js  # мост + автоскролл-сканер
-├── lib/id3.js            # запись ID3v2.4
-├── lib/m3u8.js           # парсер HLS-манифестов
-├── lib/util.js           # sanitize, sniffExt, concat
-└── popup/                # UI расширения
+├── types.ts              # общие контракты: AudioMeta, QueueItem, Settings, сообщения
+├── background/sw.ts      # каталог, очередь, HLS-сборка, теги, загрузки
+├── content/hook-main.ts  # хук сети (MAIN world)
+├── content/collector.ts  # мост + автоскролл-сканер
+├── lib/id3.ts            # запись ID3v2.4
+├── lib/m3u8.ts           # парсер HLS-манифестов
+├── lib/util.ts           # sanitize, sniffExt, concat
+└── popup/                # UI расширения (TypeScript)
+test/
+├── unit.test.ts          # тесты lib/* (Vitest)
+├── sw-harness.test.ts    # конвейер загрузок с моками chrome.* (Vitest)
+├── browser.test.ts       # hook/collector в реальном Chromium (Playwright)
+└── mock/                 # HTML-фикстуры для браузерных проверок
 ```
+
+## Разработка
+
+```
+npm run dev        # Vite + crxjs (HMR для распакованного dist/)
+npm run build      # сборка расширяемого dist/
+npm run typecheck  # tsc --noEmit (strict)
+npm run lint       # ESLint (flat config)
+npm run format     # Prettier
+npm test           # Vitest: unit + sw-конвейер + браузерные проверки
+```
+
+Для браузерных тестов используется локальный Chromium (переменная `VMF_CHROMIUM_EXE`
+или путь по умолчанию из Playwright-кэша); при его отсутствии проверки помечаются skipped.

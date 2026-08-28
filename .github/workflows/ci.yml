@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Provision Chromium (pinned to local playwright-core version)
+        # exact same browser revision as the installed playwright-core;
+        # --with-deps pulls the shared libraries Chromium needs on ubuntu
+        run: |
+          PW_VER="$(node -p "require('playwright-core/package.json').version")"
+          npx -y "playwright@${PW_VER}" install --with-deps chromium
+
+      - name: Point browser tests at the installed Chromium
+        # export VMF_CHROMIUM_EXE so test/browser.test.ts ACTUALLY RUNS the 13
+        # checks on CI. Hard-fails the job if provisioning left no usable
+        # binary — the suite can never silently skip here.
+        run: |
+          CHROME="$(node -p "require('playwright-core').chromium.executablePath()" 2>/dev/null || true)"
+          if [ ! -x "$CHROME" ]; then
+            CHROME="$(find "$HOME/.cache/ms-playwright" -type f \( -path '*/chromium-*/chrome-linux/chrome' -o -name headless_shell \) | sort | head -n1)"
+          fi
+          if [ ! -x "$CHROME" ]; then
+            echo "::error::playwright chromium binary not found after install"
+            find "$HOME/.cache/ms-playwright" >/dev/null 2>&1 || true
+            exit 1
+          fi
+          echo "VMF_CHROMIUM_EXE=$CHROME" >> "$GITHUB_ENV"
+          echo "provisioned chromium: $CHROME"
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        # includes the 13 browser checks against the provisioned Chromium
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vk-music-flow-dist
+          path: dist/
+          if-no-files-found: error
