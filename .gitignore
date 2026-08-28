@@ -1,0 +1,21 @@
+# deps / build
+node_modules/
+dist/
+dist-ssr/
+*.tsbuildinfo
+
+# packaging artifacts
+*.zip
+*.crx
+*.pem
+
+# local tool state
+.opencode/
+.DS_Store
+*.local
+.vscode/
+.idea/
+
+# env
+.env
+.env.*

@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "VK Music Flow",
+  "version": "0.2.2",
+  "description": "Выгрузка музыки из ВКонтакте: плейлисты -> папки, ID3-теги, обложки, тексты.",
+  "minimum_chrome_version": "111",
+  "permissions": [
+    "downloads",
+    "storage",
+    "scripting",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://vk.com/*",
+    "https://*.vk.com/*",
+    "https://vk.ru/*",
+    "https://*.vk.ru/*",
+    "https://*.vk-cdn.net/*",
+    "https://*.userapi.com/*",
+    "https://*.mycdn.me/*",
+    "https://*.vkuser.net/*",
+    "https://*.vkuservideo.net/*",
+    "https://*.vkusercontent.ru/*"
+  ],
+  "background": {
+    "service_worker": "src/background/sw.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "VK Music Flow",
+    "default_popup": "src/popup/popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://vk.com/*", "https://*.vk.com/*", "https://vk.ru/*", "https://*.vk.ru/*"],
+      "js": ["src/content/hook-main.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://vk.com/*", "https://*.vk.com/*", "https://vk.ru/*", "https://*.vk.ru/*"],
+      "js": ["src/content/collector.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
