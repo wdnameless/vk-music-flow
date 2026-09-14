@@ -456,7 +456,7 @@ describe('Phase 1 (a): fsa mode пишет в выбранный каталог'
     expect(pickPerm).toBe('granted');
   });
 
-  it('файл лежит по <Playlist>/NN. Artist - Title.ext (без baseDir)', () => {
+  it('файл лежит по <Playlist>/NN Artist - Title.ext (без baseDir)', () => {
     expect(writtenPath).toBe('ФСА/01 Кино - Группа крови.mp3');
     expect(fsRoot.dirCreates).toContain('ФСА:create');
     expect(fsRoot.fileCreates).toContain('ФСА/01 Кино - Группа крови.mp3:create');

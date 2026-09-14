@@ -434,7 +434,7 @@ async function runItem(item: QueueItem): Promise<void> {
 
   const label = `${pad(item.idx, item.w)} ${sanitize(`${a.artist} - ${a.title}`)}.${ext}`;
   if (S.settings.storageMode === 'fsa') {
-    // Write straight into the user-picked folder: <Playlist>/NN. Artist - Title.ext
+    // Write straight into the user-picked folder: <Playlist>/NN Artist - Title.ext
     const root = await loadRootHandle();
     if (!root) throw new StoragePermissionError();
     const perm = await ensurePermission(root, false);
