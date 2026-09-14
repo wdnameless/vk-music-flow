@@ -69,6 +69,9 @@ export async function ensurePermission(
     const q = await handle.queryPermission({ mode: 'readwrite' });
     if (q === 'granted') return 'granted';
     if (!request) return q === 'denied' ? 'denied' : 'prompt';
+    // Unreachable from the MV3 service worker (requestPermission needs a user
+    // gesture): kept for gesture contexts — the popup can pass request=true to
+    // re-ask without the user having to pick the folder again.
     const r = await handle.requestPermission({ mode: 'readwrite' });
     return r === 'granted' ? 'granted' : r === 'denied' ? 'denied' : 'prompt';
   } catch {

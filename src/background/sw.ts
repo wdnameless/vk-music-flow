@@ -37,6 +37,13 @@ let S: FlowState = {
 let pumping = false;
 let stopFlag = false; // CANCEL: stop loops + drop pending
 let paused = false; // PAUSE: stop new starts, keep in-flight running
+/** Journal ids executing in THIS SW instance — rehydrate must never re-queue them. */
+const inFlight = new Set<string>();
+/** Cold-start hydration, resolved exactly once per SW instance. Every boot
+ *  trigger below must reuse it: load() merges persisted state over live state,
+ *  so a second call rolls back settings changed since boot and resurrects
+ *  queue lines the workers are executing right now. */
+let booted: Promise<void> | undefined;
 let lastStartAt = 0; // rate limiter anchor (time of last download start)
 
 /** Persistent queue journal in chrome.storage.local (survives SW termination). */
@@ -64,11 +71,15 @@ async function load(): Promise<void> {
 async function rehydrateQueueFromJournal(): Promise<void> {
   let ch = false;
   for (const e of journal.pendingEntries()) {
+    const id = journalId(e);
     const doneKey = e.pl + '/' + e.key;
     if (S.done[doneKey]) {
-      await journal.setStatus(journalId(e), 'done');
+      await journal.setStatus(id, 'done');
       continue;
     }
+    // A 'downloading' line only means "interrupted" for a COLD start. In a live
+    // SW the worker holds it in flight; re-queueing it would download a twin.
+    if (inFlight.has(id)) continue;
     if (
       !S.queue.some((q) => q.pl === e.pl && q.key === e.key) &&
       !S.failed.some((f) => f.key === e.key && f.pl === e.pl)
@@ -348,44 +359,51 @@ async function workerLoop(): Promise<void> {
     }
     persist();
     const id = journalId(item);
+    inFlight.add(id);
     await journal.setStatus(id, 'downloading');
     let attempts = journal.attemptCount(id);
     const max = Math.max(1, Math.floor(+S.settings.maxAttempts || DEFAULT_SETTINGS.maxAttempts));
-    for (;;) {
-      try {
-        await runItem(item);
-        await journal.setStatus(id, 'done');
-        break;
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (e instanceof StoragePermissionError) {
-          // surface per-item, no silent downloads-fallback, no retry storm
-          await journal.noteError(id, msg);
-          await journal.setStatus(id, 'failed');
-          fail(item, msg);
+    try {
+      for (;;) {
+        try {
+          await runItem(item);
+          await journal.setStatus(id, 'done');
           break;
-        }
-        attempts++;
-        await journal.bumpAttempt(id, msg);
-        if (attempts >= max) {
-          await journal.setStatus(id, 'failed');
-          fail(item, msg);
-          break;
-        }
-        await sleep(
-          computeBackoff(
-            attempts,
-            Math.max(0, +S.settings.baseBackoffMs || DEFAULT_SETTINGS.baseBackoffMs),
-            Math.max(0, +S.settings.maxBackoffMs || DEFAULT_SETTINGS.maxBackoffMs),
-            Math.max(0, +S.settings.jitterMs),
-          ),
-        );
-        if (stopFlag || paused) {
-          await journal.setStatus(id, 'queued');
-          S.queue.unshift(item);
-          break;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (e instanceof StoragePermissionError) {
+            // surface per-item, no silent downloads-fallback, no retry storm
+            await journal.noteError(id, msg);
+            await journal.setStatus(id, 'failed');
+            fail(item, msg);
+            break;
+          }
+          attempts++;
+          await journal.bumpAttempt(id, msg);
+          if (attempts >= max) {
+            await journal.setStatus(id, 'failed');
+            fail(item, msg);
+            break;
+          }
+          await sleep(
+            computeBackoff(
+              attempts,
+              Math.max(0, +S.settings.baseBackoffMs || DEFAULT_SETTINGS.baseBackoffMs),
+              Math.max(0, +S.settings.maxBackoffMs || DEFAULT_SETTINGS.maxBackoffMs),
+              Math.max(0, +S.settings.jitterMs),
+            ),
+          );
+          if (stopFlag || paused) {
+            await journal.setStatus(id, 'queued');
+            S.queue.unshift(item);
+            break;
+          }
         }
       }
+    } finally {
+      // requeued items leave the set with the line already back to 'queued',
+      // so rehydration may pick them up; finished ones stay out of it forever
+      inFlight.delete(id);
     }
     await sleep(+S.settings.gapMs || 400);
   }
@@ -537,6 +555,9 @@ async function saveBlob(bytes: Uint8Array, fname: string): Promise<void> {
   }
 }
 
+/** Reuse the one cold-start hydration for all four boot triggers below. */
+const boot = (): Promise<void> => (booted ??= load());
+
 chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
   handle(m as RuntimeMessage)
     .then((r) => sendResponse(r))
@@ -547,16 +568,16 @@ chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
 chrome.alarms.create('vmf-pump', { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener((al) => {
   if (al.name === 'vmf-pump') {
-    void load().then(pump);
+    void boot().then(pump);
   }
 });
 chrome.runtime.onStartup.addListener(() => {
   stopFlag = false;
   paused = false;
-  void load().then(pump);
+  void boot().then(pump);
 });
 chrome.runtime.onInstalled.addListener(() => {
-  void load().then(pump);
+  void boot().then(pump);
 });
 
-void load().then(pump);
+void boot().then(pump);

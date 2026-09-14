@@ -317,7 +317,7 @@ $('baseDir').addEventListener('input', (e) => {
       .split(/[\\/]+/)
       .filter(Boolean)
       .join('/') +
-    '/<плейлист>/01. Artist - Title.mp3';
+    '/<плейлист>/01 Artist - Title.mp3';
   void send({ t: 'SETTINGS', patch: { baseDir: v } });
 });
 
@@ -343,7 +343,7 @@ void (async function init() {
       $in('gap').value = String(s.settings.gapMs);
       $in('baseDir').value = s.settings.baseDir || 'VK Music';
       $('pathExample').textContent =
-        'Загрузки/' + ($in('baseDir').value || 'VK Music') + '/<плейлист>/01. Artist - Title.mp3';
+        'Загрузки/' + ($in('baseDir').value || 'VK Music') + '/<плейлист>/01 Artist - Title.mp3';
     }
   } catch {
     /* state may be unavailable */

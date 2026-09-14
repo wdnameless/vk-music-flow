@@ -68,6 +68,13 @@ const mockFetch = (async (url: string | URL | Request): Promise<MockResponse> =>
   if (u.endsWith('seg0.aac')) return body(adtsSeg());
   if (u.endsWith('seg1.aac')) return body(adtsSeg());
   if (u.endsWith('seg2.aac')) return body(adtsSeg());
+  if (
+    u.endsWith('slowtrack.aac') ||
+    u.endsWith('slowtrack2.aac') ||
+    u.endsWith('slowtrack4.aac') ||
+    u.endsWith('fasttrack.aac')
+  )
+    return body(adtsSeg());
   if (u.includes('/direct.mp3')) return body(directWithOldTag);
   if (u.includes('/cover.jpg')) return body(cover);
   if (u.includes('/flaky.mp3')) {
@@ -138,6 +145,13 @@ const dlListeners: DlListener[] = [];
 
 const store = new Map<string, unknown>();
 
+// Phase 1 (race/pause) plumbing: every chrome.downloads.download call is
+// logged; filenames containing 'Slow' stay pending until the test emits
+// their completion manually, and the pump alarm is fireable from tests.
+const dlLog: string[] = [];
+const slowIds = new Map<string, number>();
+const alarmListeners: Array<(al: { name: string }) => void> = [];
+
 const mockChrome = {
   storage: {
     local: {
@@ -162,7 +176,17 @@ const mockChrome = {
     onStartup: { addListener: () => undefined },
     onInstalled: { addListener: () => undefined },
   },
-  alarms: { create: () => undefined, onAlarm: { addListener: () => undefined } },
+  alarms: {
+    create: () => undefined,
+    onAlarm: {
+      emit: (name: string) => {
+        for (const f of alarmListeners) f({ name });
+      },
+      addListener: (f: (al: { name: string }) => void) => {
+        alarmListeners.push(f);
+      },
+    },
+  },
   downloads: {
     onChanged: {
       addListener: (f: DlListener) => {
@@ -173,6 +197,7 @@ const mockChrome = {
       },
     },
     async download({ url, filename }: { url: string; filename: string }) {
+      dlLog.push(filename);
       const blob = blobUrls.get(url);
       if (blob) {
         const bytes =
@@ -180,6 +205,11 @@ const mockChrome = {
         captured.set(filename, bytes);
       }
       const id = dlId++;
+      if (filename.includes('Slow')) {
+        // stays in-flight until a Phase 1 race/pause test completes it
+        slowIds.set(filename, id);
+        return id;
+      }
       setTimeout(
         () =>
           (mockChrome.downloads.onChanged as unknown as { emit: DlListener }).emit({
@@ -508,5 +538,232 @@ describe('Phase 1 (c): retry — два падения, затем успех (a
     expect(entry?.status).toBe('done');
     expect(entry?.attempts).toBe(2);
     expect(flakyCount).toBeGreaterThanOrEqual(3);
+  });
+});
+
+/* ---- alarm emitter helpers for the race + pause/resume regression tests ---- */
+
+const fireAlarm = (name: string): void => {
+  (mockChrome.alarms.onAlarm as unknown as { emit: (n: string) => void }).emit(name);
+};
+
+const completeSlow = (file: string): void => {
+  const id = slowIds.get(file);
+  if (id === undefined) throw new Error('no pending slow download: ' + file);
+  (mockChrome.downloads.onChanged as unknown as { emit: DlListener }).emit({
+    id,
+    state: { current: 'complete' },
+  });
+  slowIds.delete(file);
+};
+
+const dlCount = (file: string): number => dlLog.filter((n) => n === file).length;
+
+describe('Phase 1 (pause/resume): PAUSE останавливает старты, RESUME докачивает, CANCEL хранит done', () => {
+  let slowFile = '';
+
+  beforeAll(async () => {
+    // one worker so the 2nd item cannot sneak in before PAUSE lands
+    await send({ t: 'SETTINGS', patch: { conc: 1, minIntervalMs: 0, jitterMs: 0, gapMs: 30 } });
+    await send({
+      t: 'AUDIOS',
+      audios: [
+        {
+          key: '99_902',
+          id: '902',
+          owner: '99',
+          artist: 'Улитка',
+          title: 'Slow Track 2',
+          album: '',
+          year: null,
+          duration: 600,
+          urls: ['https://cdn/slowtrack2.aac'],
+          covers: [],
+        },
+        {
+          key: '99_903',
+          id: '903',
+          owner: '99',
+          artist: 'Рыжий',
+          title: 'Fast Track',
+          album: '',
+          year: null,
+          duration: 30,
+          urls: ['https://cdn/fasttrack.aac'],
+          covers: [],
+        },
+      ],
+      pl: 'Пауза',
+      scanning: true,
+    });
+    await send({ t: 'ENQUEUE', names: ['Пауза'] });
+    const started = await pollUntil(async () => dlLog.some((n) => n.includes('Slow Track 2')));
+    expect(started).toBe(true); // guard: the ENQUEUE must actually have started the first item here
+    slowFile = dlLog.find((n) => n.includes('Slow Track 2')) ?? '';
+    await send({ t: 'PAUSE' });
+    // the in-flight download is allowed to finish; the loop must NOT start #2
+    completeSlow(slowFile);
+    const done1 = await pollUntil(
+      async () => (await journalEntry('Пауза/99_902'))?.status === 'done',
+    );
+    expect(done1).toBe(true); // guard: in-flight completes normally under PAUSE
+    await sleepMs(400); // grace window: a buggy resume-pump would have started #2
+  }, 60000);
+
+  it('после PAUSE второй трек не стартовал и ждёт в очереди/журнале', async () => {
+    expect(dlLog.some((n) => n.includes('Fast Track'))).toBe(false);
+    const e = await journalEntry('Пауза/99_903');
+    expect(e?.status).toBe('queued');
+    const st = ((await send({ t: 'GET_STATE' }))[0] ?? {}) as {
+      queue?: { pl: string }[];
+      paused?: boolean;
+    };
+    expect(st.paused).toBe(true);
+    expect((st.queue ?? []).filter((q) => q.pl === 'Пауза').length).toBe(1);
+  });
+
+  it('RESUME докачивает оставшийся трек ровно один раз', async () => {
+    await send({ t: 'RESUME' });
+    const seen = await pollUntil(
+      async () => (await journalEntry('Пауза/99_903'))?.status === 'done',
+    );
+    expect(seen).toBe(true);
+    const file = dlLog.find((n) => n.includes('Fast Track')) ?? '';
+    expect(dlCount(file)).toBe(1);
+  });
+
+  it('CANCEL не порождает загрузок и сохраняет done', async () => {
+    const before = dlLog.length;
+    await send({ t: 'CANCEL' });
+    await sleepMs(300);
+    expect(dlLog.length).toBe(before);
+    const jr = ((await send({ t: 'GET_JOURNAL' }))[0] ?? {}) as {
+      counts?: Record<string, number>;
+      entries?: { pl: string; status: string }[];
+    };
+    const donePl = (jr.entries ?? []).filter((e) => e.pl === 'Пауза' && e.status === 'done');
+    expect(donePl.length).toBe(2); // cancel keeps done lines
+    expect((jr.counts?.done ?? 0) >= 2).toBe(true); // total journal done across tests
+    const st = ((await send({ t: 'GET_STATE' }))[0] ?? {}) as { queue?: { pl: string }[] };
+    expect((st.queue ?? []).filter((q) => q.pl === 'Пауза').length).toBe(0);
+  });
+});
+
+describe('Phase 1 (гонка): vmf-pump во время in-flight не портит живое состояние', () => {
+  let targetFile = '';
+
+  beforeAll(async () => {
+    await send({ t: 'SETTINGS', patch: { conc: 1, minIntervalMs: 0, jitterMs: 0, gapMs: 30 } });
+    await send({
+      t: 'AUDIOS',
+      audios: [
+        {
+          key: '99_901',
+          id: '901',
+          owner: '99',
+          artist: 'Улитка',
+          title: 'Slow Track',
+          album: '',
+          year: null,
+          duration: 600,
+          urls: ['https://cdn/slowtrack.aac'],
+          covers: [],
+        },
+      ],
+      pl: 'Гонка',
+      scanning: true,
+    });
+    await send({ t: 'ENQUEUE', names: ['Гонка'] });
+    const started = await pollUntil(async () => dlLog.some((n) => n.includes('Гонка/')));
+    expect(started).toBe(true);
+    targetFile = dlLog.find((n) => n.includes('Гонка/')) ?? '';
+    // item is downloading RIGHT NOW (journal says 'downloading', queue is empty):
+    // hammer the pump alarm like a real >60s download gets hammered
+    fireAlarm('vmf-pump');
+    await sleepMs(150);
+    fireAlarm('vmf-pump');
+    await sleepMs(150);
+  }, 60000);
+
+  it('будильник не откатывает настройки к персистентному снимку', async () => {
+    // the alarm must NOT re-run cold-start load(): that merges the debounced
+    // storage snapshot over live state and silently reverts user settings
+    const st = ((await send({ t: 'GET_STATE' }))[0] ?? {}) as {
+      settings?: { conc?: number; minIntervalMs?: number; gapMs?: number };
+    };
+    expect(st.settings?.conc).toBe(1);
+    expect(st.settings?.minIntervalMs).toBe(0);
+    expect(st.settings?.gapMs).toBe(30);
+  });
+
+  it('будильник не воскрешает очередь из журнала', async () => {
+    const st = ((await send({ t: 'GET_STATE' }))[0] ?? {}) as { queue?: { pl: string }[] };
+    expect((st.queue ?? []).filter((q) => q.pl === 'Гонка').length).toBe(0);
+  });
+
+  it('после завершения файл загружен ровно один раз (нет uniquify-двойника)', async () => {
+    completeSlow(targetFile);
+    const seen = await pollUntil(
+      async () => (await journalEntry('Гонка/99_901'))?.status === 'done',
+    );
+    expect(seen).toBe(true);
+    await sleepMs(700); // buggy path: worker pops the resurrected dup in this window
+    expect(dlCount(targetFile)).toBe(1);
+    expect(dlLog.some((n) => /\(1\)\.aac$/.test(n))).toBe(false); // no " (1)" uniquify twin
+    const e = await journalEntry('Гонка/99_901');
+    expect(e?.attempts).toBe(0);
+    await send({ t: 'CANCEL' });
+  });
+});
+
+describe('Phase 1 (гонка): RESUME во время in-flight не клонирует загрузку', () => {
+  let targetFile = '';
+
+  beforeAll(async () => {
+    await send({ t: 'SETTINGS', patch: { conc: 1, minIntervalMs: 0, jitterMs: 0, gapMs: 30 } });
+    await send({
+      t: 'AUDIOS',
+      audios: [
+        {
+          key: '99_904',
+          id: '904',
+          owner: '99',
+          artist: 'Улитка',
+          title: 'Slow Track 4',
+          album: '',
+          year: null,
+          duration: 600,
+          urls: ['https://cdn/slowtrack4.aac'],
+          covers: [],
+        },
+      ],
+      pl: 'Пауза2',
+      scanning: true,
+    });
+    await send({ t: 'ENQUEUE', names: ['Пауза2'] });
+    const started = await pollUntil(async () => dlLog.some((n) => n.includes('Пауза2/')));
+    expect(started).toBe(true);
+    targetFile = dlLog.find((n) => n.includes('Пауза2/')) ?? '';
+    // PAUSE→RESUME while the single worker still sits inside runItem: the
+    // journal line reads 'downloading' and only the in-flight guard tells the
+    // rehydrator that this line belongs to a live worker, not a dead one
+    await send({ t: 'PAUSE' });
+    await send({ t: 'RESUME' });
+  }, 60000);
+
+  it('RESUME не ставит in-flight предмет обратно в очередь', async () => {
+    const st = ((await send({ t: 'GET_STATE' }))[0] ?? {}) as { queue?: { pl: string }[] };
+    expect((st.queue ?? []).filter((q) => q.pl === 'Пауза2').length).toBe(0);
+  });
+
+  it('докачка после RESUME ровно одна', async () => {
+    completeSlow(targetFile);
+    const seen = await pollUntil(
+      async () => (await journalEntry('Пауза2/99_904'))?.status === 'done',
+    );
+    expect(seen).toBe(true);
+    await sleepMs(700);
+    expect(dlCount(targetFile)).toBe(1);
+    await send({ t: 'CANCEL' });
   });
 });
