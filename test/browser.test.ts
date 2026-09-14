@@ -220,9 +220,9 @@ describeB('browser: acquisition on real Chromium (mocks)', () => {
     expect(hook.stats!.parsed).toBeGreaterThanOrEqual(2);
   });
 
-  it('B3: собраны ровно два трека (дедуп по key)', () => {
+  it('B3: собраны ровно три трека (дедуп по key)', () => {
     const keys = hook.audios.map((a) => a.key).sort();
-    expect(keys).toEqual(['55_101', '55_102']);
+    expect(keys).toEqual(['55_101', '55_102', '55_103']);
   });
 
   it('B4: 55_101 — artist/title/album из плоскового поля', () => {
@@ -249,6 +249,21 @@ describeB('browser: acquisition on real Chromium (mocks)', () => {
     expect(a!.artist).toBe('Мастер');
     expect(a!.duration).toBe(180);
     expect(a!.urls.some((u) => u === 'https://userapi.com/hls/index.m3u8')).toBe(true);
+  });
+
+  it('B7a: 55_103 (реальная форма VK) — обложки НЕ попадают в urls', () => {
+    const a = hook.audios.find((x) => x.key === '55_103');
+    expect(a).toBeTruthy();
+    // the audio payload is the only entry; the 3 photo_* JPEGs must not be here
+    expect(a!.urls).toEqual(['https://cs9-3v4.vkuseraudio.ru/s/v1/ac/ABCDEF/index.m3u8?siren=1']);
+    expect(a!.urls.some((u) => /vkuserphoto/.test(u))).toBe(false);
+  });
+
+  it('B7b: 55_103 — обложки берутся из thumb.photo_* (крупная первой)', () => {
+    const a = hook.audios.find((x) => x.key === '55_103');
+    expect(a!.covers.length).toBe(3);
+    expect(a!.covers[0]).toContain('size=1200x1200');
+    expect(a!.covers[2]).toContain('size=34x34');
   });
 
   it('B8: тексты песен мостятся через LYRICS', () => {

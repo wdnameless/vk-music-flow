@@ -35,14 +35,47 @@ declare global {
     if (samples.length > 3) samples.shift();
   }
 
+  /**
+   * True only for audio payload URLs.
+   *
+   * Real VK host names: `vkuseraudio.ru` (HLS/mp3) vs `vkuserphoto.ru` (artwork).
+   * The old pattern listed `vkuser`, which is a PREFIX OF BOTH — so 300x300 album
+   * JPEGs matched, `urls` filled with images, and `getAudioBytes` (which prefers
+   * the first non-m3u8 URL) downloaded a ~2 KB cover instead of the track.
+   */
+  function isAudioUrl(u: string): boolean {
+    if (!/^https?:\/\//i.test(u)) return false;
+    if (/vkuserphoto|vkuserimages|\/impg\/|\/ig2\/|\/s\/v1\/ig/i.test(u)) return false;
+    if (/\.(jpe?g|png|webp|gif|avif)(\?|$)/i.test(u)) return false;
+    if (/[?&]type=(audio|photo)/i.test(u) && !/\.(mp3|m3u8)(\?|$)/i.test(u)) return false;
+    return /(vkuseraudio|vk-cdn|userapi|mycdn|\.mp3|\.m3u8|\/audio)/i.test(u);
+  }
+
+  /** Artwork URL, excluding the audio payload hosts. */
+  function isCoverUrl(u: string): boolean {
+    if (!/^https?:\/\//i.test(u) || !/^https:/i.test(u)) return false;
+    if (/vkuseraudio|\.(mp3|m3u8)(\?|$)/i.test(u)) return false;
+    return /(userphoto|impg|\.jpe?g|\.png|\.webp)(\?|$|\.)/i.test(u);
+  }
+
+  /** Highest-resolution URL out of a `photo_34…photo_1200` thumbnail map. */
+  function coverFromThumb(thumb: unknown): string[] {
+    if (!thumb || typeof thumb !== 'object') return [];
+    const entries = Object.entries(thumb as Record<string, unknown>)
+      .filter(([k, v]) => /^photo_\d+$/.test(k) && typeof v === 'string' && isCoverUrl(v as string))
+      .map(([k, v]) => [Number(k.slice(6)), v as string] as const);
+    if (!entries.length) {
+      const only = (thumb as { src?: unknown }).src;
+      return typeof only === 'string' && isCoverUrl(only) ? [only] : [];
+    }
+    entries.sort((a, b) => b[0] - a[0]);
+    return entries.map(([, v]) => v);
+  }
+
   function collectUrls(node: unknown, acc: string[], d = 0): string[] {
     if (!node || d > 6) return acc;
     if (typeof node === 'string') {
-      if (
-        /^https?:\/\//.test(node) &&
-        /(vk-cdn|userapi|mycdn|vkuser|\.mp3|\.m3u8|\/audio)/i.test(node)
-      )
-        acc.push(node);
+      if (isAudioUrl(node)) acc.push(node);
       return acc;
     }
     if (typeof node === 'object') {
@@ -98,17 +131,21 @@ declare global {
           const covers: string[] = [];
           const al = (o.album ?? (Array.isArray(o.albums) ? o.albums[0] : null)) as
             AlbumLike | null | undefined;
+          // Legacy/API shape: album.thumbs[] / album.thumb.
           if (al) {
             const th = al.thumbs ?? al.thumb ?? al.covers;
             if (Array.isArray(th))
               th.forEach((x: Thumb | null) => x && x.src && covers.push(x.src));
             else if (th && (th as Thumb).src) covers.push((th as Thumb).src!);
-            const px = (u: string) => {
-              const m = u.match(/(\d+)x(\d+)/);
-              return m ? Number(m[1]) * Number(m[2]) : 0;
-            };
-            covers.sort((a, b) => px(b) - px(a));
           }
+          // Real web-player shape: a flat `thumb.photo_34…photo_1200` map.
+          covers.push(...coverFromThumb(o.thumb), ...coverFromThumb(o.cover));
+          const px = (u: string) => {
+            const m = u.match(/(\d+)x(\d+)/);
+            return m ? Number(m[1]) * Number(m[2]) : 0;
+          };
+          covers.sort((a, b) => px(b) - px(a));
+          const dedupCovers = [...new Set(covers)].filter(isCoverUrl);
           out.push({
             key: `${owner}_${id}`,
             id: String(id),
@@ -119,7 +156,7 @@ declare global {
             year: (o.year ?? (al && al.year) ?? null) as number | string | null,
             duration: (o.duration ?? null) as number | string | null,
             urls,
-            covers,
+            covers: dedupCovers,
           });
         }
       }

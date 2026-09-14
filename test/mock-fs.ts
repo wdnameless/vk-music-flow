@@ -9,6 +9,68 @@
 
 export type FsPerm = 'granted' | 'prompt' | 'denied';
 
+/**
+ * Make the test process look like an MV3 service-worker global scope:
+ *  - adds `FileReader` (Node lacks it; workers have it, and the SW encodes
+ *    download payloads with readAsDataURL);
+ *  - REMOVES `URL.createObjectURL`/`revokeObjectURL` (Node has them; workers do
+ *    NOT — this asymmetry is exactly what let a broken downloads path pass 78
+ *    green tests while failing on the first real download).
+ */
+export function installServiceWorkerEnv(): () => void {
+  const g = globalThis as { FileReader?: unknown };
+  const url = URL as unknown as {
+    createObjectURL?: (b: Blob) => string;
+    revokeObjectURL?: (u: string) => void;
+  };
+  const hadFileReader = g.FileReader;
+  const hadCreate = url.createObjectURL;
+  const hadRevoke = url.revokeObjectURL;
+
+  if (!hadFileReader) {
+    class ShimFileReader {
+      result: string | null = null;
+      error: unknown = null;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      readAsDataURL(blob: Blob): void {
+        void blob
+          .arrayBuffer()
+          .then((buf) => {
+            const mime = blob.type || 'application/octet-stream';
+            this.result = `data:${mime};base64,${Buffer.from(buf).toString('base64')}`;
+            this.onload?.();
+          })
+          .catch((e: unknown) => {
+            this.error = e;
+            this.onerror?.();
+          });
+      }
+    }
+    g.FileReader = ShimFileReader;
+  }
+  delete url.createObjectURL;
+  delete url.revokeObjectURL;
+
+  return () => {
+    if (hadFileReader === undefined) delete g.FileReader;
+    else g.FileReader = hadFileReader;
+    if (hadCreate) url.createObjectURL = hadCreate;
+    if (hadRevoke) url.revokeObjectURL = hadRevoke;
+  };
+}
+
+/**
+ * Decode the `data:` URL that the SW hands to chrome.downloads (MV3 workers
+ * have no URL.createObjectURL, so that is the only transport). Returns the raw
+ * bytes, or null for anything that is not a base64 data URL.
+ */
+export function decodeDownloadUrl(url: string): Uint8Array | null {
+  const m = /^data:([^;,]*);base64,(.*)$/s.exec(url);
+  if (!m) return null;
+  return new Uint8Array(Buffer.from(m[2] as string, 'base64'));
+}
+
 const norm = (prefix: string, child: string): string => (prefix ? `${prefix}/${child}` : child);
 
 export interface FakeFsRoot {

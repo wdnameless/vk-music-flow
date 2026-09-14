@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { decodeDownloadUrl, installServiceWorkerEnv } from './mock-fs.js';
+
 // Phase 1 (d): persistent journal + resume across MV3 SW (re-)start.
 // Fresh import of sw.ts with chrome.storage PRE-SEEDED with a state (empty
 // queue!) but a journal full of pending lines: the engine must re-hydrate
@@ -10,8 +12,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 type DlListener = (d: { id: number; state?: { current?: string } }) => void;
 
 const captured = new Map<string, Uint8Array>();
-const blobUrls = new Map<string, Blob | Uint8Array>();
-let uid = 0;
 let dlId = 1;
 
 const adts = new Uint8Array([0xff, 0xf1, 0x50, 0x80, ...new Array(60).fill(0x33)]);
@@ -156,12 +156,8 @@ const mockChrome = {
       },
     },
     async download({ url, filename }: { url: string; filename: string }) {
-      const blob = blobUrls.get(url);
-      if (blob) {
-        const bytes =
-          blob instanceof Uint8Array ? blob : new Uint8Array(await (blob as Blob).arrayBuffer());
-        captured.set(filename, bytes);
-      }
+      const bytes = decodeDownloadUrl(url);
+      if (bytes) captured.set(filename, bytes);
       const id = dlId++;
       setTimeout(
         () =>
@@ -207,21 +203,12 @@ const cleanups: Array<() => void> = [];
 
 beforeAll(async () => {
   const origFetch = globalThis.fetch;
-  const origCoo = URL.createObjectURL;
-  const origRoo = URL.revokeObjectURL;
+  cleanups.push(installServiceWorkerEnv());
   cleanups.push(() => {
     (globalThis as { fetch: unknown }).fetch = origFetch;
-    (URL as unknown as { createObjectURL: unknown }).createObjectURL = origCoo;
-    (URL as unknown as { revokeObjectURL: unknown }).revokeObjectURL = origRoo;
     delete (globalThis as Record<string, unknown>).chrome;
   });
   (globalThis as { fetch: unknown }).fetch = mockFetch;
-  (URL as unknown as { createObjectURL: (b: Blob) => string }).createObjectURL = (blob: Blob) => {
-    const u = 'blob:mock/' + ++uid;
-    blobUrls.set(u, blob);
-    return u;
-  };
-  (URL as unknown as { revokeObjectURL: (u: string) => void }).revokeObjectURL = () => undefined;
   (globalThis as unknown as { chrome: unknown }).chrome = mockChrome;
 
   // import = SW cold start: load() re-hydrates from the seeded journal, pump() resumes

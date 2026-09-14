@@ -32,6 +32,22 @@
           main_artists: [{ name: 'Мастер' }],
           title: 'Трек два', duration: 180,
           hls: 'https://userapi.com/hls/index.m3u8'
+        },
+        {
+          // Real web-player shape (captured from vk.ru/audios): `url` empty,
+          // audio is the HLS on vkuseraudio, artwork is a flat photo_* map on
+          // vkuserphoto. The old `vkuser` host pattern matched BOTH hosts, so
+          // the cover JPEGs ended up in `urls` and `covers` stayed empty.
+          id: 103, owner_id: 55,
+          artist: 'Blond:ish', title: 'Wunderkammer', duration: 417,
+          url: '',
+          hls: 'https://cs9-3v4.vkuseraudio.ru/s/v1/ac/ABCDEF/index.m3u8?siren=1',
+          thumb: {
+            width: 750, height: 750, id: '457239151',
+            photo_34: 'https://sun1-24.vkuserphoto.ru/impg/a14tnq/Pr.jpg?size=34x34&type=audio',
+            photo_300: 'https://sun1-24.vkuserphoto.ru/impg/a14tnq/Pr.jpg?size=300x300&type=audio',
+            photo_1200: 'https://sun1-24.vkuserphoto.ru/impg/a14tnq/Pr.jpg?size=1200x1200&type=audio'
+          }
         }
       ]
     },

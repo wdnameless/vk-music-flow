@@ -420,7 +420,9 @@ async function runItem(item: QueueItem): Promise<void> {
   let body = await getAudioBytes(a);
   const ext = sniffExt(body);
 
-  if (ext === 'mp3') {
+  // MPEG-TS and MP3 both accept a leading ID3v2 tag (and players skip it); the
+  // AAC/ADTS container does not, so those stay untagged.
+  if (ext === 'mp3' || ext === 'ts') {
     body = stripTag(body);
     const cover = await getCover(a);
     const lyrics = S.lyrics[String(a.id)] || '';
@@ -473,6 +475,42 @@ async function getAudioBytes(a: AudioMeta): Promise<Uint8Array> {
   return assembleHls(txt, hls);
 }
 
+/**
+ * AES-128-CBC HLS segment decryption (RFC 8216 §5.2).
+ *
+ * VK switched its audio CDN to encrypted HLS: `#EXT-X-KEY:METHOD=AES-128` with a
+ * 16-byte key URL and no explicit IV, so the IV is the segment's media sequence
+ * number as a big-endian 128-bit integer. Without this the segments were
+ * concatenated still encrypted and every file landed as unsniffable garbage.
+ */
+async function hlsKeyBytes(uri: string): Promise<Uint8Array> {
+  const b = await rawFetch(uri);
+  if (b.length !== 16) throw new Error(`ожидался 16-байтный ключ, получено ${b.length}`);
+  return b;
+}
+
+function sequenceIv(seq: number): Uint8Array {
+  const iv = new Uint8Array(16);
+  new DataView(iv.buffer).setUint32(12, seq >>> 0, false);
+  return iv;
+}
+
+async function decryptAes128(
+  seg: Uint8Array,
+  keyBytes: Uint8Array,
+  iv: Uint8Array,
+): Promise<Uint8Array> {
+  const key = await crypto.subtle.importKey('raw', keyBytes as BufferSource, 'AES-CBC', false, [
+    'decrypt',
+  ]);
+  const plain = await crypto.subtle.decrypt(
+    { name: 'AES-CBC', iv: iv as BufferSource },
+    key,
+    seg as BufferSource,
+  );
+  return new Uint8Array(plain);
+}
+
 async function assembleHls(txt: string, baseUrl: string): Promise<Uint8Array> {
   let p: M3U8ParseResult = parseM3U8(txt, baseUrl);
   if (p.variant) {
@@ -483,12 +521,21 @@ async function assembleHls(txt: string, baseUrl: string): Promise<Uint8Array> {
   if (!p.segments.length) throw new Error('плейлист без сегментов');
   const parts: Uint8Array[] = [];
   if (p.init) parts.push(await rawFetch(p.init));
+  const keys = new Map<string, Uint8Array>();
   let i = 0;
   for (const s of p.segments) {
     if (i > 5000) break;
-    let seg = await rawFetch(s);
+    let seg = await rawFetch(s.url);
+    if (s.key?.method === 'AES-128' && s.key.uri) {
+      let kb = keys.get(s.key.uri);
+      if (!kb) {
+        kb = await hlsKeyBytes(s.key.uri);
+        keys.set(s.key.uri, kb);
+      }
+      seg = await decryptAes128(seg, kb, s.key.iv ?? sequenceIv(s.seq));
+    }
     if (seg[0] === 0x23 && seg[1] === 0x45 && seg[2] === 0x58) {
-      seg = await assembleHls(new TextDecoder().decode(seg), s);
+      seg = await assembleHls(new TextDecoder().decode(seg), s.url);
     }
     parts.push(seg);
     i++;
@@ -535,24 +582,35 @@ function waitDone(id: number, timeoutMs?: number): Promise<void> {
   });
 }
 
+/**
+ * Hand bytes to chrome.downloads as a `data:` URL.
+ *
+ * MV3 service workers have no `URL.createObjectURL` — it is a Window/Dedicated-
+ * Worker API and is `undefined` here, so the old blob-URL path threw
+ * "URL.createObjectURL is not a function" on every download. `FileReader` IS
+ * available in workers, so it does the base64 encoding natively.
+ *
+ * Cost: the payload lives once as bytes and once as a ~1.33x base64 string.
+ * VK tracks are single-digit MB; verified working to 30 MB in real Chromium.
+ */
+async function bytesToDataUrl(bytes: Uint8Array, mime: string): Promise<string> {
+  const blob = new Blob([bytes as unknown as BlobPart], { type: mime });
+  return await new Promise<string>((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result as string);
+    fr.onerror = () => rej(fr.error ?? new Error('не удалось закодировать данные'));
+    fr.readAsDataURL(blob);
+  });
+}
+
 async function saveBlob(bytes: Uint8Array, fname: string): Promise<void> {
-  // runtime value is always a Uint8Array backed by a plain ArrayBuffer here
-  const blob = new Blob([bytes as unknown as BlobPart]);
-  const url = URL.createObjectURL(blob);
-  try {
-    const id = await chrome.downloads.download({
-      url,
-      filename: fname,
-      conflictAction: 'uniquify',
-    });
-    await waitDone(id);
-  } finally {
-    try {
-      URL.revokeObjectURL(url);
-    } catch {
-      /* ignore */
-    }
-  }
+  const mime = fname.endsWith('.mp3') ? 'audio/mpeg' : 'audio/aac';
+  const id = await chrome.downloads.download({
+    url: await bytesToDataUrl(bytes, mime),
+    filename: fname,
+    conflictAction: 'uniquify',
+  });
+  await waitDone(id);
 }
 
 /** Reuse the one cold-start hydration for all four boot triggers below. */

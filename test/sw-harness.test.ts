@@ -7,7 +7,13 @@ import type {
   RootDirHandle,
   StorageStateResult,
 } from '../src/types.js';
-import { createFakeIndexedDB, makeFakeFsRoot, type FakeFsRoot } from './mock-fs.js';
+import {
+  createFakeIndexedDB,
+  decodeDownloadUrl,
+  installServiceWorkerEnv,
+  makeFakeFsRoot,
+  type FakeFsRoot,
+} from './mock-fs.js';
 
 // Port of test/sw-harness.mjs (v0.2.2 baseline): mocks chrome.*, drives the
 // service-worker pipeline end-to-end and keeps the original 10 checks.
@@ -16,8 +22,6 @@ import { createFakeIndexedDB, makeFakeFsRoot, type FakeFsRoot } from './mock-fs.
 type DlListener = (d: { id: number; state?: { current?: string } }) => void;
 
 const captured = new Map<string, Uint8Array>();
-const blobUrls = new Map<string, Blob | Uint8Array>();
-let uid = 0;
 let dlId = 1;
 let flakyCount = 0; // Phase 1 (c): fetch fails twice, then succeeds
 
@@ -44,6 +48,42 @@ interface MockResponse {
   arrayBuffer: () => Promise<ArrayBuffer>;
 }
 
+/* ---- AES-128 HLS fixture: real ciphertext, produced with WebCrypto so the
+   SW genuinely has to decrypt (CBC, IV = media sequence, RFC 8216 §5.2). ---- */
+const aesKey = new Uint8Array([
+  0x3c, 0xee, 0x98, 0xe1, 0x38, 0xa3, 0x79, 0x86, 0x1f, 0x2a, 0x4b, 0x5c, 0x6d, 0x7e, 0x8f, 0x90,
+]);
+/** TS packets: 188 bytes each, sync byte 0x47. */
+const tsSeg = (fill: number, packets = 3): Uint8Array => {
+  const b = new Uint8Array(188 * packets);
+  for (let i = 0; i < packets; i++) {
+    b[i * 188] = 0x47;
+    for (let j = 1; j < 188; j++) b[i * 188 + j] = (fill + j) & 0xff;
+  }
+  return b;
+};
+const tsPlain = [tsSeg(0x10), tsSeg(0x50)];
+const clearSeg = tsSeg(0x90);
+
+const cbcKey = await crypto.subtle.importKey('raw', aesKey, 'AES-CBC', false, ['encrypt']);
+const sequenceIv = (seq: number): Uint8Array => {
+  const iv = new Uint8Array(16);
+  new DataView(iv.buffer).setUint32(12, seq, false);
+  return iv;
+};
+const encSegs: Uint8Array[] = [];
+for (let seq = 0; seq < tsPlain.length; seq++) {
+  encSegs.push(
+    new Uint8Array(
+      await crypto.subtle.encrypt(
+        { name: 'AES-CBC', iv: sequenceIv(seq) as unknown as BufferSource },
+        cbcKey,
+        tsPlain[seq] as unknown as BufferSource,
+      ),
+    ),
+  );
+}
+
 const mockFetch = (async (url: string | URL | Request): Promise<MockResponse> => {
   const u = String(url);
   const body = (b: Uint8Array): MockResponse => ({
@@ -68,6 +108,24 @@ const mockFetch = (async (url: string | URL | Request): Promise<MockResponse> =>
   if (u.endsWith('seg0.aac')) return body(adtsSeg());
   if (u.endsWith('seg1.aac')) return body(adtsSeg());
   if (u.endsWith('seg2.aac')) return body(adtsSeg());
+  // AES-128 encrypted HLS (VK's real shape since 2026): the manifest carries a
+  // key URI and the segments are ciphertext. The key/segments below are produced
+  // by encrypting real TS payloads with WebCrypto so the SW has to decrypt them.
+  if (u.includes('/enc.m3u8'))
+    return body(
+      new TextEncoder().encode(
+        '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n' +
+          '#EXT-X-KEY:METHOD=AES-128,URI="key.pub?siren=1"\n' +
+          '#EXTINF:2,\nenc0.ts?siren=1\n' +
+          '#EXTINF:4,\nenc1.ts?siren=1\n' +
+          '#EXT-X-KEY:METHOD=NONE\n' +
+          '#EXTINF:3,\nenc2.ts?siren=1\n',
+      ),
+    );
+  if (u.includes('key.pub')) return body(aesKey);
+  if (u.includes('enc0.ts')) return body(encSegs[0] as Uint8Array);
+  if (u.includes('enc1.ts')) return body(encSegs[1] as Uint8Array);
+  if (u.includes('enc2.ts')) return body(clearSeg);
   if (
     u.endsWith('slowtrack.aac') ||
     u.endsWith('slowtrack2.aac') ||
@@ -198,12 +256,12 @@ const mockChrome = {
     },
     async download({ url, filename }: { url: string; filename: string }) {
       dlLog.push(filename);
-      const blob = blobUrls.get(url);
-      if (blob) {
-        const bytes =
-          blob instanceof Uint8Array ? blob : new Uint8Array(await (blob as Blob).arrayBuffer());
-        captured.set(filename, bytes);
-      }
+      // Real chrome.downloads fetches the URL it is handed. The SW hands over a
+      // `data:` URL (MV3 has no URL.createObjectURL), so decode it the same way
+      // the browser would — no blob: registry, which is what used to paper over
+      // the missing-worker-API bug.
+      const bytes = decodeDownloadUrl(url);
+      if (bytes) captured.set(filename, bytes);
       const id = dlId++;
       if (filename.includes('Slow')) {
         // stays in-flight until a Phase 1 race/pause test completes it
@@ -225,16 +283,9 @@ const mockChrome = {
 
 beforeAll(async () => {
   const origFetch = globalThis.fetch;
-  const origCoo = URL.createObjectURL;
-  const origRoo = URL.revokeObjectURL;
 
+  afterCleanup.push(installServiceWorkerEnv());
   (globalThis as { fetch: unknown }).fetch = mockFetch;
-  (URL as unknown as { createObjectURL: (b: Blob) => string }).createObjectURL = (blob: Blob) => {
-    const u = 'blob:mock/' + ++uid;
-    blobUrls.set(u, blob);
-    return u;
-  };
-  (URL as unknown as { revokeObjectURL: (u: string) => void }).revokeObjectURL = () => undefined;
   (globalThis as unknown as { chrome: unknown }).chrome = mockChrome;
 
   try {
@@ -243,8 +294,6 @@ beforeAll(async () => {
     // keep process mocks alive until afterAll; restore later
     afterCleanup.push(() => {
       (globalThis as { fetch: unknown }).fetch = origFetch;
-      (URL as unknown as { createObjectURL: unknown }).createObjectURL = origCoo;
-      (URL as unknown as { revokeObjectURL: unknown }).revokeObjectURL = origRoo;
       delete (globalThis as Record<string, unknown>).chrome;
     });
   }
@@ -506,6 +555,66 @@ describe('Phase 1 (b): permission prompt → failed с storage-permission-needed
   it('ни chrome.downloads, ни FSA-запись не сработали (нет тихого фолбэка)', () => {
     expect(dlAfter).toBe(dlBefore);
     expect(wrAfter).toBe(wrBefore);
+  });
+});
+
+describe('Phase 1 (e): HLS с AES-128 — сегменты расшифровываются в играбельный TS', () => {
+  let entry: JournalEntry | undefined;
+  let file = '';
+
+  beforeAll(async () => {
+    await send({
+      t: 'SETTINGS',
+      patch: { storageMode: 'downloads', minIntervalMs: 0, jitterMs: 0, gapMs: 30 },
+    });
+    await send({
+      t: 'AUDIOS',
+      audios: [
+        {
+          key: '77_777',
+          id: '777',
+          owner: '77',
+          artist: 'Шифр',
+          title: 'Encrypted Track',
+          album: '',
+          year: null,
+          duration: 9,
+          urls: ['https://cdn/enc.m3u8'],
+          covers: [],
+        },
+      ],
+      pl: 'Шифрованные',
+      scanning: true,
+    });
+    await send({ t: 'ENQUEUE', names: ['Шифрованные'] });
+    const seen = await pollUntil(
+      async () => (await journalEntry('Шифрованные/77_777'))?.status === 'done',
+    );
+    expect(seen).toBe(true);
+    entry = await journalEntry('Шифрованные/77_777');
+    file = [...captured.keys()].find((k) => k.includes('Шифрованные/')) ?? '';
+    await send({ t: 'CANCEL' });
+  }, 60000);
+
+  it('файл сохранён как .ts (а не .bin) — контейнер распознан', () => {
+    expect(entry?.status).toBe('done');
+    expect(file).toMatch(/01 Шифр - Encrypted Track\.ts$/);
+  });
+
+  it('расшифрованные сегменты побитово равны исходным TS-данным', () => {
+    // An ID3v2 tag now precedes the payload, so skip frames to reach the media.
+    const bytes = captured.get(file);
+    expect(bytes).toBeTruthy();
+    let off = 0;
+    if (bytes![0] === 0x49 && bytes![1] === 0x44 && bytes![2] === 0x33) {
+      off = 10 + (((bytes![6]! & 127) << 21) | ((bytes![7]! & 127) << 14) | ((bytes![8]! & 127) << 7) | (bytes![9]! & 127));
+    }
+    const media = bytes!.subarray(off);
+    const expected = new Uint8Array([...tsPlain[0]!, ...tsPlain[1]!, ...clearSeg]);
+    expect(media.length).toBe(expected.length);
+    expect([...media]).toEqual([...expected]);
+    // and it is real MPEG-TS: sync byte every 188 bytes
+    for (let i = 0; i < media.length; i += 188) expect(media[i]).toBe(0x47);
   });
 });
 
