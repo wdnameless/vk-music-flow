@@ -22,6 +22,8 @@ import {
   type ProxyStateResult,
   type QueueItem,
   type RuntimeMessage,
+  type PlayerCommand,
+  type PlayerState,
   type StateSnapshot,
   type StorageStateResult,
   type VkAudio,
@@ -32,6 +34,11 @@ import {
 import { applyProxy, checkProxy, installProxyAuth, normalizeProxySettings, pickActiveEntry, readApplied } from '../lib/proxy.js';
 import { installDnrRules, readDnrRules, toDnrRules } from '../lib/dnr.js';
 import { RestrictedTrackError, resolveTrackUrls } from '../lib/resolve.js';
+import {
+  playerSnapshot,
+  rememberPlayerState,
+  sendToPlayer,
+} from '../lib/player-bridge.js';
 import { audioMetaListFromVk } from '../lib/vk-track.js';
 import {
   authState,
@@ -210,6 +217,8 @@ type HandlerResult =
   | VkCatalogResult<VkAudio>
   | VkCatalogResult<VkPlaylist>
   | { ok: boolean; queued: number; skipped: number; total: number }
+  | { ok: boolean; state: PlayerState | null }
+  | { ok: boolean; urls: string[]; via?: string; restricted?: boolean; reason?: string }
   | null;
 
 async function handle(m: RuntimeMessage): Promise<HandlerResult> {
@@ -393,6 +402,82 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
       persist();
       pump();
       return { ok: true, queued: S.queue.length, skipped, total: metas.length };
+    }
+    // ---- Wave 2: playback via the offscreen document ----
+    case 'PLAY_LIST': {
+      const started = await sendToPlayer({ t: 'P_PLAY_QUEUE', tracks: m.tracks, startIndex: m.startIndex ?? 0 });
+      if (started) rememberPlayerState(started as PlayerState);
+      return { ok: started !== null, state: playerSnapshot() };
+    }
+    case 'PLAY_TOGGLE': {
+      // The offscreen document owns the authoritative playing flag; ask before
+      // deciding, otherwise the worker would guess from a possibly stale copy.
+      const now = (await sendToPlayer({ t: 'P_STATE' })) as PlayerState | null;
+      const cmd: PlayerCommand = now?.playing ? { t: 'P_PAUSE' } : { t: 'P_PLAY' };
+      const next = await sendToPlayer(cmd);
+      if (next) rememberPlayerState(next as PlayerState);
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_NEXT': {
+      const s = await sendToPlayer({ t: 'P_NEXT' });
+      if (s) rememberPlayerState(s as PlayerState);
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_PREV': {
+      const s = await sendToPlayer({ t: 'P_PREV' });
+      if (s) rememberPlayerState(s as PlayerState);
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_SEEK': {
+      const s = await sendToPlayer({ t: 'P_SEEK', seconds: m.seconds });
+      if (s) rememberPlayerState(s as PlayerState);
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_VOLUME': {
+      const s = await sendToPlayer({ t: 'P_VOLUME', volume: m.volume });
+      if (s) rememberPlayerState(s as PlayerState);
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'EQ_SET': {
+      // Enabled must be applied BEFORE the curve: the player zeroes every filter
+      // while disabled, so sending only the bands would look like a no-op.
+      let s = await sendToPlayer({ t: 'P_EQ_ENABLED', enabled: m.enabled });
+      if (m.gains.length) s = await sendToPlayer({ t: 'P_EQ_BANDS', gains: m.gains });
+      if (s) rememberPlayerState(s as PlayerState);
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'GET_PLAYER_STATE': {
+      const live = await sendToPlayer({ t: 'P_STATE' });
+      if (live) rememberPlayerState(live as PlayerState);
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'RESOLVE_TRACK': {
+      // One track, resolved on demand. Used by the player (which must not play a
+      // stale URL) and available to the downloader for the same reason.
+      try {
+        const outcome = await resolveTrackUrls({
+          key: m.key,
+          id: m.id,
+          owner: m.owner,
+          artist: m.artist,
+          title: m.title,
+          album: '',
+          year: null,
+          duration: m.duration,
+          urls: m.urls ?? [],
+          covers: m.cover ? [m.cover] : [],
+          access_key: m.accessKey,
+          restricted: m.restricted,
+        });
+        return { ok: true, urls: outcome.urls, via: outcome.via, restricted: outcome.restricted };
+      } catch (e) {
+        return {
+          ok: false,
+          urls: [],
+          reason: e instanceof Error ? e.message : String(e),
+          restricted: e instanceof RestrictedTrackError,
+        };
+      }
     }
     case 'CLEAR_DIR': {
       await clearRootHandle();
@@ -827,6 +912,24 @@ const boot = (): Promise<void> => (booted ??= load());
 installProxyAuth(() => P);
 
 chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
+  const msg = m as { t?: string };
+  // Messages the OFFSCREEN document pushes to us. These must not go through
+  // handle(), which is typed for popup-originated commands.
+  if (msg?.t === 'PLAYER_STATE') {
+    rememberPlayerState((m as { state: PlayerState }).state);
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg?.t === 'PLAYER_ENDED') {
+    // Playback of one track finished; the offscreen document advances the queue
+    // itself, so this is purely for bookkeeping (scrobbling lands here later).
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg?.t === 'PLAYER_READY') {
+    sendResponse({ ok: true });
+    return false;
+  }
   handle(m as RuntimeMessage)
     .then((r) => sendResponse(r))
     .catch((e) => sendResponse({ error: String(e) }));

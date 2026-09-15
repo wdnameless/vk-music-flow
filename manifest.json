@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "VK Music Flow",
-  "version": "0.4.0",
+  "version": "0.5.1",
   "description": "Выгрузка музыки из ВКонтакте: плейлисты -> папки, ID3-теги, обложки, тексты.",
   "minimum_chrome_version": "116",
   "permissions": [
@@ -13,7 +13,8 @@
     "declarativeNetRequestWithHostAccess",
     "webRequest",
     "webRequestAuthProvider",
-    "unlimitedStorage"
+    "unlimitedStorage",
+    "offscreen"
   ],
   "host_permissions": [
     "https://vk.com/*",
@@ -40,6 +41,12 @@
     "default_title": "VK Music Flow",
     "default_popup": "src/popup/popup.html"
   },
+  "web_accessible_resources": [
+    {
+      "resources": ["src/offscreen/offscreen.html"],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "content_scripts": [
     {
       "matches": ["https://vk.com/*", "https://*.vk.com/*", "https://vk.ru/*", "https://*.vk.ru/*"],

@@ -13,5 +13,14 @@ export default defineConfig({
     emptyOutDir: true,
     sourcemap: false,
     chunkSizeWarningLimit: 1024,
+    rollupOptions: {
+      // crxjs only processes HTML pages it finds in the manifest (the popup).
+      // The offscreen document lives in web_accessible_resources, so it must be
+      // declared here or its <script type="module"> is copied unprocessed and
+      // the player never loads.
+      input: {
+        offscreen: 'src/offscreen/offscreen.html',
+      },
+    },
   },
 });

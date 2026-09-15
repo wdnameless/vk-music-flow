@@ -1,16 +1,19 @@
 import type {
+  EqBand,
+  PlayerState,
+  PlayerTrack,
   ProxyCheckResult,
   ProxyEntry,
   ProxyRoutingMode,
   ProxyStateResult,
-  VkAudio,
-  VkAuthState,
-  VkCatalogResult,
   ResponseSample,
   RuntimeMessage,
   ScanResult,
   StateSnapshot,
   StorageStateResult,
+  VkAudio,
+  VkAuthState,
+  VkCatalogResult,
 } from '../types.js';
 import { persistRootHandle, pickDirectory } from '../storage/fs.js';
 
@@ -465,6 +468,191 @@ $('btnVkDownload').addEventListener('click', async () => {
   }
 });
 
+/* ---------------- Wave 2: player bar + equalizer ---------------- */
+
+let pState: PlayerState | null = null;
+/** True while the user drags the seek bar, so polling does not fight them. */
+let seeking = false;
+
+const fmtTime = (s: number): string => {
+  if (!Number.isFinite(s) || s < 0) s = 0;
+  const m = Math.floor(s / 60);
+  return `${m}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+};
+
+function renderEqBands(bands: EqBand[]): void {
+  const host = $('eqBands');
+  if (host.children.length !== bands.length) {
+    host.innerHTML = bands
+      .map(
+        (b) =>
+          `<div class="band"><span class="db" data-db="${b.hz}">0</span>` +
+          `<input type="range" min="-12" max="12" step="1" value="0" data-hz="${b.hz}" />` +
+          `<span class="hz">${b.hz >= 1000 ? b.hz / 1000 + 'k' : b.hz}</span></div>`,
+      )
+      .join('');
+  }
+  for (const b of bands) {
+    const input = host.querySelector<HTMLInputElement>(`input[data-hz="${b.hz}"]`);
+    const label = host.querySelector<HTMLElement>(`[data-db="${b.hz}"]`);
+    if (input && !input.matches(':active')) input.value = String(b.gain);
+    if (label) label.textContent = String(Math.round(b.gain));
+  }
+}
+
+function renderPlayer(): void {
+  const bar = $('playerBar');
+  const s = pState;
+  if (!s || !s.track) {
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+  $('pTitle').textContent = s.track.title || '—';
+  $('pArtist').textContent = s.track.artist || '';
+  const toggle = $btn('pToggle');
+  toggle.textContent = s.playing ? '⏸' : '▶';
+  toggle.classList.toggle('playing', s.playing);
+  $('pTime').textContent = `${fmtTime(s.currentTime)} / ${fmtTime(s.duration)}`;
+  if (!seeking) {
+    const seek = $in('pSeek');
+    seek.value = s.duration > 0 ? String(Math.round((s.currentTime / s.duration) * 1000)) : '0';
+  }
+  const eqOn = $in('eqOn') as HTMLInputElement;
+  if (document.activeElement !== eqOn) eqOn.checked = s.eqEnabled;
+  renderEqBands(s.eqBands);
+}
+
+async function refreshPlayer(): Promise<void> {
+  try {
+    const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'GET_PLAYER_STATE' });
+    pState = r.state;
+  } catch {
+    /* keep the last snapshot */
+  }
+  renderPlayer();
+}
+
+$('pToggle').addEventListener('click', async () => {
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'PLAY_TOGGLE' });
+  pState = r.state;
+  renderPlayer();
+});
+$('pNext').addEventListener('click', async () => {
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'PLAY_NEXT' });
+  pState = r.state;
+  renderPlayer();
+});
+$('pPrev').addEventListener('click', async () => {
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'PLAY_PREV' });
+  pState = r.state;
+  renderPlayer();
+});
+
+$('pSeek').addEventListener('input', () => {
+  seeking = true;
+});
+$('pSeek').addEventListener('change', async (e) => {
+  const v = Number((e.target as HTMLInputElement).value);
+  const d = pState?.duration ?? 0;
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({
+    t: 'PLAY_SEEK',
+    seconds: d > 0 ? (v / 1000) * d : 0,
+  });
+  pState = r.state;
+  seeking = false;
+  renderPlayer();
+});
+
+$('pEq').addEventListener('click', () => {
+  const panel = $('eqPanel');
+  panel.hidden = !panel.hidden;
+});
+
+$('eqOn').addEventListener('change', async (e) => {
+  const enabled = (e.target as HTMLInputElement).checked;
+  const gains = (pState?.eqBands ?? []).map((b) => b.gain);
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'EQ_SET', enabled, gains });
+  pState = r.state;
+  renderPlayer();
+});
+
+$('eqBands').addEventListener('input', (e) => {
+  const el = e.target as HTMLInputElement;
+  if (el.tagName !== 'INPUT') return;
+  const label = $('eqBands').querySelector<HTMLElement>(`[data-db="${el.dataset.hz}"]`);
+  if (label) label.textContent = el.value;
+});
+$('eqBands').addEventListener('change', async () => {
+  const gains = [...$('eqBands').querySelectorAll<HTMLInputElement>('input[data-hz]')].map((i) =>
+    Number(i.value),
+  );
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({
+    t: 'EQ_SET',
+    enabled: true,
+    gains,
+  });
+  pState = r.state;
+  renderPlayer();
+});
+
+$('eqReset').addEventListener('click', async () => {
+  const gains = (pState?.eqBands ?? []).map(() => 0);
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({
+    t: 'EQ_SET',
+    enabled: true,
+    gains,
+  });
+  pState = r.state;
+  renderPlayer();
+});
+
+/** Play the currently ticked catalog tracks in the offscreen player. */
+$('btnVkPlay').addEventListener('click', async () => {
+  const picked = vkTracks.filter((a) => vkSelected.has(vkKey(a)));
+  if (!picked.length) return;
+  $('vkNote').textContent = 'Готовлю треки…';
+  const tracks: PlayerTrack[] = [];
+  for (const a of picked) {
+    // Stream URLs expire, so resolve each one right before playback.
+    const r = await send<{ ok: boolean; urls: string[]; restricted?: boolean }>({
+      t: 'RESOLVE_TRACK',
+      key: vkKey(a),
+      owner: String(a.owner_id),
+      id: String(a.id),
+      accessKey: a.access_key,
+      artist: a.artist || '',
+      title: a.title || '',
+      duration: typeof a.duration === 'number' ? a.duration : null,
+      cover: null,
+    });
+    if (r.ok && r.urls[0]) {
+      tracks.push({
+        key: vkKey(a),
+        id: String(a.id),
+        owner: String(a.owner_id),
+        artist: a.artist || '',
+        title: a.title || '',
+        url: r.urls[0],
+        duration: typeof a.duration === 'number' ? a.duration : null,
+        cover: null,
+      });
+    }
+  }
+  if (!tracks.length) {
+    $('vkNote').textContent = 'Не удалось получить ссылки для воспроизведения.';
+    return;
+  }
+  const res = await send<{ ok: boolean; state: PlayerState | null }>({
+    t: 'PLAY_LIST',
+    key: vkKey(picked[0]!),
+    tracks,
+  });
+  pState = res.state;
+  $('vkNote').textContent = `Играю: ${tracks.length} треков.`;
+  renderPlayer();
+});
+
 $('btnClearDir').addEventListener('click', async () => {
   try {
     storageState = await send<StorageStateResult>({ t: 'CLEAR_DIR' });
@@ -638,5 +826,8 @@ void (async function init() {
   void refreshProxy();
   void refreshDnr();
   void refreshVkAuth();
+  void refreshPlayer();
   setInterval(refresh, 800);
+  // The player lives in the offscreen document, so poll it on its own cadence.
+  setInterval(() => void refreshPlayer(), 700);
 })();

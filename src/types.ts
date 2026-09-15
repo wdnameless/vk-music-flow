@@ -168,6 +168,48 @@ export interface VkApiResponse<T> {
   authFailure: boolean;
 }
 
+/* ------------------------------------------------------------------ */
+/* Wave 2 — playback (offscreen document).                            */
+/*                                                                    */
+/* Measured: Chromium plays VK's AES-128 HLS directly in an           */
+/* HTMLAudioElement (play() resolves, duration is real, currentTime   */
+/* advances), so no HLS library is involved. An offscreen document is */
+/* required because an MV3 worker has no HTMLMediaElement.           */
+/* ------------------------------------------------------------------ */
+
+/** One playable track in the player queue. */
+export interface PlayerTrack {
+  /** Catalog key, `<owner>_<id>`. */
+  key: string;
+  id: string;
+  owner: string;
+  artist: string;
+  title: string;
+  /** Freshly resolved stream URL (VK links expire). */
+  url: string;
+  duration: number | null;
+  cover: string | null;
+}
+
+/** One equalizer band state. */
+export interface EqBand {
+  hz: number;
+  gain: number;
+}
+
+/** Player snapshot pushed to the UI. */
+export interface PlayerState {
+  track: PlayerTrack | null;
+  index: number;
+  total: number;
+  playing: boolean;
+  currentTime: number;
+  duration: number;
+  volume: number;
+  eqEnabled: boolean;
+  eqBands: EqBand[];
+}
+
 /** A declarativeNetRequest rule owned by this extension (see lib/dnr.ts). */
 export interface HeaderRule {
   id: number;
@@ -390,7 +432,50 @@ export type RuntimeMessage =
    * The SW converts them to catalog entries (keeping access_key/restricted) so
    * the downloader can re-resolve a fresh URL at download time.
    */
-  | { t: 'VK_ENQUEUE'; name: string; audios: VkAudio[] };
+  | { t: 'VK_ENQUEUE'; name: string; audios: VkAudio[] }
+  // Wave 2 — playback (worker -> offscreen, and offscreen -> worker):
+  | { t: 'PLAYER_READY' }
+  | { t: 'PLAYER_STATE'; state: PlayerState }
+  | { t: 'PLAYER_ENDED'; track: PlayerTrack }
+  // Playback control (popup -> worker -> offscreen):
+  | { t: 'PLAY_LIST'; key: string; tracks: PlayerTrack[]; startIndex?: number }
+  | { t: 'PLAY_TOGGLE' }
+  | { t: 'PLAY_NEXT' }
+  | { t: 'PLAY_PREV' }
+  | { t: 'PLAY_SEEK'; seconds: number }
+  | { t: 'PLAY_VOLUME'; volume: number }
+  | { t: 'GET_PLAYER_STATE' }
+  | { t: 'EQ_SET'; enabled: boolean; gains: number[] }
+  /**
+   * Resolve a fresh stream URL for one track (playback and download both need
+   * this, because VK stream URLs expire). `via` reports which source answered.
+   */
+  | {
+      t: 'RESOLVE_TRACK';
+      key: string;
+      owner: string;
+      id: string;
+      accessKey?: string;
+      artist: string;
+      title: string;
+      duration: number | null;
+      cover: string | null;
+      restricted?: number;
+      urls?: string[];
+    };
+
+/** Commands the worker relays into the offscreen document. */
+export type PlayerCommand =
+  | { t: 'P_PLAY_QUEUE'; tracks: PlayerTrack[]; startIndex?: number }
+  | { t: 'P_PLAY' }
+  | { t: 'P_PAUSE' }
+  | { t: 'P_NEXT' }
+  | { t: 'P_PREV' }
+  | { t: 'P_SEEK'; seconds: number }
+  | { t: 'P_VOLUME'; volume: number }
+  | { t: 'P_EQ_ENABLED'; enabled: boolean }
+  | { t: 'P_EQ_BANDS'; gains: number[] }
+  | { t: 'P_STATE' };
 
 /** Commands the popup sends to the isolated-world collector content script. */
 export type CollectorCommand =

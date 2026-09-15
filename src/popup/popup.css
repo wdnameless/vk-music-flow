@@ -85,3 +85,65 @@ input[type=range] { width: 100%; }
 .empty { color: #6d7076; font-size: 12px; padding: 6px 2px; }
 .mono { font-family: Consolas, monospace; color: #71aaeb; }
 code { background: #26262a; padding: 1px 4px; border-radius: 4px; font-size: 11px; }
+
+/* ---- Wave 2: player bar + equalizer ---- */
+.player-bar {
+  border-top: 1px solid #2a2a2c;
+  padding: 8px 10px;
+  background: #1b1b1d;
+  position: sticky;
+  bottom: 0;
+}
+.player-now {
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 6px;
+}
+.player-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.player-controls button {
+  min-width: 30px;
+  padding: 4px 7px;
+}
+.player-controls #pSeek { flex: 1; min-width: 60px; }
+.player-controls #pTime { white-space: nowrap; font-size: 11px; }
+#pToggle.playing { color: #71aaeb; border-color: #3a5a80; }
+.eq-panel {
+  margin-top: 8px;
+  border-top: 1px solid #2a2a2c;
+  padding-top: 6px;
+}
+.eq-bands {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 74px;
+  margin: 6px 0;
+}
+.eq-bands .band {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+}
+.eq-bands input[type='range'] {
+  width: 20px;
+  height: 56px;
+  writing-mode: vertical-lr;
+  direction: rtl;
+  padding: 0;
+}
+.eq-bands .hz {
+  font-size: 8.5px;
+  color: #8b8f96;
+  margin-top: 2px;
+}
+.eq-bands .db {
+  font-size: 8.5px;
+  color: #71aaeb;
+}

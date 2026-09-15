@@ -49,8 +49,11 @@
         <span id="vkCount" class="muted"></span>
       </div>
       <ul id="vkList" class="list"></ul>
+      <div class="row">
+        <button id="btnVkPlay" class="primary">▶ Слушать выбранное</button>
+        <button id="btnVkDownload">Скачать выбранное</button>
+      </div>
       <input id="vkPlaylistName" type="text" placeholder="Имя плейлиста для скачивания" />
-      <button id="btnVkDownload" class="primary">Скачать выбранное</button>
       <div id="vkNote" class="hint small"></div>
     </section>
 
@@ -143,6 +146,27 @@
       <hr />
       <button id="btnReset" class="danger">Сбросить каталог</button>
     </section>
+
+    <div id="playerBar" class="player-bar" hidden>
+      <div class="player-now">
+        <b id="pTitle">—</b> <span id="pArtist" class="muted"></span>
+      </div>
+      <div class="player-controls">
+        <button id="pPrev" title="Предыдущий">⏮</button>
+        <button id="pToggle" title="Пуск/пауза">▶</button>
+        <button id="pNext" title="Следующий">⏭</button>
+        <span id="pTime" class="mono muted">0:00 / 0:00</span>
+        <input id="pSeek" type="range" min="0" max="1000" value="0" />
+        <button id="pEq" title="Эквалайзер">EQ</button>
+      </div>
+      <div id="eqPanel" class="eq-panel" hidden>
+        <label class="row"
+          ><input id="eqOn" type="checkbox" /> Эквалайзер</label
+        >
+        <div id="eqBands" class="eq-bands"></div>
+        <button id="eqReset">Сбросить</button>
+      </div>
+    </div>
 
     <script type="module" src="popup.ts"></script>
   </body>
