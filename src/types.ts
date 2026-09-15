@@ -91,6 +91,77 @@ export interface ProxyCheckResult {
   error?: string;
 }
 
+/* ------------------------------------------------------------------ */
+/* Wave 2 — VK API layer.                                             */
+/* ------------------------------------------------------------------ */
+
+/** A minted VK API bearer (see lib/vk-auth.ts). */
+export interface VkToken {
+  access_token: string;
+  user_id: number;
+  /** Unix seconds. */
+  expires: number;
+}
+
+/** Auth state the popup renders. */
+export interface VkAuthState {
+  signedIn: boolean;
+  userId: number | null;
+  expiresAt: number | null;
+  /** Human-readable reason when signedIn === false. */
+  reason: string | null;
+}
+
+/**
+ * Uniform response for every catalog request, so the UI can render one shape
+ * whether it asked for own tracks, a playlist, search or recommendations.
+ */
+export interface VkCatalogResult<T> {
+  ok: boolean;
+  items: T[];
+  /** Present when ok === false (typically "not signed in to VK"). */
+  reason?: string | null;
+}
+
+/** One track as returned by api.vk.ru/method (only fields we use). */
+export interface VkAudio {
+  id: number;
+  owner_id: number;
+  artist: string;
+  title: string;
+  duration?: number;
+  access_key?: string;
+  /** Usually "" — VK stopped serving playable URLs from the API. */
+  url?: string;
+  thumb?: Record<string, string>;
+  album?: { id?: number; title?: string } | null;
+  main_artists?: { name?: string }[];
+  lyrics_id?: number;
+  /** Present on ads/promoted entries. */
+  ads?: unknown;
+  is_explicit?: boolean;
+}
+
+/** A playlist / album entry. */
+export interface VkPlaylist {
+  id: number;
+  owner_id: number;
+  title: string;
+  count?: number;
+  /** Present for community/album playlists. */
+  access_key?: string;
+  thumb?: Record<string, string>;
+}
+
+/** Generic VK API envelope. */
+export interface VkApiResponse<T> {
+  ok: boolean;
+  data: T | null;
+  error: { error_code?: number; error_msg?: string; error_info?: string } | null;
+  /** True when the failure looks like an expired/invalid token. */
+  authFailure: boolean;
+}
+
 /** A declarativeNetRequest rule owned by this extension (see lib/dnr.ts). */
 export interface HeaderRule {
   id: number;
@@ -286,7 +357,16 @@ export type RuntimeMessage =
   | { t: 'SET_PROXY_ACTIVE'; id: string | null }
   | { t: 'CHECK_PROXY'; id?: string }
   | { t: 'GET_DNR_STATE' }
-  | { t: 'INSTALL_DNR' };
+  | { t: 'INSTALL_DNR' }
+  // Wave 2 — VK session / catalog:
+  | { t: 'GET_VK_AUTH' }
+  | { t: 'VK_LOGIN' }
+  | { t: 'VK_LOGOUT' }
+  | { t: 'VK_MY_AUDIOS'; count?: number; offset?: number }
+  | { t: 'VK_PLAYLISTS' }
+  | { t: 'VK_PLAYLIST_AUDIOS'; ownerId: number; playlistId: number; accessKey?: string }
+  | { t: 'VK_SEARCH'; q: string }
+  | { t: 'VK_RECOMMENDATIONS' };
 
 /** Commands the popup sends to the isolated-world collector content script. */
 export type CollectorCommand =

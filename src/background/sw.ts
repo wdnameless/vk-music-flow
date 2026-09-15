@@ -24,9 +24,22 @@ import {
   type RuntimeMessage,
   type StateSnapshot,
   type StorageStateResult,
+  type VkAudio,
+  type VkAuthState,
+  type VkCatalogResult,
+  type VkPlaylist,
 } from '../types.js';
 import { applyProxy, checkProxy, installProxyAuth, normalizeProxySettings, pickActiveEntry, readApplied } from '../lib/proxy.js';
 import { installDnrRules, readDnrRules, toDnrRules } from '../lib/dnr.js';
+import {
+  authState,
+  getMyAudios,
+  getPlaylistAudios,
+  getPlaylists,
+  getRecommendations,
+  searchAudios,
+} from '../lib/vk-api.js';
+import { clearToken } from '../lib/vk-auth.js';
 
 const SKEY = 'vmf_state_v1';
 const PKEY = 'vmf_proxy_v1';
@@ -191,6 +204,9 @@ type HandlerResult =
   | ProxyStateResult
   | ProxyCheckResult
   | { ok: boolean; ids: number[]; rules: number; error: string | null }
+  | VkAuthState
+  | VkCatalogResult<VkAudio>
+  | VkCatalogResult<VkPlaylist>
   | null;
 
 async function handle(m: RuntimeMessage): Promise<HandlerResult> {
@@ -311,6 +327,41 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
     case 'INSTALL_DNR': {
       const r = await installDnrRules();
       return { ok: r.ok, ids: r.ids, rules: toDnrRules().length, error: r.error };
+    }
+    // ---- Wave 2: VK session + catalog ----
+    case 'GET_VK_AUTH': {
+      return await authState();
+    }
+    case 'VK_LOGIN': {
+      await clearToken();
+      return await authState();
+    }
+    case 'VK_LOGOUT': {
+      await clearToken();
+      return await authState();
+    }
+    case 'VK_MY_AUDIOS': {
+      const s = await authState();
+      if (!s.signedIn || !s.userId) return { ok: false, items: [], reason: s.reason };
+      const items = await getMyAudios(s.userId, m.count ?? 50, m.offset ?? 0);
+      return { ok: true, items };
+    }
+    case 'VK_PLAYLISTS': {
+      const s = await authState();
+      if (!s.signedIn || !s.userId) return { ok: false, items: [], reason: s.reason };
+      return { ok: true, items: await getPlaylists(s.userId) };
+    }
+    case 'VK_PLAYLIST_AUDIOS': {
+      const items = await getPlaylistAudios(m.ownerId, m.playlistId, m.accessKey);
+      return { ok: true, items };
+    }
+    case 'VK_SEARCH': {
+      return { ok: true, items: await searchAudios(m.q) };
+    }
+    case 'VK_RECOMMENDATIONS': {
+      const s = await authState();
+      if (!s.signedIn || !s.userId) return { ok: false, items: [], reason: s.reason };
+      return { ok: true, items: await getRecommendations(s.userId) };
     }
     case 'CLEAR_DIR': {
       await clearRootHandle();
