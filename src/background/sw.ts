@@ -11,6 +11,7 @@ import {
   writeToRoot,
 } from '../storage/fs.js';
 import {
+  DEFAULT_BLOCK_RULES,
   DEFAULT_PROXY_SETTINGS,
   DEFAULT_SETTINGS,
   type AudioMeta,
@@ -22,8 +23,12 @@ import {
   type ProxyStateResult,
   type QueueItem,
   type RuntimeMessage,
+  type BlockRules,
+  type LastfmAuth,
+  type LyricsResult,
   type PlayerCommand,
   type PlayerState,
+  type PlayerTrack,
   type StateSnapshot,
   type StorageStateResult,
   type VkAudio,
@@ -39,9 +44,21 @@ import {
   rememberPlayerState,
   sendToPlayer,
 } from '../lib/player-bridge.js';
+import {
+  fetchLyrics,
+  filterPlayable,
+  lastfmCall,
+  lastfmNowPlaying,
+  lastfmScrobble,
+  normalizeBlockRules,
+  normalizeLastfm,
+  parseLyricsResponse,
+  shouldScrobble,
+} from '../lib/integrations.js';
 import { audioMetaListFromVk } from '../lib/vk-track.js';
 import {
   authState,
+  vkCall,
   getMyAudios,
   getPlaylistAudios,
   getPlaylists,
@@ -52,6 +69,8 @@ import { clearToken } from '../lib/vk-auth.js';
 
 const SKEY = 'vmf_state_v1';
 const PKEY = 'vmf_proxy_v1';
+const RKEY = 'vmf_rules_v1';
+const LKEY = 'vmf_lastfm_v1';
 
 let S: FlowState = {
   audios: {},
@@ -65,6 +84,12 @@ let S: FlowState = {
 
 /** Proxy routing config, persisted separately from the download catalog. */
 let P: ProxySettings = { ...DEFAULT_PROXY_SETTINGS, entries: [] };
+
+/** Listening preferences (block list / dislikes), persisted separately. */
+let R: BlockRules = { ...DEFAULT_BLOCK_RULES, blockedArtists: [], disliked: [] };
+
+/** Last.fm credentials, persisted separately. */
+let L: LastfmAuth = { apiKey: '', secret: '', sessionKey: null, username: null };
 
 let pumping = false;
 let stopFlag = false; // CANCEL: stop loops + drop pending
@@ -101,8 +126,10 @@ async function load(): Promise<void> {
   // the routing into Chromium. DNR must go in first: VK rejects token minting
   // from an extension origin until the Origin header is spoofed.
   try {
-    const o = await chrome.storage.local.get(PKEY);
+    const o = await chrome.storage.local.get([PKEY, RKEY, LKEY]);
     P = normalizeProxySettings(o[PKEY]);
+    R = normalizeBlockRules(o[RKEY]);
+    L = normalizeLastfm(o[LKEY]);
     await installDnrRules();
     await applyProxy(P);
   } catch {
@@ -142,6 +169,26 @@ function persist(): void {
       /* best-effort */
     });
   }, 400);
+}
+
+let saveRT: number | undefined;
+function persistRules(): void {
+  clearTimeout(saveRT);
+  saveRT = setTimeout(() => {
+    chrome.storage.local.set({ [RKEY]: JSON.parse(JSON.stringify(R)) }).catch(() => {
+      /* best-effort */
+    });
+  }, 200) as unknown as number;
+}
+
+let saveLT: number | undefined;
+function persistLastfm(): void {
+  clearTimeout(saveLT);
+  saveLT = setTimeout(() => {
+    chrome.storage.local.set({ [LKEY]: JSON.parse(JSON.stringify(L)) }).catch(() => {
+      /* best-effort */
+    });
+  }, 200) as unknown as number;
 }
 
 let savePT: number | undefined;
@@ -217,8 +264,11 @@ type HandlerResult =
   | VkCatalogResult<VkAudio>
   | VkCatalogResult<VkPlaylist>
   | { ok: boolean; queued: number; skipped: number; total: number }
-  | { ok: boolean; state: PlayerState | null }
+  | { ok: boolean; state: PlayerState | null; skipped?: number }
   | { ok: boolean; urls: string[]; via?: string; restricted?: boolean; reason?: string }
+  | { ok: boolean; rules: BlockRules; disliked?: boolean }
+  | { ok: boolean; lyrics: LyricsResult | null; error?: string }
+  | { ok: boolean; auth: LastfmAuth; enabled: boolean; error?: string }
   | null;
 
 async function handle(m: RuntimeMessage): Promise<HandlerResult> {
@@ -405,9 +455,15 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
     }
     // ---- Wave 2: playback via the offscreen document ----
     case 'PLAY_LIST': {
-      const started = await sendToPlayer({ t: 'P_PLAY_QUEUE', tracks: m.tracks, startIndex: m.startIndex ?? 0 });
+      // Block list / dislikes are applied here so every entry point (catalog,
+      // playlist, search) gets the same behaviour without repeating the check.
+      const allowed = filterPlayable(m.tracks, R);
+      const skipped = m.tracks.length - allowed.length;
+      const started = allowed.length
+        ? await sendToPlayer({ t: 'P_PLAY_QUEUE', tracks: allowed, startIndex: m.startIndex ?? 0 })
+        : null;
       if (started) rememberPlayerState(started as PlayerState);
-      return { ok: started !== null, state: playerSnapshot() };
+      return { ok: started !== null, state: playerSnapshot(), skipped };
     }
     case 'PLAY_TOGGLE': {
       // The offscreen document owns the authoritative playing flag; ask before
@@ -478,6 +534,62 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
           restricted: e instanceof RestrictedTrackError,
         };
       }
+    }
+    // ---- Wave 3: listening preferences + integrations ----
+    case 'GET_BLOCK_RULES': {
+      return { ok: true, rules: R };
+    }
+    case 'SET_BLOCKED_ARTISTS': {
+      R = { ...R, blockedArtists: m.artists.filter((a) => a.trim().length > 0) };
+      persistRules();
+      return { ok: true, rules: R };
+    }
+    case 'TOGGLE_DISLIKE': {
+      const key = `${m.owner}_${m.id}`;
+      const has = R.disliked.includes(key);
+      R = { ...R, disliked: has ? R.disliked.filter((k) => k !== key) : [...R.disliked, key] };
+      persistRules();
+      return { ok: true, rules: R, disliked: !has };
+    }
+    case 'GET_LYRICS': {
+      // VK's own endpoint is unreachable (it needs a lyrics_id VK no longer
+      // returns), so the fallback provider is the real path. The VK attempt is
+      // kept first so it resumes automatically if that field comes back.
+      if (m.lyricsId) {
+        const r = await vkCall<{ lyrics?: { text?: string; lyrics_id?: number } }>('audio.getLyrics', {
+          lyrics_id: m.lyricsId,
+        });
+        const parsed = r.ok ? parseLyricsResponse(r.data) : null;
+        if (parsed) return { ok: true, lyrics: parsed };
+      }
+      const meta = S.audios[`${m.owner}_${m.id}`];
+      const res = await fetchLyrics(meta?.artist ?? '', meta?.title ?? '');
+      return { ok: res.ok, lyrics: res.lyrics, error: res.error };
+    }
+    case 'GET_LASTFM': {
+      return { ok: true, auth: L, enabled: !!L.sessionKey };
+    }
+    case 'SET_LASTFM': {
+      L = {
+        apiKey: m.apiKey.trim(),
+        secret: m.secret.trim(),
+        sessionKey: m.sessionKey?.trim() || null,
+        username: m.username?.trim() || null,
+      };
+      persistLastfm();
+      return { ok: true, auth: L, enabled: !!L.sessionKey };
+    }
+    case 'LASTFM_LINK': {
+      // Exchange the desktop-auth token for a session key.
+      const r = await lastfmCall('auth.getSession', { token: m.token }, {
+        apiKey: L.apiKey,
+        secret: L.secret,
+      });
+      const session = (r.raw as { session?: { key?: string; name?: string } } | undefined)?.session;
+      if (!r.ok || !session?.key) return { ok: false, error: r.error ?? 'не удалось получить сессию' };
+      L = { ...L, sessionKey: session.key, username: session.name ?? null };
+      persistLastfm();
+      return { ok: true, auth: L, enabled: true };
     }
     case 'CLEAR_DIR': {
       await clearRootHandle();
@@ -911,18 +1023,70 @@ const boot = (): Promise<void> => (booted ??= load());
 // synchronously on every worker start, even when it only wakes for an event.
 installProxyAuth(() => P);
 
+/** Track the offscreen document is currently playing, for scrobbling. */
+let nowPlaying: { track: PlayerTrack; startedAt: number; scrobbled: boolean } | null = null;
+
+chrome.commands?.onCommand.addListener((cmd) => {
+  void (async () => {
+    switch (cmd) {
+      case 'play-pause':
+        await handle({ t: 'PLAY_TOGGLE' } as RuntimeMessage);
+        break;
+      case 'next':
+        await handle({ t: 'PLAY_NEXT' } as RuntimeMessage);
+        break;
+      case 'prev':
+        await handle({ t: 'PLAY_PREV' } as RuntimeMessage);
+        break;
+      case 'volume-up':
+      case 'volume-down': {
+        const s = playerSnapshot();
+        const delta = cmd === 'volume-up' ? 0.1 : -0.1;
+        const next = Math.max(0, Math.min(1, (s?.volume ?? 1) + delta));
+        await handle({ t: 'PLAY_VOLUME', volume: next } as RuntimeMessage);
+        break;
+      }
+    }
+  })();
+});
+
 chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
   const msg = m as { t?: string };
   // Messages the OFFSCREEN document pushes to us. These must not go through
   // handle(), which is typed for popup-originated commands.
   if (msg?.t === 'PLAYER_STATE') {
-    rememberPlayerState((m as { state: PlayerState }).state);
+    const state = (m as { state: PlayerState }).state;
+    rememberPlayerState(state);
+    // A new track starts our scrobble window; the offscreen document owns
+    // advancing, so we only observe here.
+    if (state.track && state.track.key !== nowPlaying?.track.key) {
+      nowPlaying = { track: state.track, startedAt: Date.now(), scrobbled: false };
+      if (L.sessionKey) {
+        void lastfmNowPlaying(state.track, {
+          apiKey: L.apiKey,
+          secret: L.secret,
+          sessionKey: L.sessionKey,
+        });
+      }
+    }
+    // Scrobble once the play qualifies, without waiting for the track to end
+    // (Last.fm's rule is about elapsed play time, not completion).
+    if (
+      nowPlaying &&
+      !nowPlaying.scrobbled &&
+      shouldScrobble(state.currentTime, state.duration || nowPlaying.track.duration, !!L.sessionKey)
+    ) {
+      nowPlaying.scrobbled = true;
+      void lastfmScrobble(
+        nowPlaying.track,
+        nowPlaying.startedAt,
+        { apiKey: L.apiKey, secret: L.secret, sessionKey: L.sessionKey ?? '' },
+      );
+    }
     sendResponse({ ok: true });
     return false;
   }
   if (msg?.t === 'PLAYER_ENDED') {
-    // Playback of one track finished; the offscreen document advances the queue
-    // itself, so this is purely for bookkeeping (scrobbling lands here later).
     sendResponse({ ok: true });
     return false;
   }

@@ -210,6 +210,34 @@ export interface PlayerState {
   eqBands: EqBand[];
 }
 
+/* ------------------------------------------------------------------ */
+/* Wave 3 — listening preferences and integrations.                    */
+/* ------------------------------------------------------------------ */
+
+/** Block list / dislike state that the player consults before each track. */
+export interface BlockRules {
+  /** Artist names; matched case- and punctuation-insensitively. */
+  blockedArtists: string[];
+  /** Disliked tracks as `<owner>_<id>`. */
+  disliked: string[];
+}
+
+export const DEFAULT_BLOCK_RULES: BlockRules = { blockedArtists: [], disliked: [] };
+
+/** Lyrics lookup outcome. */
+export interface LyricsResult {
+  text: string;
+  id?: number;
+}
+
+/** Last.fm credentials (session key obtained via desktop auth). */
+export interface LastfmAuth {
+  apiKey: string;
+  secret: string;
+  sessionKey: string | null;
+  username: string | null;
+}
+
 /** A declarativeNetRequest rule owned by this extension (see lib/dnr.ts). */
 export interface HeaderRule {
   id: number;
@@ -462,7 +490,15 @@ export type RuntimeMessage =
       cover: string | null;
       restricted?: number;
       urls?: string[];
-    };
+    }
+  // Wave 3 — listening preferences + integrations:
+  | { t: 'GET_BLOCK_RULES' }
+  | { t: 'SET_BLOCKED_ARTISTS'; artists: string[] }
+  | { t: 'TOGGLE_DISLIKE'; owner: string; id: string }
+  | { t: 'GET_LYRICS'; owner: string; id: string; lyricsId?: number }
+  | { t: 'GET_LASTFM' }
+  | { t: 'SET_LASTFM'; apiKey: string; secret: string; sessionKey?: string; username?: string }
+  | { t: 'LASTFM_LINK'; token: string };
 
 /** Commands the worker relays into the offscreen document. */
 export type PlayerCommand =

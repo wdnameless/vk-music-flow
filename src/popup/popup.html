@@ -144,6 +144,22 @@
       <label>Пауза между запусками, мс</label>
       <input id="gap" type="number" min="100" max="5000" step="50" value="450" />
       <hr />
+      <h3>Пропуск треков</h3>
+      <p class="hint small">Артисты через запятую — их треки не будут играть.</p>
+      <input id="blockedArtists" type="text" placeholder="Например: Кино, AC/DC" spellcheck="false" />
+      <div id="blockedState" class="hint small"></div>
+
+      <hr />
+      <h3>Last.fm (скробблинг)</h3>
+      <input id="lfApiKey" type="text" placeholder="API key" spellcheck="false" />
+      <input id="lfSecret" type="text" placeholder="Shared secret" spellcheck="false" />
+      <div class="row">
+        <button id="btnLfSave">Сохранить ключи</button>
+        <button id="btnLfLogin">Войти</button>
+      </div>
+      <div id="lfState" class="conn"></div>
+
+      <hr />
       <button id="btnReset" class="danger">Сбросить каталог</button>
     </section>
 

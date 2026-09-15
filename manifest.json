@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "VK Music Flow",
-  "version": "0.5.1",
+  "version": "0.6.1",
   "description": "Выгрузка музыки из ВКонтакте: плейлисты -> папки, ID3-теги, обложки, тексты.",
   "minimum_chrome_version": "116",
   "permissions": [
@@ -31,7 +31,8 @@
     "https://*.vkuservideo.net/*",
     "https://*.vkusercontent.ru/*",
     "https://*.vkuseraudio.ru/*",
-    "https://*.vkuserphoto.ru/*"
+    "https://*.vkuserphoto.ru/*",
+    "https://api.lyrics.ovh/*"
   ],
   "background": {
     "service_worker": "src/background/sw.ts",
@@ -43,20 +44,60 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["src/offscreen/offscreen.html"],
-      "matches": ["<all_urls>"]
+      "resources": [
+        "src/offscreen/offscreen.html"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ],
+  "commands": {
+    "play-pause": {
+      "description": "Воспроизвести / Пауза",
+      "global": true
+    },
+    "next": {
+      "description": "Следующий трек",
+      "global": true
+    },
+    "prev": {
+      "description": "Предыдущий трек",
+      "global": true
+    },
+    "volume-up": {
+      "description": "Громче",
+      "global": true
+    },
+    "volume-down": {
+      "description": "Тише",
+      "global": true
+    }
+  },
   "content_scripts": [
     {
-      "matches": ["https://vk.com/*", "https://*.vk.com/*", "https://vk.ru/*", "https://*.vk.ru/*"],
-      "js": ["src/content/hook-main.ts"],
+      "matches": [
+        "https://vk.com/*",
+        "https://*.vk.com/*",
+        "https://vk.ru/*",
+        "https://*.vk.ru/*"
+      ],
+      "js": [
+        "src/content/hook-main.ts"
+      ],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
-      "matches": ["https://vk.com/*", "https://*.vk.com/*", "https://vk.ru/*", "https://*.vk.ru/*"],
-      "js": ["src/content/collector.ts"],
+      "matches": [
+        "https://vk.com/*",
+        "https://*.vk.com/*",
+        "https://vk.ru/*",
+        "https://*.vk.ru/*"
+      ],
+      "js": [
+        "src/content/collector.ts"
+      ],
       "run_at": "document_start"
     }
   ]
