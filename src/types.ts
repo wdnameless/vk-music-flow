@@ -238,6 +238,22 @@ export interface LastfmAuth {
   username: string | null;
 }
 
+/**
+ * One play waiting to be scrobbled.
+ *
+ * Scrobbles are queued rather than sent inline: Last.fm is routinely unreachable
+ * (it is blocked in some networks, exactly like VK here), and losing a play
+ * because a request timed out is worse than sending it late. The queue is
+ * persisted and flushed on the next opportunity.
+ */
+export interface ScrobbleQueueItem {
+  artist: string;
+  title: string;
+  duration: number | null;
+  /** Epoch ms when playback started. */
+  startedAt: number;
+}
+
 /** A declarativeNetRequest rule owned by this extension (see lib/dnr.ts). */
 export interface HeaderRule {
   id: number;
@@ -498,7 +514,14 @@ export type RuntimeMessage =
   | { t: 'GET_LYRICS'; owner: string; id: string; lyricsId?: number }
   | { t: 'GET_LASTFM' }
   | { t: 'SET_LASTFM'; apiKey: string; secret: string; sessionKey?: string; username?: string }
-  | { t: 'LASTFM_LINK'; token: string };
+  /** Step 1 of desktop auth: mint a request token, return the authorise URL. */
+  | { t: 'LASTFM_GET_TOKEN' }
+  /** Step 2: exchange the authorised token for a session key. */
+  | { t: 'LASTFM_LINK'; token?: string }
+  | { t: 'LASTFM_UNLINK' }
+  /** Push the queued scrobbles now (used after the network or session returns). */
+  | { t: 'LASTFM_FLUSH' }
+  | { t: 'LASTFM_NOW_PLAYING'; track: { artist: string; title: string; duration?: number | null } };
 
 /** Commands the worker relays into the offscreen document. */
 export type PlayerCommand =

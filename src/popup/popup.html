@@ -151,13 +151,22 @@
 
       <hr />
       <h3>Last.fm (скробблинг)</h3>
+      <p class="hint small">
+        Получи ключи на
+        <a href="https://www.last.fm/api/account/create" target="_blank">last.fm/api</a> и вставь их
+        сюда. Затем нажми «Войти» — откроется страница авторизации, после неё нажми «Готово».
+      </p>
       <input id="lfApiKey" type="text" placeholder="API key" spellcheck="false" />
       <input id="lfSecret" type="text" placeholder="Shared secret" spellcheck="false" />
       <div class="row">
         <button id="btnLfSave">Сохранить ключи</button>
         <button id="btnLfLogin">Войти</button>
+        <button id="btnLfDone" hidden>Готово</button>
+        <button id="btnLfUnlink" hidden>Отключить</button>
       </div>
       <div id="lfState" class="conn"></div>
+      <div id="lfPending" class="hint small"></div>
+      <button id="btnLfFlush" hidden>Отправить отложенные</button>
 
       <hr />
       <button id="btnReset" class="danger">Сбросить каталог</button>

@@ -29,6 +29,7 @@ import {
   type PlayerCommand,
   type PlayerState,
   type PlayerTrack,
+  type ScrobbleQueueItem,
   type StateSnapshot,
   type StorageStateResult,
   type VkAudio,
@@ -47,14 +48,20 @@ import {
 import {
   fetchLyrics,
   filterPlayable,
-  lastfmCall,
-  lastfmNowPlaying,
-  lastfmScrobble,
   normalizeBlockRules,
-  normalizeLastfm,
   parseLyricsResponse,
-  shouldScrobble,
 } from '../lib/integrations.js';
+import {
+  authorizeUrl,
+  exchangeToken,
+  isLinked,
+  isSessionInvalid,
+  normalizeLastfm,
+  nowPlaying as lastfmNowPlaying,
+  requestToken,
+  scrobbleBatch,
+  shouldScrobble,
+} from '../lib/lastfm.js';
 import { audioMetaListFromVk } from '../lib/vk-track.js';
 import {
   authState,
@@ -71,6 +78,8 @@ const SKEY = 'vmf_state_v1';
 const PKEY = 'vmf_proxy_v1';
 const RKEY = 'vmf_rules_v1';
 const LKEY = 'vmf_lastfm_v1';
+const SKEY_SCROBBLE = 'vmf_scrobble_queue_v1';
+const SKEY_LF_TOKEN = 'vmf_lastfm_token_v1';
 
 let S: FlowState = {
   audios: {},
@@ -90,6 +99,10 @@ let R: BlockRules = { ...DEFAULT_BLOCK_RULES, blockedArtists: [], disliked: [] }
 
 /** Last.fm credentials, persisted separately. */
 let L: LastfmAuth = { apiKey: '', secret: '', sessionKey: null, username: null };
+/** Plays waiting to be scrobbled (Last.fm is often unreachable). */
+let scrobbleQ: ScrobbleQueueItem[] = [];
+/** Pending desktop-auth token, between "get token" and "user authorised". */
+let lfPendingToken: string | null = null;
 
 let pumping = false;
 let stopFlag = false; // CANCEL: stop loops + drop pending
@@ -126,10 +139,12 @@ async function load(): Promise<void> {
   // the routing into Chromium. DNR must go in first: VK rejects token minting
   // from an extension origin until the Origin header is spoofed.
   try {
-    const o = await chrome.storage.local.get([PKEY, RKEY, LKEY]);
+    const o = await chrome.storage.local.get([PKEY, RKEY, LKEY, SKEY_SCROBBLE, SKEY_LF_TOKEN]);
     P = normalizeProxySettings(o[PKEY]);
     R = normalizeBlockRules(o[RKEY]);
     L = normalizeLastfm(o[LKEY]);
+    scrobbleQ = normalizeScrobbleQueue(o[SKEY_SCROBBLE]);
+    lfPendingToken = typeof o[SKEY_LF_TOKEN] === 'string' ? o[SKEY_LF_TOKEN] : null;
     await installDnrRules();
     await applyProxy(P);
   } catch {
@@ -185,9 +200,15 @@ let saveLT: number | undefined;
 function persistLastfm(): void {
   clearTimeout(saveLT);
   saveLT = setTimeout(() => {
-    chrome.storage.local.set({ [LKEY]: JSON.parse(JSON.stringify(L)) }).catch(() => {
-      /* best-effort */
-    });
+    chrome.storage.local
+      .set({
+        [LKEY]: JSON.parse(JSON.stringify(L)),
+        [SKEY_SCROBBLE]: JSON.parse(JSON.stringify(scrobbleQ)),
+        [SKEY_LF_TOKEN]: lfPendingToken,
+      })
+      .catch(() => {
+        /* best-effort */
+      });
   }, 200) as unknown as number;
 }
 
@@ -206,6 +227,75 @@ async function proxyState(): Promise<ProxyStateResult> {
   const applied = await readApplied();
   const entry = pickActiveEntry(P);
   return { ok: true, settings: P, applied: { ...applied, proxyFor: applied.error ? null : (entry?.host ?? null) } };
+}
+
+/** Sanitize a stored scrobble backlog. */
+function normalizeScrobbleQueue(raw: unknown): ScrobbleQueueItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((x): x is ScrobbleQueueItem => {
+      const o = x as Partial<ScrobbleQueueItem> | null;
+      return (
+        !!o &&
+        typeof o.artist === 'string' &&
+        typeof o.title === 'string' &&
+        typeof o.startedAt === 'number' &&
+        o.artist.trim().length > 0 &&
+        o.title.trim().length > 0
+      );
+    })
+    .slice(-500)
+    .map((x) => ({
+      artist: x.artist,
+      title: x.title,
+      duration: typeof x.duration === 'number' ? x.duration : null,
+      startedAt: x.startedAt,
+    }));
+}
+
+/** True when Last.fm has everything needed to scrobble. */
+function lastfmReady(): boolean {
+  return isLinked(L);
+}
+
+/**
+ * Flush the scrobble backlog.
+ *
+ * Last.fm is commonly unreachable (it is blocked in the same networks that block
+ * VK), so failures keep the queue instead of dropping plays. A dead session key
+ * is different: retrying it forever would never succeed, so the backlog is kept
+ * but the session is surfaced as broken for the user to re-link.
+ */
+async function flushScrobbles(): Promise<{ ok: boolean; sent: number; pending: number; error?: string }> {
+  if (!lastfmReady() || !scrobbleQ.length) {
+    return { ok: true, sent: 0, pending: scrobbleQ.length };
+  }
+  let sent = 0;
+  while (scrobbleQ.length) {
+    const batch = scrobbleQ.slice(0, 50);
+    const r = await scrobbleBatch(batch, L);
+    if (!r.ok) {
+      const code = (r as { code?: number }).code;
+      if (isSessionInvalid(code)) {
+        // Session is dead: keep the backlog, but stop pretending it will work.
+        return { ok: false, sent, pending: scrobbleQ.length, error: r.error ?? 'сессия Last.fm недействительна' };
+      }
+      return { ok: false, sent, pending: scrobbleQ.length, error: r.error };
+    }
+    scrobbleQ.splice(0, batch.length);
+    sent += r.accepted ?? batch.length;
+    persistLastfm();
+  }
+  return { ok: true, sent, pending: 0 };
+}
+
+/** Queue a finished play and try to send it right away. */
+async function enqueueScrobble(item: ScrobbleQueueItem): Promise<void> {
+  scrobbleQ.push(item);
+  // Bound the backlog so a long offline stretch cannot grow it without limit.
+  if (scrobbleQ.length > 500) scrobbleQ = scrobbleQ.slice(-500);
+  persistLastfm();
+  await flushScrobbles();
 }
 
 function mergeAudio(a: AudioMeta): boolean {
@@ -268,7 +358,17 @@ type HandlerResult =
   | { ok: boolean; urls: string[]; via?: string; restricted?: boolean; reason?: string }
   | { ok: boolean; rules: BlockRules; disliked?: boolean }
   | { ok: boolean; lyrics: LyricsResult | null; error?: string }
-  | { ok: boolean; auth: LastfmAuth; enabled: boolean; error?: string }
+  | {
+      ok: boolean;
+      auth?: LastfmAuth;
+      enabled?: boolean;
+      pending?: number;
+      error?: string;
+      authorizeUrl?: string | null;
+      url?: string | null;
+      token?: string | null;
+      sent?: number;
+    }
   | null;
 
 async function handle(m: RuntimeMessage): Promise<HandlerResult> {
@@ -567,29 +667,66 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
       return { ok: res.ok, lyrics: res.lyrics, error: res.error };
     }
     case 'GET_LASTFM': {
-      return { ok: true, auth: L, enabled: !!L.sessionKey };
+      return {
+        ok: true,
+        auth: L,
+        enabled: lastfmReady(),
+        pending: scrobbleQ.length,
+        authorizeUrl: lfPendingToken ? authorizeUrl(L.apiKey, lfPendingToken) : null,
+      };
     }
     case 'SET_LASTFM': {
-      L = {
-        apiKey: m.apiKey.trim(),
-        secret: m.secret.trim(),
-        sessionKey: m.sessionKey?.trim() || null,
-        username: m.username?.trim() || null,
-      };
+      L = normalizeLastfm({
+        apiKey: m.apiKey,
+        secret: m.secret,
+        sessionKey: m.sessionKey ?? L.sessionKey,
+        username: m.username ?? L.username,
+      });
       persistLastfm();
-      return { ok: true, auth: L, enabled: !!L.sessionKey };
+      return { ok: true, auth: L, enabled: lastfmReady(), pending: scrobbleQ.length };
+    }
+    case 'LASTFM_GET_TOKEN': {
+      // Step 1 of desktop auth: mint a request token and hand back the URL the
+      // user must open. A redirect flow is impossible from an extension (no
+      // stable callback URL), so the token is exchanged explicitly afterwards.
+      if (!L.apiKey || !L.secret) {
+        return { ok: false, error: 'сначала сохрани API key и secret', url: null, token: null };
+      }
+      const r = await requestToken(L);
+      if (!r.ok || !r.token) return { ok: false, error: r.error ?? 'токен не получен', url: null, token: null };
+      lfPendingToken = r.token;
+      persistLastfm();
+      return { ok: true, url: authorizeUrl(L.apiKey, r.token), token: r.token };
     }
     case 'LASTFM_LINK': {
-      // Exchange the desktop-auth token for a session key.
-      const r = await lastfmCall('auth.getSession', { token: m.token }, {
-        apiKey: L.apiKey,
-        secret: L.secret,
-      });
-      const session = (r.raw as { session?: { key?: string; name?: string } } | undefined)?.session;
-      if (!r.ok || !session?.key) return { ok: false, error: r.error ?? 'не удалось получить сессию' };
-      L = { ...L, sessionKey: session.key, username: session.name ?? null };
+      // Step 2: exchange the (now authorised) token for a session key.
+      const token = m.token?.trim() || lfPendingToken;
+      if (!token) return { ok: false, enabled: false, error: 'нет токена — начни вход заново' };
+      const r = await exchangeToken(token, L);
+      if (!r.ok || !r.sessionKey) {
+        return { ok: false, enabled: false, error: r.error ?? 'сессия не получена' };
+      }
+      L = { ...L, sessionKey: r.sessionKey, username: r.username ?? null };
+      lfPendingToken = null;
       persistLastfm();
-      return { ok: true, auth: L, enabled: true };
+      // A successful link is the natural moment to push any backlog.
+      const flushed = await flushScrobbles();
+      return { ok: true, enabled: true, auth: L, pending: flushed.pending };
+    }
+    case 'LASTFM_UNLINK': {
+      L = { ...L, sessionKey: null, username: null };
+      lfPendingToken = null;
+      persistLastfm();
+      return { ok: true, auth: L, enabled: false, pending: scrobbleQ.length };
+    }
+    case 'LASTFM_FLUSH': {
+      const f = await flushScrobbles();
+      return { ok: f.ok, sent: f.sent, pending: scrobbleQ.length, error: f.error };
+    }
+    case 'LASTFM_NOW_PLAYING': {
+      if (!lastfmReady()) return { ok: false, error: 'Last.fm не подключён' };
+      const r = await lastfmNowPlaying(m.track, L);
+      return { ok: r.ok, error: r.error };
     }
     case 'CLEAR_DIR': {
       await clearRootHandle();
@@ -1061,27 +1198,23 @@ chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
     // advancing, so we only observe here.
     if (state.track && state.track.key !== nowPlaying?.track.key) {
       nowPlaying = { track: state.track, startedAt: Date.now(), scrobbled: false };
-      if (L.sessionKey) {
-        void lastfmNowPlaying(state.track, {
-          apiKey: L.apiKey,
-          secret: L.secret,
-          sessionKey: L.sessionKey,
-        });
-      }
+      if (lastfmReady()) void lastfmNowPlaying(state.track, L);
     }
     // Scrobble once the play qualifies, without waiting for the track to end
-    // (Last.fm's rule is about elapsed play time, not completion).
+    // (Last.fm's rule is about elapsed play time, not completion). The play goes
+    // through the queue so a Last.fm outage does not lose it.
     if (
       nowPlaying &&
       !nowPlaying.scrobbled &&
-      shouldScrobble(state.currentTime, state.duration || nowPlaying.track.duration, !!L.sessionKey)
+      shouldScrobble(state.currentTime, state.duration || nowPlaying.track.duration, lastfmReady())
     ) {
       nowPlaying.scrobbled = true;
-      void lastfmScrobble(
-        nowPlaying.track,
-        nowPlaying.startedAt,
-        { apiKey: L.apiKey, secret: L.secret, sessionKey: L.sessionKey ?? '' },
-      );
+      void enqueueScrobble({
+        artist: nowPlaying.track.artist,
+        title: nowPlaying.track.title,
+        duration: nowPlaying.track.duration,
+        startedAt: nowPlaying.startedAt,
+      });
     }
     sendResponse({ ok: true });
     return false;

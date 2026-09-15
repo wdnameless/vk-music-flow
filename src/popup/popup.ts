@@ -655,7 +655,95 @@ $('btnVkPlay').addEventListener('click', async () => {
   renderPlayer();
 });
 
-/* ---------------- Wave 3: block list + Last.fm ---------------- */
+/* ---------------- Wave 3: Last.fm ---------------- */
+
+interface LastfmState {
+  ok: boolean;
+  auth: LastfmAuth;
+  enabled: boolean;
+  pending: number;
+  authorizeUrl?: string | null;
+  error?: string;
+}
+
+let lfAuthUrl: string | null = null;
+
+async function refreshLastfm(): Promise<void> {
+  try {
+    const r = await send<LastfmState>({ t: 'GET_LASTFM' });
+    const k = $in('lfApiKey');
+    const s = $in('lfSecret');
+    if (document.activeElement !== k) k.value = r.auth.apiKey;
+    if (document.activeElement !== s) s.value = r.auth.secret;
+
+    $('lfState').textContent = r.enabled
+      ? `Подключён${r.auth.username ? ' как ' + r.auth.username : ''}.`
+      : r.auth.apiKey && r.auth.secret
+        ? 'Ключи сохранены. Нажми «Войти».'
+        : 'Ключи не заданы.';
+
+    lfAuthUrl = r.authorizeUrl ?? null;
+    // "Готово" only appears once a token exists — that is the step that needs
+    // the user to have visited Last.fm and approved it.
+    $btn('btnLfDone').hidden = !r.enabled ? !lfAuthUrl : true;
+    $btn('btnLfUnlink').hidden = !r.enabled;
+    $btn('btnLfFlush').hidden = !r.enabled || r.pending === 0;
+
+    $('lfPending').textContent = r.pending
+      ? `Отложено скробблов: ${r.pending} (Last.fm был недоступен).`
+      : '';
+  } catch {
+    /* keep the last view */
+  }
+}
+
+$('btnLfSave').addEventListener('click', async () => {
+  const r = await send<LastfmState>({
+    t: 'SET_LASTFM',
+    apiKey: $in('lfApiKey').value.trim(),
+    secret: $in('lfSecret').value.trim(),
+  });
+  if (r.error) $('lfState').textContent = r.error;
+  await refreshLastfm();
+});
+
+$('btnLfLogin').addEventListener('click', async () => {
+  const r = await send<{ ok: boolean; url: string | null; error?: string }>({ t: 'LASTFM_GET_TOKEN' });
+  if (!r.ok || !r.url) {
+    $('lfState').textContent = r.error || 'Не удалось получить токен.';
+    return;
+  }
+  // The user authorises on Last.fm, then returns and confirms with «Готово» —
+  // an extension has no stable callback URL, so the flow is completed manually
+  // rather than by redirect.
+  window.open(r.url, '_blank');
+  $('lfState').textContent = 'Открыл Last.fm. Авторизуй доступ и нажми «Готово».';
+  await refreshLastfm();
+});
+
+$('btnLfDone').addEventListener('click', async () => {
+  const r = await send<LastfmState>({ t: 'LASTFM_LINK' });
+  $('lfState').textContent = r.enabled
+    ? `Подключён${r.auth.username ? ' как ' + r.auth.username : ''}.`
+    : r.error || 'Не удалось получить сессию. Повтори «Войти».';
+  await refreshLastfm();
+});
+
+$('btnLfUnlink').addEventListener('click', async () => {
+  await send({ t: 'LASTFM_UNLINK' });
+  await refreshLastfm();
+});
+
+$('btnLfFlush').addEventListener('click', async () => {
+  $('lfPending').textContent = 'Отправляю…';
+  const r = await send<{ ok: boolean; sent: number; pending: number; error?: string }>({
+    t: 'LASTFM_FLUSH',
+  });
+  $('lfPending').textContent = r.ok
+    ? `Отправлено: ${r.sent}. Осталось: ${r.pending}.`
+    : `Не удалось: ${r.error ?? 'ошибка'}. Осталось: ${r.pending}.`;
+  await refreshLastfm();
+});
 
 async function refreshRules(): Promise<void> {
   try {
@@ -677,53 +765,6 @@ $('blockedArtists').addEventListener('change', async (e) => {
     .filter(Boolean);
   await send({ t: 'SET_BLOCKED_ARTISTS', artists });
   await refreshRules();
-});
-
-async function refreshLastfm(): Promise<void> {
-  try {
-    const r = await send<{ ok: boolean; auth: LastfmAuth; enabled: boolean }>({ t: 'GET_LASTFM' });
-    $('lfState').textContent = r.enabled
-      ? `Подключён${r.auth.username ? ' как ' + r.auth.username : ''}.`
-      : r.auth.apiKey
-        ? 'Ключи сохранены, но вход не выполнен.'
-        : 'Не настроено.';
-    const k = $in('lfApiKey');
-    const s = $in('lfSecret');
-    if (document.activeElement !== k) k.value = r.auth.apiKey;
-    if (document.activeElement !== s) s.value = r.auth.secret;
-  } catch {
-    /* keep the last view */
-  }
-}
-
-$('btnLfSave').addEventListener('click', async () => {
-  await send({
-    t: 'SET_LASTFM',
-    apiKey: $in('lfApiKey').value.trim(),
-    secret: $in('lfSecret').value.trim(),
-  });
-  await refreshLastfm();
-});
-
-$('btnLfLogin').addEventListener('click', async () => {
-  const apiKey = $in('lfApiKey').value.trim();
-  if (!apiKey) {
-    $('lfState').textContent = 'Сначала сохрани API key и secret.';
-    return;
-  }
-  // Last.fm desktop auth: open the authorise page, then paste the token back.
-  // A full OAuth callback would need a redirect URI, which an extension has no
-  // stable equivalent of without hosting something.
-  const url = `https://www.last.fm/api/auth/?api_key=${encodeURIComponent(apiKey)}`;
-  window.open(url, '_blank');
-  const token = prompt('После авторизации скопируй token из адресной строки и вставь сюда:');
-  if (!token) return;
-  const r = await send<{ ok: boolean; enabled: boolean; error?: string }>({
-    t: 'LASTFM_LINK',
-    token: token.trim(),
-  });
-  $('lfState').textContent = r.enabled ? 'Подключено.' : r.error || 'Не удалось войти.';
-  await refreshLastfm();
 });
 
 $('btnClearDir').addEventListener('click', async () => {
