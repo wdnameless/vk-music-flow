@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { afterEach, describe, it, vi } from 'vitest';
 
 import { tokenUsable } from '../src/lib/vk-auth.js';
-import { getAudiosById, vkCall } from '../src/lib/vk-api.js';
-import type { VkToken } from '../src/types.js';
+import { getAudiosById, isRestricted, resolveStreamUrls, vkCall } from '../src/lib/vk-api.js';
+import type { VkAudio, VkToken } from '../src/types.js';
 
 // Wave 2 unit tests: token lifecycle + VK API error handling.
 // chrome.* is stubbed per test; no network is touched unless the test says so.
@@ -138,6 +138,63 @@ describe('vk-api: обёртка вызовов', () => {
       false,
       'метод API не должен вызываться без токена',
     );
+  });
+});
+
+describe('vk-api: разрешение ссылок (resolveStreamUrls)', () => {
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  const seed = () =>
+    installChrome({
+      store: { vmf_vk_token_v1: { access_token: 'tok', user_id: 42, expires: nowSec + 3600 } },
+    });
+
+  it('ограниченные треки отделяются от ненайденных', async () => {
+    seed();
+    vi.stubGlobal('fetch', async () =>
+      new Response(
+        JSON.stringify({
+          response: [
+            { owner_id: 1, id: 10, artist: 'A', title: 'ok', url: 'https://cdn/a.m3u8' },
+            { owner_id: 1, id: 11, artist: 'B', title: 'locked', url: '', content_restricted: 2 },
+            { owner_id: 1, id: 12, artist: 'C', title: 'also locked', url: '', content_restricted: 3 },
+            { owner_id: 1, id: 13, artist: 'D', title: 'no url, no flag', url: '' },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    const r = await resolveStreamUrls([
+      { owner_id: 1, id: 10 },
+      { owner_id: 1, id: 11 },
+      { owner_id: 1, id: 12 },
+      { owner_id: 1, id: 13 },
+      { owner_id: 1, id: 99 },
+    ]);
+    assert.deepEqual(r.urls, { '1_10': 'https://cdn/a.m3u8' });
+    assert.deepEqual(r.restricted.sort(), ['1_11', '1_12']);
+    // absent from the response, and a track without url+flag, are both "missing"
+    assert.deepEqual(r.missing.sort(), ['1_13', '1_99']);
+  });
+
+  it('isRestricted распознаёт только коды 2 и 3', () => {
+    assert.equal(isRestricted({ content_restricted: 2 } as VkAudio), true);
+    assert.equal(isRestricted({ content_restricted: 3 } as VkAudio), true);
+    assert.equal(isRestricted({ content_restricted: undefined } as VkAudio), false);
+    assert.equal(isRestricted({ content_restricted: 1 } as VkAudio), false);
+    assert.equal(isRestricted(null), false);
+  });
+
+  it('пустой список не делает запрос', async () => {
+    seed();
+    let called = false;
+    vi.stubGlobal('fetch', async () => {
+      called = true;
+      return new Response('{}', { status: 200 });
+    });
+    const r = await resolveStreamUrls([]);
+    assert.deepEqual(r, { urls: {}, restricted: [], missing: [] });
+    assert.equal(called, false);
   });
 });
 

@@ -181,6 +181,56 @@ export async function searchAudios(q: string, count = 30): Promise<VkAudio[]> {
   return r.ok ? (r.data?.items ?? []) : [];
 }
 
+/**
+ * Tracks VK refuses to hand a stream URL for.
+ *
+ * Measured on a 117-track sample: every track WITHOUT `content_restricted`
+ * carried a playable `url`, while every one with `content_restricted` 2 or 3
+ * carried none — in `audio.get`, in `audio.getById` and without `access_key`.
+ * It is a property of the track, not of the request, so retrying is pointless.
+ */
+export function isRestricted(a: VkAudio | null): boolean {
+  const cr = a?.content_restricted;
+  return cr === 2 || cr === 3;
+}
+
+/**
+ * Resolve playable stream URLs for specific tracks.
+ *
+ * `audio.getById` returns a real `url` for every unrestricted track (verified:
+ * identical URL across repeated `get`/`getById` calls), so the downloader does
+ * NOT need the network hook to obtain links. Restricted tracks come back with
+ * an empty `url` and are reported separately rather than retried.
+ *
+ * Call this at download time, not ahead of it: VK stream URLs expire.
+ */
+export async function resolveStreamUrls(
+  triples: { owner_id: number; id: number; access_key?: string }[],
+): Promise<{
+  urls: Record<string, string>;
+  restricted: string[];
+  missing: string[];
+}> {
+  const urls: Record<string, string> = {};
+  const restricted: string[] = [];
+  const missing: string[] = [];
+  const CHUNK = 50;
+  for (let i = 0; i < triples.length; i += CHUNK) {
+    const batch = triples.slice(i, i + CHUNK);
+    const items = await getAudiosById(batch);
+    const byKey = new Map(items.map((a) => [`${a.owner_id}_${a.id}`, a]));
+    for (const t of batch) {
+      const key = `${t.owner_id}_${t.id}`;
+      const a = byKey.get(key);
+      if (!a) missing.push(key);
+      else if (a.url) urls[key] = a.url;
+      else if (isRestricted(a)) restricted.push(key);
+      else missing.push(key);
+    }
+  }
+  return { urls, restricted, missing };
+}
+
 /** Recommendations derived from the user's own listening. */
 export async function getRecommendations(ownerId: number, count = 30): Promise<VkAudio[]> {
   const r = await vkCall<{ items: VkAudio[] }>('audio.getRecommendations', {

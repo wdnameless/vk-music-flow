@@ -137,6 +137,12 @@ export interface VkAudio {
   album?: { id?: number; title?: string } | null;
   main_artists?: { name?: string }[];
   lyrics_id?: number;
+  /**
+   * VK's playback restriction marker. 2/3 mean the track has no stream URL at
+   * all (measured: 13/13 such tracks returned an empty `url` from every
+   * endpoint), so it can neither be played nor downloaded.
+   */
+  content_restricted?: number;
   /** Present on ads/promoted entries. */
   ads?: unknown;
   is_explicit?: boolean;
