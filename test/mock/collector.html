@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="ru">
-<head><meta charset="UTF-8"><title>collector mock</title><style>.audio_row{height:20px;border-bottom:1px solid #eee}</style></head>
+<head><meta charset="UTF-8"><title>collector mock</title><style>[data-audio-id]{height:20px;border-bottom:1px solid #eee}</style></head>
 <body>
 <h1 class="playlist_title">Рок классика</h1>
 <div id="scroller" style="height:100px;overflow-y:auto;border:1px solid #333">
@@ -19,13 +19,18 @@
   const TOTAL = 40;
   let added = 0;
   function row(i) {
-    return '<div class="audio_row" data-audio=\'' + JSON.stringify({
-      id: '77_' + i,
-      artist: 'Артист ' + i,
-      title: 'Песня ' + i,
-      urls: ['https://vk-cdn.net/a' + i + '.mp3'],
-      duration: 200
-    }).replace(/'/g, '&#39;') + '\'></div>';
+    // Modern vk.ru row shape (captured live): [data-audio-id] wraps a
+    // [data-testid=MusicTrackRow] whose MusicTrackRow_Info children are
+    // [title, artist]. The old `data-audio` JSON attribute no longer exists.
+    return '<div class="AudioCellCompositeRowsLayout__root" data-audio-id="77_' + i + '">' +
+      '<div data-testid="MusicTrackRow">' +
+        '<div data-testid="MusicTrackRow_PlaybackControls"></div>' +
+        '<div data-testid="MusicTrackRow_Info">' +
+          '<div>Песня ' + i + '</div>' +
+          '<div>Артист ' + i + '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
   }
   function fill() {
     const c = document.getElementById('rows');

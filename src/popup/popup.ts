@@ -285,8 +285,15 @@ $('btnNone').addEventListener('click', () => {
   render();
 });
 $('btnDownload').addEventListener('click', async () => {
-  await send({ t: 'ENQUEUE', names: [...selected] });
+  const r = await send<{ queued: number; skipped: number }>({ t: 'ENQUEUE', names: [...selected] });
   switchTab('dl');
+  const note = $('dlNote');
+  if (r && r.skipped) {
+    note.textContent =
+      `Пропущено без ссылки: ${r.skipped}. Открой треки в плеере (проиграй их), чтобы хук получил ссылку, и повтори.`;
+  } else {
+    note.textContent = r ? `В очередь: ${r.queued}` : '';
+  }
 });
 $('btnRetry').addEventListener('click', () => void send({ t: 'RETRY_FAILED' }));
 $('btnPause').addEventListener('click', () => void send({ t: 'PAUSE' }));

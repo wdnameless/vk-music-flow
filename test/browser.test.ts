@@ -293,6 +293,19 @@ describeB('browser: acquisition on real Chromium (mocks)', () => {
     expect(collector.scan!.count).toBe(40);
   });
 
+  it('B12a: DOM-fallback читает современные строки VK (data-audio-id + MusicTrackRow_Info)', () => {
+    const relays = collector.sent.filter(
+      (m) => m.t === 'AUDIOS' && m.pl === 'Рок классика' && m.scanning === true,
+    );
+    const first = relays.flatMap((m) => m.audios ?? []).find((a) => a.key === '77_0');
+    expect(first).toBeTruthy();
+    // title/artist come from the DOM row, split across the Info children
+    expect(first!.title).toBe('Песня 0');
+    expect(first!.artist).toBe('Артист 0');
+    // the DOM exposes no playable link; urls stay empty until the hook fills them
+    expect(first!.urls).toEqual([]);
+  });
+
   it('B13: все ключи 77_0..77_39 релеятся в SW сообщениями AUDIOS с pl+scanning', () => {
     const scanRelays = collector.sent.filter(
       (m) => m.t === 'AUDIOS' && m.pl === 'Рок классика' && m.scanning === true,

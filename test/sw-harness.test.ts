@@ -108,6 +108,7 @@ const mockFetch = (async (url: string | URL | Request): Promise<MockResponse> =>
   if (u.endsWith('seg0.aac')) return body(adtsSeg());
   if (u.endsWith('seg1.aac')) return body(adtsSeg());
   if (u.endsWith('seg2.aac')) return body(adtsSeg());
+  if (u.endsWith('realaudio.aac')) return body(adtsSeg());
   // AES-128 encrypted HLS (VK's real shape since 2026): the manifest carries a
   // key URI and the segments are ciphertext. The key/segments below are produced
   // by encrypting real TS payloads with WebCrypto so the SW has to decrypt them.
@@ -387,6 +388,57 @@ beforeAll(async () => {
 const afterCleanup: Array<() => void> = [];
 afterAll(() => {
   for (const f of afterCleanup) f();
+});
+
+describe('Phase 1 (f): ENQUEUE не ставит треки без ссылок (DOM-only находки)', () => {
+  it('трек без urls пропускается и считается в skipped, с ссылкой — в очередь', async () => {
+    await send({ t: 'SETTINGS', patch: { minIntervalMs: 0, jitterMs: 0, gapMs: 30 } });
+    // DOM scan finds rows without playable URLs (the hook fills those in later)
+    await send({
+      t: 'AUDIOS',
+      audios: [
+        {
+          key: '66_1',
+          id: '1',
+          owner: '66',
+          artist: 'Без',
+          title: 'Ссылки',
+          album: '',
+          year: null,
+          duration: 10,
+          urls: [],
+          covers: [],
+        },
+        {
+          key: '66_2',
+          id: '2',
+          owner: '66',
+          artist: 'Со',
+          title: 'Ссылкой',
+          album: '',
+          year: null,
+          duration: 10,
+          urls: ['https://cdn/realaudio.aac'],
+          covers: [],
+        },
+      ],
+      pl: 'Частично',
+      scanning: true,
+    });
+    const r = ((await send({ t: 'ENQUEUE', names: ['Частично'] }))[0] ?? {}) as {
+      queued: number;
+      skipped: number;
+    };
+    expect(r.skipped).toBe(1);
+    // only the URL-bearing track may reach the queue or the journal
+    const entries = (await send({ t: 'GET_JOURNAL' })) as JournalResponse[];
+    const ids = (entries[0]?.entries ?? []).map((e) => `${e.pl}/${e.key}`);
+    expect(ids).not.toContain('Частично/66_1');
+    await pollUntil(async () => (await journalEntry('Частично/66_2'))?.status === 'done');
+    const bad = await journalEntry('Частично/66_1');
+    expect(bad).toBeUndefined(); // никогда не попадает в журнал — иначе 100+ вечных ошибок
+    await send({ t: 'CANCEL' });
+  }, 60000);
 });
 
 describe('service worker: конвейер загрузки', () => {

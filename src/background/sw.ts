@@ -147,7 +147,7 @@ function attachToPlaylist(name: string | undefined | null, key: string): void {
 type HandlerResult =
   | StateSnapshot
   | { ok: boolean }
-  | { queued: number }
+  | { queued: number; skipped: number }
   | JournalResponse
   | StorageStateResult
   | null;
@@ -175,6 +175,7 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
       stopFlag = false;
       paused = false;
       const names = m.names || [];
+      let skipped = 0;
       for (const name of names) {
         const arr = S.playlists[name] || [];
         const w = String(Math.max(1, arr.length)).length;
@@ -183,13 +184,21 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
           const doneKey = name + '/' + key;
           if (S.done[doneKey]) return;
           if (S.queue.some((q) => q.pl === name && q.key === key)) return;
+          // DOM-only finds have no playable URL yet (the network hook supplies it
+          // when the track is seen). Queueing them would fail instantly with
+          // "нет доступных ссылок" and pollute the journal with 100+ errors that
+          // can never succeed — report how many were left out instead.
+          if (!(S.audios[key]?.urls || []).length) {
+            skipped++;
+            return;
+          }
           S.queue.push({ key, pl: name, idx, w });
         });
       }
       for (const qj of S.queue) await journal.ensure(qj);
       persist();
       pump();
-      return { queued: S.queue.length };
+      return { queued: S.queue.length, skipped };
     }
     case 'CANCEL': {
       stopFlag = true;

@@ -84,6 +84,31 @@ declare global {
     };
   }
 
+  /**
+   * Modern VK web player rows (`vk.ru/audios*`).
+   *
+   * The old `[data-audio]` JSON attribute no longer exists (verified on the live
+   * page: 0 rows), so the documented DOM fallback was dead. Rows now expose
+   * stable test ids instead: `[data-testid=MusicTrackRow]` containing
+   * `MusicTrackRow_Info` whose children are `[title, artist]`, nested inside
+   * `[data-audio-id="<owner>_<id>"]`. URLs still come only from the network
+   * hook — the DOM carries no playable link.
+   */
+  function domRows(): AudioMeta[] {
+    const out: AudioMeta[] = [];
+    document.querySelectorAll('[data-testid="MusicTrackRow"]').forEach((row) => {
+      const holder = row.closest('[data-audio-id]') ?? row.querySelector('[data-audio-id]');
+      const key = holder?.getAttribute('data-audio-id') ?? '';
+      const info = row.querySelector('[data-testid="MusicTrackRow_Info"]');
+      if (!info) return;
+      const parts = [...info.children].map((c) => (c.textContent || '').trim()).filter(Boolean);
+      if (parts.length < 2) return;
+      const a = domNormalize({ id: key, title: parts[0], artist: parts.slice(1).join(' ') });
+      if (a) out.push(a);
+    });
+    return out;
+  }
+
   function domAudios(): AudioMeta[] {
     const out: AudioMeta[] = [];
     document.querySelectorAll('[data-audio]').forEach((el) => {
@@ -94,6 +119,7 @@ declare global {
         /* malformed data-audio */
       }
     });
+    out.push(...domRows());
     return out;
   }
 
@@ -130,7 +156,10 @@ declare global {
     lastStats = null;
     window.postMessage({ src: 'VKMF_REQ', t: 'EMBEDDED' }, '*');
     const seenKeys = new Set<string>();
-    const probe = () => document.querySelector('[data-audio], .audio_row');
+    const probe = () =>
+      document.querySelector(
+        '[data-audio], .audio_row, [data-testid="MusicTrackRow"], [data-audio-id]',
+      );
     let prev = -1;
     let stable = 0;
     const t0 = Date.now();
