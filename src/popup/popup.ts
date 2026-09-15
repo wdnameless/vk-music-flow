@@ -1,11 +1,11 @@
 import type {
   BlockRules,
-  VkCatalogBlock,
-  VkCatalogSection,
+  CatalogSection,
   EqBand,
   LastfmAuth,
   PlayerState,
-  PlayerTrack,
+  PlatformId,
+  PlaylistRef,
   ProxyCheckResult,
   ProxyEntry,
   ProxyRoutingMode,
@@ -15,10 +15,10 @@ import type {
   ScanResult,
   StateSnapshot,
   StorageStateResult,
-  VkAudio,
+  Track,
   VkAuthState,
-  VkCatalogResult,
 } from '../types.js';
+import { EQ_BANDS, PLATFORM_LABELS } from '../types.js';
 import { persistRootHandle, pickDirectory } from '../storage/fs.js';
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
@@ -30,53 +30,238 @@ let state: StateSnapshot | null = null;
 let storageState: StorageStateResult | null = null;
 const selected = new Set<string>();
 
+/** Source platform currently shown. VK only until the others are implemented. */
+let activePlatform: PlatformId = 'vk';
+
+/** Tracks currently rendered in the platform list, and the ticked subset. */
+let listTracks: Track[] = [];
+const ticked = new Set<string>();
+
 function send<T = unknown>(msg: RuntimeMessage): Promise<T> {
   return chrome.runtime.sendMessage(msg) as Promise<T>;
 }
 
-async function activeVkTab(): Promise<chrome.tabs.Tab | null> {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab || !/^https:\/\/(\w+\.)?vk\.(com|ru)\//.test(tab.url || '')) return null;
-  return tab;
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }
 
-async function ensureInjected(tabId: number | undefined): Promise<void> {
+const fmtDur = (s: number | null): string =>
+  typeof s === 'number' && s > 0
+    ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
+    : '';
+
+/* ---------------- Navigation ---------------- */
+
+function showView(name: string): void {
+  document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + name));
+  document.querySelectorAll('.nav-item').forEach((b) =>
+    b.classList.toggle('active', (b as HTMLElement).dataset.view === name),
+  );
+}
+
+document.querySelectorAll('.nav-item').forEach((b) => {
+  b.addEventListener('click', () => void openView((b as HTMLElement).dataset.view || 'home'));
+});
+
+/* ---------------- Platform (source) ---------------- */
+
+async function refreshPlatforms(): Promise<void> {
   try {
-    await chrome.tabs.sendMessage(tabId!, { cmd: 'PING' });
+    const r = await send<{ ok: boolean; platforms: { id: PlatformId; label: string; available: boolean }[] }>({
+      t: 'P_PLATFORMS',
+    });
+    // Spotify/YouTube are shown but disabled: the source picker must not offer
+    // a service that would silently return nothing.
+    $sel('platformPick').innerHTML = r.platforms
+      .map((p) => `<option value="${p.id}"${p.available ? '' : ' disabled'}>${escapeHtml(p.label)}${p.available ? '' : ' (скоро)'}</option>`)
+      .join('');
+    $sel('platformPick').value = activePlatform;
+    const cur = r.platforms.find((p) => p.id === activePlatform);
+    $('platformState').textContent = cur?.available ? '' : 'источник ещё не подключён';
+  } catch {
+    /* keep the last view */
+  }
+}
+
+$sel('platformPick').addEventListener('change', (e) => {
+  activePlatform = (e.target as HTMLSelectElement).value as PlatformId;
+  listTracks = [];
+  ticked.clear();
+  void refreshPlatformAuth();
+  void loadHome();
+});
+
+async function refreshPlatformAuth(): Promise<void> {
+  try {
+    const r = await send<{ ok: boolean; status?: VkAuthState; reason?: string }>({
+      t: 'P_AUTH',
+      platform: activePlatform,
+    });
+    const el = $('platformState');
+    if (!r.ok || !r.status) {
+      el.textContent = r.reason || 'не удалось проверить сессию';
+      return;
+    }
+    el.textContent = r.status.signedIn
+      ? `${PLATFORM_LABELS[activePlatform]}: вошёл${r.status.userId ? ' (id ' + r.status.userId + ')' : ''}`
+      : `${PLATFORM_LABELS[activePlatform]}: ` + (r.status.reason || 'не удалось войти');
+  } catch {
+    $('platformState').textContent = 'не удалось проверить сессию';
+  }
+}
+
+/** One list request for every platform; `kind` picks the provider method. */
+async function loadList(
+  kind: 'my-tracks' | 'playlists' | 'recommendations' | 'sections' | 'section' | 'playlist' | 'search',
+  id: string | undefined,
+  target: string,
+): Promise<void> {
+  const host = $(target);
+  host.innerHTML = '<li class="muted">Загружаю…</li>';
+  try {
+    const r = await send<{ ok: boolean; tracks?: Track[]; playlists?: PlaylistRef[]; sections?: CatalogSection[]; reason?: string }>({
+      t: 'P_LIST',
+      platform: activePlatform,
+      kind,
+      id,
+    });
+    if (!r.ok) {
+      host.innerHTML = `<li class="muted">${escapeHtml(r.reason || 'не удалось получить данные')}</li>`;
+      return;
+    }
+    if (r.sections) {
+      host.innerHTML = '';
+      $('exploreSections').innerHTML = r.sections.length
+        ? r.sections.map((s) => `<button class="chip" data-section="${escapeHtml(s.id)}">${escapeHtml(s.title)}</button>`).join('')
+        : '<span class="muted">Разделов нет.</span>';
+      return;
+    }
+    if (r.playlists) {
+      renderPlaylists(r.playlists, target);
+      return;
+    }
+    listTracks = r.tracks ?? [];
+    ticked.clear();
+    renderTracks(target);
+  } catch (e) {
+    host.innerHTML = `<li class="muted">Ошибка: ${escapeHtml((e as Error).message || String(e))}</li>`;
+  }
+}
+
+function renderPlaylists(items: PlaylistRef[], target: string): void {
+  const host = $(target);
+  if (!items.length) {
+    host.innerHTML = '<li class="muted">Плейлистов нет.</li>';
     return;
-  } catch {
-    /* collector not present yet */
   }
-  // Resolve the bundled content-script paths from the built manifest so the
-  // injection targets stay identical even after the bundler renames outputs.
-  const manifest = chrome.runtime.getManifest();
-  const contentScripts = manifest.content_scripts ?? [];
-  const mainFile = contentScripts.find((cs) => (cs as { world?: string }).world === 'MAIN')
-    ?.js?.[0];
-  const isoFile = contentScripts.find((cs) => !(cs as { world?: string }).world)?.js?.[0];
-  if (mainFile) {
-    await chrome.scripting.executeScript({
-      target: { tabId: tabId! },
-      world: 'MAIN',
-      files: [mainFile],
-    });
-  }
-  if (isoFile) {
-    await chrome.scripting.executeScript({
-      target: { tabId: tabId! },
-      files: [isoFile],
-    });
-  }
+  host.innerHTML = items
+    .map(
+      (p) =>
+        `<li class="pl" data-pl="${escapeHtml(p.key)}">` +
+        `<div class="pl-cover"${p.cover ? ` style="background-image:url('${escapeHtml(p.cover)}')"` : ''}></div>` +
+        `<div class="pl-body"><b>${escapeHtml(p.title)}</b>` +
+        `<span class="tiny muted">${p.trackCount ?? '?'} треков</span></div></li>`,
+    )
+    .join('');
 }
 
-async function refresh(): Promise<void> {
-  try {
-    state = await send<StateSnapshot>({ t: 'GET_STATE' });
-  } catch {
-    state = null;
-  }
-  render();
+function trackRow(t: Track, opts: { tick?: boolean; play?: boolean } = {}): string {
+  const isTicked = ticked.has(t.key);
+  return (
+    `<li data-key="${escapeHtml(t.key)}" class="track${t.restricted ? ' muted' : ''}">` +
+    (opts.tick !== false
+      ? `<input type="checkbox" data-tick="${escapeHtml(t.key)}"${isTicked ? ' checked' : ''}${t.restricted ? ' disabled' : ''}/>`
+      : '') +
+    `<div class="t-cover"${t.cover ? ` style="background-image:url('${escapeHtml(t.cover)}')"` : ''}></div>` +
+    `<div class="t-body"><b>${escapeHtml(t.title || '—')}</b><span class="tiny muted">${escapeHtml(t.artist)}</span></div>` +
+    `<span class="tiny muted t-dur">${fmtDur(t.duration)}</span>` +
+    `${t.restricted ? ' <span class="bad">недоступен</span>' : `<button class="mini" data-play="${escapeHtml(t.key)}">▶</button>`}` +
+    '</li>'
+  );
 }
+
+function renderTracks(target: string): void {
+  const host = $(target);
+  if (!listTracks.length) {
+    host.innerHTML = '<li class="muted">Пусто.</li>';
+    return;
+  }
+  host.innerHTML = listTracks.map((t) => trackRow(t)).join('');
+  updateCount();
+}
+
+function updateCount(): void {
+  const el = $('libTotal');
+  if (el) el.textContent = listTracks.length ? `${listTracks.length} треков, выбрано ${ticked.size}` : '';
+  const dl = document.getElementById('btnDownload') as HTMLButtonElement | null;
+  if (dl) dl.disabled = ticked.size === 0;
+}
+
+/** Shared click handling for every track list: tick and play. */
+function wireTrackList(target: string): void {
+  const host = $(target);
+  host.addEventListener('click', async (e) => {
+    const el = e.target as HTMLElement;
+    const tickKey = el.dataset.tick;
+    if (tickKey) {
+      if ((el as HTMLInputElement).checked) ticked.add(tickKey);
+      else ticked.delete(tickKey);
+      updateCount();
+      return;
+    }
+    const playKey = el.dataset.play;
+    if (playKey) await playTracks([playKey]);
+    const plKey = (el.closest('.pl') as HTMLElement | null)?.dataset.pl;
+    if (plKey) {
+      // Opening a playlist replaces the platform list. The queue labels its
+      // folder with the playlist title, so carry the human name over rather
+      // than the opaque key.
+      const title = el.closest('.pl')?.querySelector('b')?.textContent;
+      await loadList('playlist', plKey, target);
+      if (title) $in('scanName').value = title;
+    }
+  });
+}
+
+['myTracks', 'exploreTracks', 'radioTracks', 'searchResults', 'homeTracks'].forEach(wireTrackList);
+
+/* ---------------- My music ---------------- */
+
+$('btnMyTracks').addEventListener('click', () => {
+  $('myTracks').hidden = false;
+  $('myPlaylists').hidden = true;
+  $('btnMyTracks').classList.add('active');
+  $('btnMyPlaylists').classList.remove('active');
+  void loadList('my-tracks', undefined, 'myTracks');
+});
+
+$('btnMyPlaylists').addEventListener('click', () => {
+  $('myTracks').hidden = true;
+  $('myPlaylists').hidden = false;
+  $('btnMyPlaylists').classList.add('active');
+  $('btnMyTracks').classList.remove('active');
+  void loadList('playlists', undefined, 'myPlaylists');
+});
+
+/* ---------------- Explore / search / radio ---------------- */
+
+$('exploreSections').addEventListener('click', (e) => {
+  const btn = (e.target as HTMLElement).closest('[data-section]') as HTMLElement | null;
+  if (btn?.dataset.section) void loadList('section', btn.dataset.section, 'exploreTracks');
+});
+
+$('btnSearch').addEventListener('click', () => {
+  const q = $in('q').value.trim();
+  if (q) void loadList('search', q, 'searchResults');
+});
+$('q').addEventListener('keydown', (e) => {
+  if ((e as KeyboardEvent).key === 'Enter') $btn('btnSearch').click();
+});
+
+$('btnMix').addEventListener('click', () => void loadList('recommendations', undefined, 'radioTracks'));
+$('btnRecs').addEventListener('click', () => void loadList('recommendations', undefined, 'radioTracks'));
+
+/* ---------------- Downloads: queue and library ---------------- */
 
 function render(): void {
   if (!state) return;
@@ -92,9 +277,7 @@ function render(): void {
   const qList = $('qList');
   qList.innerHTML = '';
   const qShow = state.queue.slice(0, 30);
-  if (!qShow.length) {
-    qList.innerHTML = '<div class="empty">Очередь пуста</div>';
-  }
+  if (!qShow.length) qList.innerHTML = '<li class="muted">Очередь пуста</li>';
   for (const q of qShow) {
     const li = document.createElement('li');
     li.textContent = `[${String(q.idx).padStart(2, '0')}] ${q.pl} — ${q.a ? q.a.artist + ' — ' + q.a.title : '?'}`;
@@ -104,28 +287,24 @@ function render(): void {
   const fList = $('fList');
   fList.innerHTML = '';
   const fShow = state.failed.slice(0, 30);
-  if (!fShow.length) {
-    fList.innerHTML = '<div class="empty">Нет ошибок</div>';
-  }
+  if (!fShow.length) fList.innerHTML = '<li class="muted">Нет ошибок</li>';
   for (const f of fShow) {
     const li = document.createElement('li');
-    li.className = 'err';
     const t = document.createElement('span');
     t.textContent = `${f.pl} — ${f.a ? f.a.artist + ' — ' + f.a.title : '?'}`;
-    const e = document.createElement('span');
-    e.className = 'err-msg';
-    e.textContent = f.err;
-    li.append(t, e);
+    const err = document.createElement('span');
+    err.className = 'err-msg';
+    err.textContent = f.err;
+    li.append(t, err);
     fList.appendChild(li);
   }
 
   const plList = $('plList');
   plList.innerHTML = '';
   const names = Object.keys(state.playlists).sort((a, b) => a.localeCompare(b));
-  $('libTotal').textContent = names.length ? `${names.length} плейл.` : '';
   if (!names.length) {
     plList.innerHTML =
-      '<div class="empty">Плейлисты не собраны. Вкладка «Скан» → открой плейлист в VK и сканируй.</div>';
+      '<li class="muted">Плейлисты не собраны. Открой плейлист в VK и нажми «Сканировать».</li>';
   }
   for (const name of names) {
     const li = document.createElement('li');
@@ -151,6 +330,388 @@ function render(): void {
 function updateDlBtn(): void {
   $btn('btnDownload').disabled = !selected.size;
 }
+
+async function refresh(): Promise<void> {
+  try {
+    state = await send<StateSnapshot>({ t: 'GET_STATE' });
+  } catch {
+    state = null;
+  }
+  render();
+}
+
+/* ---------------- Playback ---------------- */
+
+/** Resolve fresh URLs (VK links expire) then hand the list to the player. */
+async function playTracks(keys: string[]): Promise<void> {
+  const picked = listTracks.filter((t) => keys.includes(t.key) && !t.restricted);
+  if (!picked.length) return;
+  const r = await send<{ ok: boolean; streams: Record<string, { url: string }> }>({
+    t: 'P_RESOLVE',
+    keys: picked.map((t) => t.key),
+  });
+  const tracks = picked
+    .map((t) => {
+      const s = r.streams[t.key];
+      return s
+        ? {
+            key: t.key,
+            id: t.nativeId.split('_')[1] ?? t.nativeId,
+            owner: t.nativeId.split('_')[0] ?? '0',
+            artist: t.artist,
+            title: t.title,
+            url: s.url,
+            duration: t.duration,
+            cover: t.cover,
+          }
+        : null;
+    })
+    .filter((x): x is NonNullable<typeof x> => !!x);
+  if (!tracks.length) {
+    $('dlNote').textContent = 'Не удалось получить ссылки для воспроизведения.';
+    return;
+  }
+  const res = await send<{ ok: boolean; state: PlayerState | null }>({
+    t: 'PLAY_LIST',
+    key: tracks[0]!.key,
+    tracks,
+  });
+  pState = res.state;
+  renderPlayer();
+}
+
+let pState: PlayerState | null = null;
+/** True while the user drags the seek bar, so polling does not fight them. */
+let seeking = false;
+/** Last known equalizer curve, so the panel can render before a track plays. */
+let pEqGains: number[] | null = null;
+
+const fmtTime = (s: number): string => {
+  if (!Number.isFinite(s) || s < 0) s = 0;
+  const m = Math.floor(s / 60);
+  return `${m}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+};
+
+function renderEqBands(bands: EqBand[]): void {
+  const host = $('eqBands');
+  if (host.children.length !== bands.length) {
+    host.innerHTML = bands
+      .map(
+        (b) =>
+          `<div class="band"><span class="db" data-db="${b.hz}">0</span>` +
+          `<input type="range" min="-12" max="12" step="1" value="0" data-hz="${b.hz}" />` +
+          `<span class="hz">${b.hz >= 1000 ? b.hz / 1000 + 'k' : b.hz}</span></div>`,
+      )
+      .join('');
+  }
+  for (const b of bands) {
+    const input = host.querySelector<HTMLInputElement>(`input[data-hz="${b.hz}"]`);
+    const label = host.querySelector<HTMLElement>(`[data-db="${b.hz}"]`);
+    if (input && !input.matches(':active')) input.value = String(b.gain);
+    if (label) label.textContent = String(Math.round(b.gain));
+  }
+}
+
+function renderPlayer(): void {
+  const s = pState;
+  const cover = $('pCover');
+  if (!s || !s.track) {
+    $('pTitle').textContent = 'Ничего не играет';
+    $('pArtist').textContent = '';
+    cover.style.backgroundImage = '';
+    $btn('pToggle').textContent = '▶';
+    // Bands are a property of the player, not of the current track, so the
+    // equalizer must still be usable with nothing playing.
+    if (s) {
+      if (document.activeElement !== $in('eqOn')) $in('eqOn').checked = s.eqEnabled;
+      renderEqBands(s.eqBands);
+    } else if (pEqGains) {
+      // Nothing playing yet, but the saved curve is known: draw it so the panel
+      // is usable as soon as it opens.
+      renderEqBands(pEqGains.map((gain, i) => ({ hz: EQ_BANDS[i] ?? 0, gain })));
+    }
+    return;
+  }
+  $('pTitle').textContent = s.track.title || '—';
+  $('pArtist').textContent = s.track.artist || '';
+  cover.style.backgroundImage = s.track.cover ? `url('${s.track.cover}')` : '';
+  const toggle = $btn('pToggle');
+  toggle.textContent = s.playing ? '⏸' : '▶';
+  toggle.classList.toggle('playing', s.playing);
+  $('pTime').textContent = fmtTime(s.currentTime);
+  $('pDur').textContent = fmtTime(s.duration);
+  if (!seeking) {
+    $in('pSeek').value = s.duration > 0 ? String(Math.round((s.currentTime / s.duration) * 1000)) : '0';
+  }
+  const vol = $in('pVolume');
+  if (document.activeElement !== vol) vol.value = String(Math.round(s.volume * 100));
+  const eqOn = $in('eqOn');
+  if (document.activeElement !== eqOn) eqOn.checked = s.eqEnabled;
+  renderEqBands(s.eqBands);
+}
+
+async function refreshPlayer(): Promise<void> {
+  try {
+    const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'GET_PLAYER_STATE' });
+    pState = r.state;
+  } catch {
+    /* keep the last snapshot */
+  }
+  renderPlayer();
+}
+
+
+
+/* ---------------- Player bar controls ---------------- */
+
+$('pToggle').addEventListener('click', async () => {
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'PLAY_TOGGLE' });
+  pState = r.state;
+  renderPlayer();
+});
+$('pNext').addEventListener('click', async () => {
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'PLAY_NEXT' });
+  pState = r.state;
+  renderPlayer();
+});
+$('pPrev').addEventListener('click', async () => {
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'PLAY_PREV' });
+  pState = r.state;
+  renderPlayer();
+});
+
+$('pSeek').addEventListener('input', () => {
+  seeking = true;
+});
+$('pSeek').addEventListener('change', async (e) => {
+  const v = Number((e.target as HTMLInputElement).value);
+  const d = pState?.duration ?? 0;
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({
+    t: 'PLAY_SEEK',
+    seconds: d > 0 ? (v / 1000) * d : 0,
+  });
+  pState = r.state;
+  seeking = false;
+  renderPlayer();
+});
+
+let volTimer: ReturnType<typeof setTimeout> | null = null;
+$('pVolume').addEventListener('input', (e) => {
+  // Dragging fires continuously; coalesce so the player is not flooded.
+  const volume = Number((e.target as HTMLInputElement).value) / 100;
+  if (volTimer) clearTimeout(volTimer);
+  volTimer = setTimeout(() => void send({ t: 'PLAY_VOLUME', volume }), 120);
+});
+
+/** Like/dislike the playing track. VK's own library is the target. */
+$('pLike').addEventListener('click', async () => {
+  const t = pState?.track;
+  if (!t) return;
+  const key = `${t.owner}_${t.id}`;
+  const track = listTracks.find((x) => x.key === key) ?? {
+    key,
+    platform: 'vk' as const,
+    nativeId: key,
+    artist: t.artist,
+    title: t.title,
+    album: '',
+    duration: t.duration,
+    cover: t.cover,
+    restricted: false,
+  };
+  try {
+    const r = await send<{ ok: boolean; reason?: string }>({ t: 'P_LIKE', key, liked: true, track });
+    $('pLike').classList.toggle('liked', !!r.ok);
+    if (!r.ok) $('dlNote').textContent = r.reason || 'не удалось добавить в «Мою музыку»';
+  } catch (e) {
+    $('dlNote').textContent = 'Ошибка: ' + ((e as Error).message || e);
+  }
+});
+
+$('pDislike').addEventListener('click', async () => {
+  const t = pState?.track;
+  if (!t) return;
+  await send({ t: 'TOGGLE_DISLIKE', owner: t.owner, id: t.id });
+  $('pDislike').classList.toggle('liked');
+});
+
+/* ---------------- Equalizer overlay ---------------- */
+
+$('pEq').addEventListener('click', () => {
+  const panel = $('eqPanel');
+  panel.hidden = !panel.hidden;
+});
+
+$('eqOn').addEventListener('change', async (e) => {
+  const enabled = (e.target as HTMLInputElement).checked;
+  const gains = (pState?.eqBands ?? []).map((b) => b.gain);
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'EQ_SET', enabled, gains });
+  pState = r.state;
+  renderPlayer();
+});
+
+$('eqBands').addEventListener('input', (e) => {
+  const el = e.target as HTMLInputElement;
+  if (el.tagName !== 'INPUT') return;
+  const label = $('eqBands').querySelector<HTMLElement>(`[data-db="${el.dataset.hz}"]`);
+  if (label) label.textContent = el.value;
+});
+$('eqBands').addEventListener('change', async () => {
+  const gains = [...$('eqBands').querySelectorAll<HTMLInputElement>('input[data-hz]')].map((i) => Number(i.value));
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'EQ_SET', enabled: true, gains });
+  pState = r.state;
+  renderPlayer();
+});
+
+$('eqReset').addEventListener('click', async () => {
+  const gains = (pState?.eqBands ?? []).map(() => 0);
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'EQ_SET', enabled: true, gains });
+  pState = r.state;
+  renderPlayer();
+});
+
+/** Named equalizer presets, kept in storage so they survive a restart. */
+async function refreshPresets(): Promise<void> {
+  try {
+    const r = await send<{ ok: boolean; presets: Record<string, number[]> }>({ t: 'GET_PRESETS' });
+    $sel('eqPreset').innerHTML =
+      '<option value="">— пресеты —</option>' +
+      Object.keys(r.presets).map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+  } catch {
+    /* presets are optional */
+  }
+}
+
+$sel('eqPreset').addEventListener('change', async (e) => {
+  const name = (e.target as HTMLSelectElement).value;
+  if (!name) return;
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'APPLY_PRESET', name });
+  pState = r.state;
+  renderPlayer();
+});
+
+$('eqSave').addEventListener('click', async () => {
+  const name = prompt('Название пресета');
+  if (!name) return;
+  const gains = (pState?.eqBands ?? []).map((b) => b.gain);
+  await send({ t: 'SAVE_PRESET', name, gains });
+  await refreshPresets();
+});
+
+/* ---------------- Download selection ---------------- */
+
+$('btnAll').addEventListener('click', () => {
+  Object.keys(state?.playlists ?? {}).forEach((n) => selected.add(n));
+  render();
+});
+$('btnNone').addEventListener('click', () => {
+  selected.clear();
+  render();
+});
+$('btnDownload').addEventListener('click', async () => {
+  const r = await send<{ queued: number; skipped: number }>({ t: 'ENQUEUE', names: [...selected] });
+  showView('downloads');
+  const note = $('dlNote');
+  note.textContent = r?.skipped
+    ? `Пропущено без ссылки: ${r.skipped}. Проиграй эти треки в плеере, чтобы получить ссылку, и повтори.`
+    : r
+      ? `В очередь: ${r.queued}`
+      : '';
+});
+$('btnRetry').addEventListener('click', () => void send({ t: 'RETRY_FAILED' }));
+$('btnPause').addEventListener('click', () => void send({ t: 'PAUSE' }));
+$('btnResume').addEventListener('click', () => void send({ t: 'RESUME' }));
+$('btnCancel').addEventListener('click', () => void send({ t: 'CANCEL' }));
+$('btnReset').addEventListener('click', async () => {
+  if (confirm('Удалить весь собранный каталог?')) {
+    await send({ t: 'RESET' });
+    selected.clear();
+    void refresh();
+  }
+});
+$('conc').addEventListener('input', (e) => {
+  const target = e.target as HTMLInputElement;
+  $('concVal').textContent = target.value;
+  void send({ t: 'SETTINGS', patch: { conc: +target.value } });
+});
+$('gap').addEventListener('change', (e) => {
+  const target = e.target as HTMLInputElement;
+  void send({ t: 'SETTINGS', patch: { gapMs: +target.value } });
+});
+$('baseDir').addEventListener('input', (e) => {
+  const target = e.target as HTMLInputElement;
+  const v = target.value.trim() || 'VK Music';
+  $('pathExample').textContent =
+    'Загрузки/' + v.split(/[\\/]+/).filter(Boolean).join('/') + '/<плейлист>/01 Artist - Title.mp3';
+  void send({ t: 'SETTINGS', patch: { baseDir: v } });
+});
+
+/* ---------------- Home ---------------- */
+
+async function loadHome(): Promise<void> {
+  // The home shelf mirrors what VK itself puts first: the account's own music.
+  await loadList('my-tracks', undefined, 'homeTracks');
+  $('homeHero').innerHTML = listTracks
+    .slice(0, 3)
+    .map(
+      (t) =>
+        `<div class="hero" data-play="${escapeHtml(t.key)}">` +
+        `<div class="hero-cover"${t.cover ? ` style="background-image:url('${escapeHtml(t.cover)}')"` : ''}></div>` +
+        `<div class="t-body"><b>${escapeHtml(t.title)}</b><span class="tiny muted">${escapeHtml(t.artist)}</span></div></div>`,
+    )
+    .join('');
+  $('homeHero').addEventListener('click', (e) => {
+    const hero = (e.target as HTMLElement).closest('.hero') as HTMLElement | null;
+    const key = hero?.dataset.play;
+    if (key) void playTracks([key]);
+  });
+}
+
+async function openView(name: string): Promise<void> {
+  showView(name);
+  if (name === 'home') await loadHome();
+  if (name === 'explore') await loadList('sections', undefined, 'exploreTracks');
+}
+
+/* ---------------- Init ---------------- */
+
+void (async function init() {
+  try {
+    const s = await send<StateSnapshot | null>({ t: 'GET_STATE' });
+    if (s && s.settings) {
+      $in('conc').value = String(s.settings.conc);
+      $('concVal').textContent = String(s.settings.conc);
+      $in('gap').value = String(s.settings.gapMs);
+      $in('baseDir').value = s.settings.baseDir || 'VK Music';
+      $('pathExample').textContent =
+        'Загрузки/' + ($in('baseDir').value || 'VK Music') + '/<плейлист>/01 Artist - Title.mp3';
+      // Show the saved volume straight away; without this the slider reads 100%
+      // until the offscreen player reports its state.
+      if (typeof s.settings.playerVolume === 'number') {
+        $in('pVolume').value = String(Math.round(s.settings.playerVolume * 100));
+      }
+      if (s.settings.playerEqGains?.length) {
+        pEqGains = s.settings.playerEqGains.slice();
+      }
+    }
+  } catch {
+    /* state may be unavailable */
+  }
+  await refreshPlatforms();
+  void refreshPlatformAuth();
+  void refreshStorage();
+  void refresh();
+  void refreshProxy();
+  void refreshDnr();
+  void refreshPlayer();
+  void refreshRules();
+  void refreshLastfm();
+  void refreshPresets();
+  void loadHome();
+  setInterval(refresh, 800);
+  // Progress lives in the offscreen document, so poll it on its own cadence.
+  setInterval(() => void refreshPlayer(), 700);
+})();
 
 /* ---------------- Phase 1 slice A: storage (FSA) ---------------- */
 
@@ -227,9 +788,6 @@ function proxyRowHtml(e: ProxyEntry): string {
   );
 }
 
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
-}
 
 function renderProxy(): void {
   if (!proxyState) return;
@@ -351,312 +909,6 @@ $('btnDnrInstall').addEventListener('click', async () => {
   await refreshDnr();
 });
 
-/* ---------------- Wave 2: VK catalog (tabless) ---------------- */
-
-let vkTracks: VkAudio[] = [];
-const vkSelected = new Set<string>();
-
-/** Key for a VK track, matching how the SW names catalog entries. */
-const vkKey = (a: VkAudio): string => `${a.owner_id}_${a.id}`;
-
-function vkTrackHtml(a: VkAudio): string {
-  const key = vkKey(a);
-  const restricted = a.content_restricted === 2 || a.content_restricted === 3;
-  const dur = typeof a.duration === 'number'
-    ? `${Math.floor(a.duration / 60)}:${String(a.duration % 60).padStart(2, '0')}`
-    : '';
-  return (
-    `<li data-key="${key}"${restricted ? ' class="muted"' : ''}>` +
-    `<input type="checkbox" data-key="${key}"${vkSelected.has(key) ? ' checked' : ''}${restricted ? ' disabled' : ''}/> ` +
-    `<b>${escapeHtml(a.artist || '')}</b> — ${escapeHtml(a.title || '')} ` +
-    `<span class="muted">${dur}</span>` +
-    `${restricted ? ' <span class="bad">недоступен (VK)</span>' : ''}` +
-    '</li>'
-  );
-}
-
-function renderVkList(): void {
-  const list = $('vkList');
-  list.innerHTML = vkTracks.length
-    ? vkTracks.map(vkTrackHtml).join('')
-    : '<li class="muted">Пусто. Нажми «Моя музыка», «Рекомендации» или найди треки.</li>';
-  const sel = vkSelected.size;
-  const restricted = vkTracks.filter((a) => a.content_restricted === 2 || a.content_restricted === 3).length;
-  $('vkCount').textContent = vkTracks.length
-    ? `${vkTracks.length} треков, выбрано ${sel}${restricted ? `, недоступно ${restricted}` : ''}`
-    : '';
-  $btn('btnVkDownload').disabled = sel === 0;
-}
-
-async function refreshVkAuth(): Promise<void> {
-  try {
-    const s = await send<VkAuthState>({ t: 'GET_VK_AUTH' });
-    $('vkAuth').textContent = s.signedIn
-      ? `Вошёл в VK (id ${s.userId}).`
-      : s.reason || 'Не удалось войти в VK.';
-  } catch {
-    $('vkAuth').textContent = 'Не удалось проверить сессию VK.';
-  }
-}
-
-async function loadVk(
-  msg: RuntimeMessage,
-): Promise<void> {
-  $('vkList').innerHTML = '<li class="muted">Загружаю…</li>';
-  try {
-    const r = await send<VkCatalogResult<VkAudio>>(msg);
-    vkTracks = r.items ?? [];
-    vkSelected.clear();
-    if (!r.ok) $('vkNote').textContent = r.reason || 'Не удалось получить треки.';
-    else $('vkNote').textContent = '';
-  } catch (e) {
-    vkTracks = [];
-    $('vkNote').textContent = 'Ошибка: ' + ((e as Error).message || e);
-  }
-  renderVkList();
-}
-
-$('btnVkMine').addEventListener('click', () => void loadVk({ t: 'VK_MY_AUDIOS', count: 100 }));
-$('btnVkRecs').addEventListener('click', () => void loadVk({ t: 'VK_RECOMMENDATIONS' }));
-
-$('btnVkSearch').addEventListener('click', () => {
-  const q = $in('vkQuery').value.trim();
-  if (!q) return;
-  void loadVk({ t: 'VK_SEARCH', q });
-});
-
-$('vkList').addEventListener('click', (e) => {
-  const el = e.target as HTMLInputElement;
-  if (el.tagName !== 'INPUT') return;
-  const key = el.dataset.key;
-  if (!key) return;
-  if (el.checked) vkSelected.add(key);
-  else vkSelected.delete(key);
-  const sel = vkSelected.size;
-  $btn('btnVkDownload').disabled = sel === 0;
-  $('vkCount').textContent = `${vkTracks.length} треков, выбрано ${sel}`;
-});
-
-$('btnVkAll').addEventListener('click', () => {
-  // Restricted tracks can never be downloaded, so "select all" must not pretend
-  // otherwise — they stay unticked and are reported by the download button.
-  for (const a of vkTracks) {
-    if (a.content_restricted === 2 || a.content_restricted === 3) continue;
-    vkSelected.add(vkKey(a));
-  }
-  renderVkList();
-});
-
-$('btnVkNone').addEventListener('click', () => {
-  vkSelected.clear();
-  renderVkList();
-});
-
-$('btnVkDownload').addEventListener('click', async () => {
-  const picked = vkTracks.filter((a) => vkSelected.has(vkKey(a)));
-  if (!picked.length) return;
-  const name = $in('vkPlaylistName').value.trim() || 'VK Музыка';
-  $('vkNote').textContent = 'Ставлю в очередь…';
-  try {
-    const r = await send<{ ok: boolean; queued: number; skipped: number; total: number }>({
-      t: 'VK_ENQUEUE',
-      name,
-      audios: picked,
-    });
-    $('vkNote').textContent = r.skipped
-      ? `В очередь: ${r.queued}. Пропущено недоступных: ${r.skipped}.`
-      : `В очередь: ${r.queued}.`;
-    switchTab('dl');
-  } catch (e) {
-    $('vkNote').textContent = 'Ошибка: ' + ((e as Error).message || e);
-  }
-});
-
-/* ---------------- Wave 2: player bar + equalizer ---------------- */
-
-let pState: PlayerState | null = null;
-/** True while the user drags the seek bar, so polling does not fight them. */
-let seeking = false;
-
-const fmtTime = (s: number): string => {
-  if (!Number.isFinite(s) || s < 0) s = 0;
-  const m = Math.floor(s / 60);
-  return `${m}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
-};
-
-function renderEqBands(bands: EqBand[]): void {
-  const host = $('eqBands');
-  if (host.children.length !== bands.length) {
-    host.innerHTML = bands
-      .map(
-        (b) =>
-          `<div class="band"><span class="db" data-db="${b.hz}">0</span>` +
-          `<input type="range" min="-12" max="12" step="1" value="0" data-hz="${b.hz}" />` +
-          `<span class="hz">${b.hz >= 1000 ? b.hz / 1000 + 'k' : b.hz}</span></div>`,
-      )
-      .join('');
-  }
-  for (const b of bands) {
-    const input = host.querySelector<HTMLInputElement>(`input[data-hz="${b.hz}"]`);
-    const label = host.querySelector<HTMLElement>(`[data-db="${b.hz}"]`);
-    if (input && !input.matches(':active')) input.value = String(b.gain);
-    if (label) label.textContent = String(Math.round(b.gain));
-  }
-}
-
-function renderPlayer(): void {
-  const bar = $('playerBar');
-  const s = pState;
-  if (!s || !s.track) {
-    bar.hidden = true;
-    return;
-  }
-  bar.hidden = false;
-  $('pTitle').textContent = s.track.title || '—';
-  $('pArtist').textContent = s.track.artist || '';
-  const toggle = $btn('pToggle');
-  toggle.textContent = s.playing ? '⏸' : '▶';
-  toggle.classList.toggle('playing', s.playing);
-  $('pTime').textContent = `${fmtTime(s.currentTime)} / ${fmtTime(s.duration)}`;
-  if (!seeking) {
-    const seek = $in('pSeek');
-    seek.value = s.duration > 0 ? String(Math.round((s.currentTime / s.duration) * 1000)) : '0';
-  }
-  const eqOn = $in('eqOn') as HTMLInputElement;
-  if (document.activeElement !== eqOn) eqOn.checked = s.eqEnabled;
-  renderEqBands(s.eqBands);
-}
-
-async function refreshPlayer(): Promise<void> {
-  try {
-    const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'GET_PLAYER_STATE' });
-    pState = r.state;
-  } catch {
-    /* keep the last snapshot */
-  }
-  renderPlayer();
-}
-
-$('pToggle').addEventListener('click', async () => {
-  const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'PLAY_TOGGLE' });
-  pState = r.state;
-  renderPlayer();
-});
-$('pNext').addEventListener('click', async () => {
-  const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'PLAY_NEXT' });
-  pState = r.state;
-  renderPlayer();
-});
-$('pPrev').addEventListener('click', async () => {
-  const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'PLAY_PREV' });
-  pState = r.state;
-  renderPlayer();
-});
-
-$('pSeek').addEventListener('input', () => {
-  seeking = true;
-});
-$('pSeek').addEventListener('change', async (e) => {
-  const v = Number((e.target as HTMLInputElement).value);
-  const d = pState?.duration ?? 0;
-  const r = await send<{ ok: boolean; state: PlayerState | null }>({
-    t: 'PLAY_SEEK',
-    seconds: d > 0 ? (v / 1000) * d : 0,
-  });
-  pState = r.state;
-  seeking = false;
-  renderPlayer();
-});
-
-$('pEq').addEventListener('click', () => {
-  const panel = $('eqPanel');
-  panel.hidden = !panel.hidden;
-});
-
-$('eqOn').addEventListener('change', async (e) => {
-  const enabled = (e.target as HTMLInputElement).checked;
-  const gains = (pState?.eqBands ?? []).map((b) => b.gain);
-  const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'EQ_SET', enabled, gains });
-  pState = r.state;
-  renderPlayer();
-});
-
-$('eqBands').addEventListener('input', (e) => {
-  const el = e.target as HTMLInputElement;
-  if (el.tagName !== 'INPUT') return;
-  const label = $('eqBands').querySelector<HTMLElement>(`[data-db="${el.dataset.hz}"]`);
-  if (label) label.textContent = el.value;
-});
-$('eqBands').addEventListener('change', async () => {
-  const gains = [...$('eqBands').querySelectorAll<HTMLInputElement>('input[data-hz]')].map((i) =>
-    Number(i.value),
-  );
-  const r = await send<{ ok: boolean; state: PlayerState | null }>({
-    t: 'EQ_SET',
-    enabled: true,
-    gains,
-  });
-  pState = r.state;
-  renderPlayer();
-});
-
-$('eqReset').addEventListener('click', async () => {
-  const gains = (pState?.eqBands ?? []).map(() => 0);
-  const r = await send<{ ok: boolean; state: PlayerState | null }>({
-    t: 'EQ_SET',
-    enabled: true,
-    gains,
-  });
-  pState = r.state;
-  renderPlayer();
-});
-
-/** Play the currently ticked catalog tracks in the offscreen player. */
-$('btnVkPlay').addEventListener('click', async () => {
-  const picked = vkTracks.filter((a) => vkSelected.has(vkKey(a)));
-  if (!picked.length) return;
-  $('vkNote').textContent = 'Готовлю треки…';
-  const tracks: PlayerTrack[] = [];
-  for (const a of picked) {
-    // Stream URLs expire, so resolve each one right before playback.
-    const r = await send<{ ok: boolean; urls: string[]; restricted?: boolean }>({
-      t: 'RESOLVE_TRACK',
-      key: vkKey(a),
-      owner: String(a.owner_id),
-      id: String(a.id),
-      accessKey: a.access_key,
-      artist: a.artist || '',
-      title: a.title || '',
-      duration: typeof a.duration === 'number' ? a.duration : null,
-      cover: null,
-    });
-    if (r.ok && r.urls[0]) {
-      tracks.push({
-        key: vkKey(a),
-        id: String(a.id),
-        owner: String(a.owner_id),
-        artist: a.artist || '',
-        title: a.title || '',
-        url: r.urls[0],
-        duration: typeof a.duration === 'number' ? a.duration : null,
-        cover: null,
-      });
-    }
-  }
-  if (!tracks.length) {
-    $('vkNote').textContent = 'Не удалось получить ссылки для воспроизведения.';
-    return;
-  }
-  const res = await send<{ ok: boolean; state: PlayerState | null }>({
-    t: 'PLAY_LIST',
-    key: vkKey(picked[0]!),
-    tracks,
-  });
-  pState = res.state;
-  $('vkNote').textContent = `Играю: ${tracks.length} треков.`;
-  renderPlayer();
-});
-
 /* ---------------- Wave 3: Last.fm ---------------- */
 
 interface LastfmState {
@@ -769,72 +1021,35 @@ $('blockedArtists').addEventListener('change', async (e) => {
   await refreshRules();
 });
 
-/* ---------------- Wave 3: catalogue navigation + "Волна" ---------------- */
 
-async function loadVkSections(): Promise<void> {
-  try {
-    const r = await send<{ ok: boolean; sections: VkCatalogSection[]; reason?: string }>({
-      t: 'VK_SECTIONS',
-    });
-    if (!r.ok || !r.sections.length) {
-      $('vkSections').innerHTML = '';
-      return;
-    }
-    // Section titles are the same navigation the reference UI shows (General,
-    // My music, Explore, Radio, New additions).
-    $('vkSections').innerHTML = r.sections
-      .map((s) => `<button data-section="${escapeHtml(s.id)}">${escapeHtml(s.title)}</button>`)
-      .join('');
-  } catch {
-    $('vkSections').innerHTML = '';
-  }
+/* ---------------- VK tab helpers (page scanning) ---------------- */
+
+async function activeVkTab(): Promise<chrome.tabs.Tab | null> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !/^https:\/\/(\w+\.)?vk\.(com|ru)\//.test(tab.url || '')) return null;
+  return tab;
 }
 
-$('vkSections').addEventListener('click', async (e) => {
-  const el = e.target as HTMLElement;
-  const id = el.dataset.section;
-  if (!id) return;
-  $('vkList').innerHTML = '<li class="muted">Загружаю раздел…</li>';
+async function ensureInjected(tabId: number | undefined): Promise<void> {
   try {
-    const r = await send<{ ok: boolean; blocks: VkCatalogBlock[] }>({ t: 'VK_SECTION', sectionId: id });
-    // A block is a titled shelf. VK often returns shelves empty, so say so
-    // instead of rendering nothing at all.
-    const withTracks = r.blocks.filter((b) => b.audios.length > 0);
-    const source = withTracks.length ? withTracks : r.blocks;
-    vkTracks = source.flatMap((b) => b.audios);
-    vkSelected.clear();
-    if (!vkTracks.length) {
-      $('vkList').innerHTML =
-        `<li class="muted">В разделе ${r.blocks.length} блоков, но VK не отдал треки. ` +
-        'Попробуй другую вкладку — «Моя музыка» или «Волна».</li>';
-    } else {
-      renderVkList();
-    }
-    $('vkNote').textContent = '';
-  } catch (err) {
-    $('vkNote').textContent = 'Ошибка: ' + ((err as Error).message || err);
-  }
-});
-
-$('btnVkMix').addEventListener('click', () => void loadVk({ t: 'VK_MIX' }));
-
-$('btnClearDir').addEventListener('click', async () => {
-  try {
-    storageState = await send<StorageStateResult>({ t: 'CLEAR_DIR' });
+    await chrome.tabs.sendMessage(tabId!, { cmd: 'PING' });
+    return;
   } catch {
-    /* keep last view */
+    /* collector not present yet */
   }
-  renderStorage();
-});
-
-$('storageMode').addEventListener('change', (e) => {
-  const target = e.target as HTMLSelectElement;
-  const mode = target.value === 'fsa' ? 'fsa' : 'downloads';
-  void (async () => {
-    await send({ t: 'SETTINGS', patch: { storageMode: mode } });
-    await refreshStorage();
-  })();
-});
+  // Resolve the bundled content-script paths from the built manifest so the
+  // injection targets stay identical even after the bundler renames outputs.
+  const manifest = chrome.runtime.getManifest();
+  const contentScripts = manifest.content_scripts ?? [];
+  const mainFile = contentScripts.find((cs) => (cs as { world?: string }).world === 'MAIN')?.js?.[0];
+  const isoFile = contentScripts.find((cs) => !(cs as { world?: string }).world)?.js?.[0];
+  if (mainFile) {
+    await chrome.scripting.executeScript({ target: { tabId: tabId! }, world: 'MAIN', files: [mainFile] });
+  }
+  if (isoFile) {
+    await chrome.scripting.executeScript({ target: { tabId: tabId! }, files: [isoFile] });
+  }
+}
 
 /* ---------------- scan / library / downloads buttons ---------------- */
 
@@ -865,7 +1080,7 @@ $('btnScan').addEventListener('click', async () => {
         `2) F12 → Network → обнови страницу → найди ответ со словом "artist" и скопируй его`;
     } else {
       await refresh();
-      switchTab('lib');
+      showView('downloads');
     }
   } catch (e) {
     $('scanResult').textContent = 'Ошибка: ' + ((e as Error).message || e);
@@ -917,7 +1132,7 @@ $('btnNone').addEventListener('click', () => {
 });
 $('btnDownload').addEventListener('click', async () => {
   const r = await send<{ queued: number; skipped: number }>({ t: 'ENQUEUE', names: [...selected] });
-  switchTab('dl');
+  showView('downloads');
   const note = $('dlNote');
   if (r && r.skipped) {
     note.textContent =
@@ -958,44 +1173,3 @@ $('baseDir').addEventListener('input', (e) => {
     '/<плейлист>/01 Artist - Title.mp3';
   void send({ t: 'SETTINGS', patch: { baseDir: v } });
 });
-
-document.querySelectorAll('.tab').forEach((t) => {
-  t.addEventListener('click', () => switchTab((t as HTMLElement).dataset.tab));
-});
-
-function switchTab(name?: string): void {
-  document
-    .querySelectorAll('.tab')
-    .forEach((x) => x.classList.toggle('active', (x as HTMLElement).dataset.tab === name));
-  document
-    .querySelectorAll('.pane')
-    .forEach((p) => p.classList.toggle('active', p.id === 'tab-' + name));
-}
-
-void (async function init() {
-  try {
-    const s = await send<StateSnapshot | null>({ t: 'GET_STATE' });
-    if (s && s.settings) {
-      $in('conc').value = String(s.settings.conc);
-      $('concVal').textContent = String(s.settings.conc);
-      $in('gap').value = String(s.settings.gapMs);
-      $in('baseDir').value = s.settings.baseDir || 'VK Music';
-      $('pathExample').textContent =
-        'Загрузки/' + ($in('baseDir').value || 'VK Music') + '/<плейлист>/01 Artist - Title.mp3';
-    }
-  } catch {
-    /* state may be unavailable */
-  }
-  void refreshStorage();
-  void refresh();
-  void refreshProxy();
-  void refreshDnr();
-  void refreshVkAuth();
-  void refreshPlayer();
-  void refreshRules();
-  void refreshLastfm();
-  void loadVkSections();
-  setInterval(refresh, 800);
-  // The player lives in the offscreen document, so poll it on its own cadence.
-  setInterval(() => void refreshPlayer(), 700);
-})();

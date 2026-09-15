@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "VK Music Flow",
-  "version": "0.7.1",
-  "description": "Выгрузка музыки из ВКонтакте: плейлисты -> папки, ID3-теги, обложки, тексты.",
+  "name": "Universal player: VK, Spotify, YouTube",
+  "version": "0.8.0",
+  "description": "Единый музыкальный плеер: ВКонтакте, Spotify и YouTube. Слушай без вкладки, качай плейлисты, свои прокси.",
   "minimum_chrome_version": "116",
   "permissions": [
     "downloads",
@@ -100,5 +100,6 @@
       ],
       "run_at": "document_start"
     }
-  ]
+  ],
+  "short_name": "Universal player"
 }

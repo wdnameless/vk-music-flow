@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'vitest';
 
-import { EQ_BANDS, clampDb, flatEq } from '../src/offscreen/player.js';
+import { clampDb, flatEq } from '../src/offscreen/player.js';
+import { EQ_BANDS } from '../src/types.js';
 
 // Wave 2 unit tests for the parts of the offscreen player that are pure logic.
 // The audio element and WebAudio graph need a real document, so they are covered

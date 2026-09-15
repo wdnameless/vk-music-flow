@@ -12,6 +12,7 @@ import {
 } from '../storage/fs.js';
 import {
   DEFAULT_BLOCK_RULES,
+  PLATFORM_LABELS,
   DEFAULT_PROXY_SETTINGS,
   DEFAULT_SETTINGS,
   type AudioMeta,
@@ -26,21 +27,27 @@ import {
   type BlockRules,
   type LastfmAuth,
   type LyricsResult,
+  type PlatformId,
   type PlayerCommand,
   type PlayerState,
   type PlayerTrack,
   type ScrobbleQueueItem,
   type StateSnapshot,
   type StorageStateResult,
+  type StreamRef,
+  type Track,
   type VkAudio,
   type VkAuthState,
   type VkCatalogBlock,
   type VkCatalogResult,
+  type CatalogSection,
   type VkCatalogSection,
   type VkPlaylist,
 } from '../types.js';
 import { applyProxy, checkProxy, installProxyAuth, normalizeProxySettings, pickActiveEntry, readApplied } from '../lib/proxy.js';
 import { installDnrRules, readDnrRules, toDnrRules } from '../lib/dnr.js';
+import { provider, providerForKey, platformStatus } from '../platforms/registry.js';
+import { parseTrackKey } from '../platforms/provider.js';
 import { RestrictedTrackError, resolveTrackUrls } from '../lib/resolve.js';
 import {
   playerSnapshot,
@@ -362,6 +369,11 @@ type HandlerResult =
   | { ok: boolean; state: PlayerState | null; skipped?: number }
   | { ok: boolean; urls: string[]; via?: string; restricted?: boolean; reason?: string }
   | { ok: boolean; sections: VkCatalogSection[] }
+  | { ok: boolean; platforms: ReturnType<typeof platformStatus> }
+  | { ok: boolean; status?: unknown }
+  | { ok: boolean; tracks?: Track[]; playlists?: unknown[]; sections?: CatalogSection[] }
+  | { ok: boolean; streams: Record<string, StreamRef> }
+  | { ok: boolean; presets: Record<string, number[]> }
   | { ok: boolean; blocks: VkCatalogBlock[] }
   | { ok: boolean; rules: BlockRules; disliked?: boolean }
   | { ok: boolean; lyrics: LyricsResult | null; error?: string }
@@ -545,6 +557,113 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
       if (!s.signedIn || !s.userId) return { ok: false, items: [], reason: s.reason };
       return { ok: true, items: await getStreamMix(s.userId) };
     }
+    // ---- Platform-neutral routing (any registered provider) ----
+    case 'P_PLATFORMS': {
+      return { ok: true, platforms: platformStatus() };
+    }
+    case 'P_AUTH': {
+      const p = provider(m.platform);
+      if (!p) return { ok: false, reason: PLATFORM_LABELS[m.platform] + ': ещё не поддерживается' };
+      return { ok: true, status: await p.auth() };
+    }
+    case 'P_LIST': {
+      // One entry point for every provider, so the popup never branches on the
+      // platform. `kind` selects which provider method answers.
+      const p = provider(m.platform ?? 'vk');
+      if (!p) return { ok: false, items: [], reason: 'платформа не поддерживается' };
+      switch (m.kind) {
+        case 'my-tracks':
+          return { ok: true, tracks: await p.myTracks() };
+        case 'playlists':
+          return { ok: true, playlists: await p.playlists() };
+        case 'playlist': {
+          // Resolve the playlist ref by key; a stale UI could send an id that no
+          // longer exists, which must not throw inside the message handler.
+          const all = await p.playlists();
+          const ref = all.find((x) => x.key === m.id);
+          return { ok: !!ref, tracks: ref ? await p.playlistTracks(ref) : [] };
+        }
+        case 'recommendations':
+          return { ok: true, tracks: await p.recommendations() };
+        case 'sections':
+          return { ok: true, sections: await p.sections() };
+        case 'section':
+          return { ok: true, tracks: m.id ? await p.sectionTracks(m.id) : [] };
+        case 'search':
+          return { ok: true, tracks: (await p.search(m.id ?? '')).tracks };
+        default:
+          return { ok: false, tracks: [], reason: 'неизвестный запрос' };
+      }
+    }
+    case 'P_LIKE': {
+      const p = providerForKey(m.key);
+      if (!p?.setLiked) {
+        return { ok: false, reason: PLATFORM_LABELS[parseTrackKey(m.key).platform] + ': лайки не поддерживаются' };
+      }
+      // The UI sends the full track, but a minimal one is enough: providers
+      // only need the platform and native id to call their library endpoint.
+      const parsed = parseTrackKey(m.key);
+      const track: Track = m.track ?? {
+        key: m.key,
+        platform: parsed.platform,
+        nativeId: parsed.nativeId,
+        artist: '',
+        title: '',
+        album: '',
+        duration: null,
+        cover: null,
+        restricted: false,
+      };
+      // VK distinguishes "already in the library" from a real failure, and a
+      // duplicate add is not an error worth showing the user.
+      try {
+        await p.setLiked(track, m.liked);
+      } catch (e) {
+        const msg = (e as Error).message || String(e);
+        if (/already/i.test(msg)) return { ok: true };
+        return { ok: false, reason: msg };
+      }
+      return { ok: true };
+    }
+    case 'GET_PRESETS': {
+      return { ok: true, presets: S.settings.eqPresets ?? {} };
+    }
+    case 'SAVE_PRESET': {
+      S.settings.eqPresets = { ...(S.settings.eqPresets ?? {}), [m.name]: m.gains };
+      persist();
+      return { ok: true, presets: S.settings.eqPresets };
+    }
+    case 'APPLY_PRESET': {
+      const gains = (S.settings.eqPresets ?? {})[m.name];
+      if (!gains) return { ok: false, state: playerSnapshot() };
+      S.settings.playerEqEnabled = true;
+      S.settings.playerEqGains = gains.slice();
+      persist();
+      const s = await sendToPlayer({ t: 'P_EQ_ENABLED', enabled: true });
+      let live = s;
+      if (gains.length) live = await sendToPlayer({ t: 'P_EQ_BANDS', gains });
+      if (live) rememberPlayerState(live as PlayerState);
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'P_RESOLVE': {
+      // Resolve keys across whatever providers own them, so a mixed queue works.
+      const out: Record<string, StreamRef> = {};
+      const byPlatform = new Map<PlatformId, Track[]>();
+      for (const key of m.keys) {
+        const p = providerForKey(key);
+        if (!p) continue;
+        const parsed = parseTrackKey(key);
+        const list = byPlatform.get(parsed.platform) ?? [];
+        list.push({ key, platform: parsed.platform, nativeId: parsed.nativeId, artist: '', title: '', album: '', duration: null, cover: null, restricted: false });
+        byPlatform.set(parsed.platform, list);
+      }
+      for (const [pid, tracks] of byPlatform) {
+        const p = provider(pid);
+        if (!p) continue;
+        Object.assign(out, await p.resolveMany(tracks));
+      }
+      return { ok: true, streams: out };
+    }
     case 'VK_ENQUEUE': {
       // Convert API tracks into catalog entries, then reuse the normal queue
       // path so journal/rehydrate/pause semantics all stay identical.
@@ -610,11 +729,18 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
       return { ok: true, state: playerSnapshot() };
     }
     case 'PLAY_VOLUME': {
+      // Persisted so a recreated offscreen document does not jump back to full
+      // volume — the previous behaviour restarted playback at 100%.
+      S.settings.playerVolume = Math.max(0, Math.min(1, m.volume));
+      persist();
       const s = await sendToPlayer({ t: 'P_VOLUME', volume: m.volume });
       if (s) rememberPlayerState(s as PlayerState);
       return { ok: true, state: playerSnapshot() };
     }
     case 'EQ_SET': {
+      S.settings.playerEqEnabled = m.enabled;
+      if (m.gains.length) S.settings.playerEqGains = m.gains.slice();
+      persist();
       // Enabled must be applied BEFORE the curve: the player zeroes every filter
       // while disabled, so sending only the bands would look like a no-op.
       let s = await sendToPlayer({ t: 'P_EQ_ENABLED', enabled: m.enabled });
@@ -1244,6 +1370,17 @@ chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
     return false;
   }
   if (msg?.t === 'PLAYER_READY') {
+    // A fresh offscreen document starts at full volume with a flat equalizer,
+    // so the saved preferences are pushed back in before anything plays.
+    void (async () => {
+      const vol = S.settings.playerVolume;
+      if (typeof vol === 'number') await sendToPlayer({ t: 'P_VOLUME', volume: vol });
+      if (S.settings.playerEqEnabled) {
+        await sendToPlayer({ t: 'P_EQ_ENABLED', enabled: true });
+        const gains = S.settings.playerEqGains;
+        if (gains?.length) await sendToPlayer({ t: 'P_EQ_BANDS', gains });
+      }
+    })();
     sendResponse({ ok: true });
     return false;
   }

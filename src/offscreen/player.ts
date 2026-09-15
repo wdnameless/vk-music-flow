@@ -1,4 +1,5 @@
 import type { EqBand, PlayerState, PlayerTrack } from '../types.js';
+import { EQ_BANDS } from '../types.js';
 
 /**
  * Audio player running inside the offscreen document.
@@ -17,8 +18,6 @@ import type { EqBand, PlayerState, PlayerTrack } from '../types.js';
  * commands and receives state, so playback survives popup closes.
  */
 
-/** Bands the equalizer exposes (Hz); matches what the reference UI shows. */
-export const EQ_BANDS: readonly number[] = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 const EQ_MIN_DB = -12;
 const EQ_MAX_DB = 12;
 /** Fade applied on play/pause/volume changes; avoids audible clicks. */

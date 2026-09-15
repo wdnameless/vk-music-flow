@@ -3,196 +3,233 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="stylesheet" href="popup.css" />
+    <title>Universal player</title>
   </head>
   <body>
-    <header>
-      <div class="logo">VK Music Flow</div>
-      <nav>
-        <button class="tab active" data-tab="scan">Скан</button>
-        <button class="tab" data-tab="music">Музыка</button>
-        <button class="tab" data-tab="lib">Плейлисты</button>
-        <button class="tab" data-tab="dl">Загрузки</button>
-        <button class="tab" data-tab="net">Сеть</button>
-        <button class="tab" data-tab="set">⚙</button>
-      </nav>
-    </header>
+    <!-- Layout mirrors the target design: icon sidebar, scrolling content
+         column, and a persistent player bar pinned to the bottom. The
+         equalizer is an overlay panel, not a separate screen. -->
+    <div class="app">
+      <aside class="side">
+        <div class="side-logo" title="Universal player">♪</div>
+        <nav class="side-nav">
+          <button class="nav-item active" data-view="home" title="Главная"><span class="ico">⌂</span><span class="cap">Главная</span></button>
+          <button class="nav-item" data-view="my" title="Моя музыка"><span class="ico">♪</span><span class="cap">Моя музыка</span></button>
+          <button class="nav-item" data-view="explore" title="Обзор"><span class="ico">◎</span><span class="cap">Обзор</span></button>
+          <button class="nav-item" data-view="search" title="Поиск"><span class="ico">⌕</span><span class="cap">Поиск</span></button>
+          <button class="nav-item" data-view="radio" title="Радио"><span class="ico">((·))</span><span class="cap">Радио</span></button>
+          <button class="nav-item" data-view="updates" title="Обновления"><span class="ico">⤒</span><span class="cap">Обновления</span></button>
+        </nav>
 
-    <section id="tab-scan" class="pane active">
-      <p class="hint">
-        Открой страницу плейлиста или «Моя музыка» на vk.com и нажми кнопку. Расширение само
-        пролистает список и соберёт треки.
-      </p>
-      <label>Имя плейлиста (пусто = взять со страницы)</label>
-      <input id="scanName" type="text" placeholder="Например: Мой рок" />
-      <button id="btnScan" class="primary">Сканировать текущую страницу</button>
-      <div class="row" style="margin-top: 8px">
-        <button id="btnDiag">Диагностика: скопировать ответы</button>
-      </div>
-      <div id="scanResult" class="result"></div>
-      <div id="diagResult" class="conn"></div>
-      <div id="connState" class="conn"></div>
-    </section>
+        <nav class="side-nav side-bottom">
+          <button class="nav-item" data-view="downloads" title="Загрузки"><span class="ico">↓</span><span class="cap">Загрузки</span></button>
+          <button class="nav-item" data-view="settings" title="Настройки"><span class="ico">⚙</span><span class="cap">Настройки</span></button>
+        </nav>
 
-    <section id="tab-music" class="pane">
-      <div id="vkAuth" class="conn"></div>
-      <div class="row">
-        <button id="btnVkMine">Моя музыка</button>
-        <button id="btnVkRecs">Рекомендации</button>
-        <button id="btnVkMix">Волна</button>
-      </div>
-      <div id="vkSections" class="row"></div>
-      <div class="row">
-        <input id="vkQuery" type="text" placeholder="Поиск треков…" spellcheck="false" />
-        <button id="btnVkSearch">Найти</button>
-      </div>
-      <div class="row">
-        <button id="btnVkAll">Выбрать все</button>
-        <button id="btnVkNone">Снять</button>
-        <span id="vkCount" class="muted"></span>
-      </div>
-      <ul id="vkList" class="list"></ul>
-      <div class="row">
-        <button id="btnVkPlay" class="primary">▶ Слушать выбранное</button>
-        <button id="btnVkDownload">Скачать выбранное</button>
-      </div>
-      <input id="vkPlaylistName" type="text" placeholder="Имя плейлиста для скачивания" />
-      <div id="vkNote" class="hint small"></div>
-    </section>
+        <div class="side-source">
+          <label class="tiny">Источник</label>
+          <select id="platformPick"></select>
+          <div id="platformState" class="tiny muted"></div>
+        </div>
+      </aside>
 
-    <section id="tab-lib" class="pane">
-      <div class="row">
-        <button id="btnAll">Выбрать все</button>
-        <button id="btnNone">Снять</button>
-        <span id="libTotal" class="muted"></span>
-      </div>
-      <ul id="plList"></ul>
-      <button id="btnDownload" class="primary">Скачать выбранное</button>
-    </section>
+      <main class="content">
+        <!-- Views are swapped, not re-created, so scroll position and event
+             wiring survive navigation. -->
+        <section class="view active" id="view-home">
+          <div id="homeHero" class="hero-grid"></div>
+          <h2 class="sect-title">Сегодня в плеере</h2>
+          <ul id="homeTracks" class="tracks"></ul>
+        </section>
 
-    <section id="tab-dl" class="pane">
-      <div class="stats">
-        <span>В очереди: <b id="qCount">0</b></span>
-        <span>Идёт: <b id="zCount">0</b></span>
-        <span>Готово всего: <b id="dCount">0</b></span>
-        <span>Ошибки: <b id="fCount">0</b></span>
-        <span id="pausedFlag" class="muted"></span>
-      </div>
-      <div class="row">
-        <button id="btnPause">Пауза</button>
-        <button id="btnResume">Продолжить</button>
-        <button id="btnRetry">Повторить ошибки</button>
-        <button id="btnCancel">Стоп</button>
-      </div>
-      <h3>Очередь</h3>
-      <div id="dlNote" class="hint small"></div>
-      <ul id="qList" class="list"></ul>
-      <h3>Неудачные</h3>
-      <ul id="fList" class="list err"></ul>
-    </section>
+        <section class="view" id="view-my">
+          <div class="row">
+            <button id="btnMyTracks" class="chip active">Треки</button>
+            <button id="btnMyPlaylists" class="chip">Плейлисты</button>
+          </div>
+          <ul id="myTracks" class="tracks"></ul>
+          <ul id="myPlaylists" class="pl-grid" hidden></ul>
+        </section>
 
-    <section id="tab-net" class="pane">
-      <h3>Прокси для VK</h3>
-      <p class="hint small">
-        Зарубежный доступ к ВКонтакте без сторонних прокси на весь браузер. В режиме
-        «только VK» через прокси идут лишь домены ВКонтакте, остальной браузер работает напрямую.
-      </p>
-      <label>Режим</label>
-      <select id="proxyMode">
-        <option value="vk-only">Только VK (рекомендуется)</option>
-        <option value="all">Весь браузер</option>
-        <option value="off">Выключен</option>
-      </select>
-      <div id="proxyApplied" class="conn"></div>
+        <section class="view" id="view-explore">
+          <h2 class="sect-title">Разделы</h2>
+          <div id="exploreSections" class="row"></div>
+          <ul id="exploreTracks" class="tracks"></ul>
+        </section>
 
-      <h3>Список прокси</h3>
-      <div id="proxyList" class="list"></div>
-      <div class="row">
-        <button id="btnProxyAdd">Добавить прокси</button>
-        <button id="btnProxyCheck">Проверить</button>
-      </div>
+        <section class="view" id="view-search">
+          <div class="row">
+            <input id="q" type="search" placeholder="Поиск треков…" spellcheck="false" />
+            <button id="btnSearch" class="chip active">Найти</button>
+          </div>
+          <ul id="searchResults" class="tracks"></ul>
+        </section>
 
-      <h3>Правила заголовков (DNR)</h3>
-      <p class="hint small">
-        Без подмены <code>Origin</code> ВКонтакте отвечает <code>wrong origin</code> на запросы из
-        расширения: этот заголовок нельзя задать скриптом, только правилами браузера.
-      </p>
-      <div id="dnrState" class="conn"></div>
-      <button id="btnDnrInstall">Переустановить правила</button>
-    </section>
+        <section class="view" id="view-radio">
+          <div class="row">
+            <button id="btnMix" class="chip active">Волна</button>
+            <button id="btnRecs" class="chip">Рекомендации</button>
+          </div>
+          <ul id="radioTracks" class="tracks"></ul>
+        </section>
 
-    <section id="tab-set" class="pane">
-      <h3>Хранилище</h3>
-      <div class="row">
-        <button id="btnPickDir">Выбрать папку…</button>
-        <button id="btnClearDir">Сбросить папку</button>
-      </div>
-      <div id="dirState" class="conn"></div>
-      <label>Куда сохранять</label>
-      <select id="storageMode">
-        <option value="downloads">В «Загрузки» (по умолчанию)</option>
-        <option value="fsa">В выбранную папку (любой диск)</option>
-      </select>
-      <p class="hint small">
-        Режим «выбранной папки» пишет файлы напрямую в выбранную директорию на любом диске. Если
-        Chrome снова спросит доступ — разреши его, файлы не уйдут в «Загрузки» молча.
-      </p>
-      <hr />
-      <label>Папка внутри «Загрузок» (для режима «В «Загрузки»»)</label>
-      <input id="baseDir" type="text" placeholder="VK Music" spellcheck="false" />
-      <div id="pathExample" class="hint small mono"></div>
-      <p class="hint small">Вложенность поддерживается: <code>Music/VK</code>.</p>
-      <label>Параллельных загрузок: <b id="concVal">2</b></label>
-      <input id="conc" type="range" min="1" max="5" value="2" />
-      <label>Пауза между запусками, мс</label>
-      <input id="gap" type="number" min="100" max="5000" step="50" value="450" />
-      <hr />
-      <h3>Пропуск треков</h3>
-      <p class="hint small">Артисты через запятую — их треки не будут играть.</p>
-      <input id="blockedArtists" type="text" placeholder="Например: Кино, AC/DC" spellcheck="false" />
-      <div id="blockedState" class="hint small"></div>
+        <section class="view" id="view-updates">
+          <h2 class="sect-title">Обновления</h2>
+          <div id="updatesBody" class="muted">Здесь появятся новые релизы и изменения.</div>
+        </section>
 
-      <hr />
-      <h3>Last.fm (скробблинг)</h3>
-      <p class="hint small">
-        Получи ключи на
-        <a href="https://www.last.fm/api/account/create" target="_blank">last.fm/api</a> и вставь их
-        сюда. Затем нажми «Войти» — откроется страница авторизации, после неё нажми «Готово».
-      </p>
-      <input id="lfApiKey" type="text" placeholder="API key" spellcheck="false" />
-      <input id="lfSecret" type="text" placeholder="Shared secret" spellcheck="false" />
-      <div class="row">
-        <button id="btnLfSave">Сохранить ключи</button>
-        <button id="btnLfLogin">Войти</button>
-        <button id="btnLfDone" hidden>Готово</button>
-        <button id="btnLfUnlink" hidden>Отключить</button>
-      </div>
-      <div id="lfState" class="conn"></div>
-      <div id="lfPending" class="hint small"></div>
-      <button id="btnLfFlush" hidden>Отправить отложенные</button>
+        <section class="view" id="view-downloads">
+          <div class="stats">
+            <span>В очереди <b id="qCount">0</b></span>
+            <span>Идёт <b id="zCount">0</b></span>
+            <span>Готово <b id="dCount">0</b></span>
+            <span>Ошибки <b id="fCount">0</b></span>
+            <span id="pausedFlag" class="muted"></span>
+          </div>
+          <div class="row">
+            <button id="btnPause">Пауза</button>
+            <button id="btnResume">Продолжить</button>
+            <button id="btnRetry">Повторить ошибки</button>
+            <button id="btnCancel">Стоп</button>
+          </div>
+          <h3 class="sect-title">Очередь</h3>
+          <div id="dlNote" class="tiny muted"></div>
+          <ul id="qList" class="tracks"></ul>
+          <h3 class="sect-title">Неудачные</h3>
+          <ul id="fList" class="tracks err"></ul>
 
-      <hr />
-      <button id="btnReset" class="danger">Сбросить каталог</button>
-    </section>
+          <h3 class="sect-title">Сохранение и сканирование страницы</h3>
+          <div class="row">
+            <button id="btnPickDir">Выбрать папку…</button>
+            <button id="btnClearDir">Сбросить папку</button>
+          </div>
+          <div id="dirState" class="tiny muted"></div>
+          <label class="tiny">Куда сохранять</label>
+          <select id="storageMode">
+            <option value="downloads">В «Загрузки»</option>
+            <option value="fsa">В выбранную папку</option>
+          </select>
+          <label class="tiny">Папка внутри «Загрузок»</label>
+          <input id="baseDir" type="text" placeholder="VK Music" spellcheck="false" />
+          <div id="pathExample" class="tiny muted"></div>
+          <label class="tiny">Параллельных загрузок: <b id="concVal">2</b></label>
+          <input id="conc" type="range" min="1" max="5" value="2" />
+          <label class="tiny">Пауза между запусками, мс</label>
+          <input id="gap" type="number" min="100" max="5000" step="50" value="450" />
 
-    <div id="playerBar" class="player-bar" hidden>
-      <div class="player-now">
-        <b id="pTitle">—</b> <span id="pArtist" class="muted"></span>
-      </div>
-      <div class="player-controls">
-        <button id="pPrev" title="Предыдущий">⏮</button>
-        <button id="pToggle" title="Пуск/пауза">▶</button>
-        <button id="pNext" title="Следующий">⏭</button>
-        <span id="pTime" class="mono muted">0:00 / 0:00</span>
-        <input id="pSeek" type="range" min="0" max="1000" value="0" />
-        <button id="pEq" title="Эквалайзер">EQ</button>
-      </div>
-      <div id="eqPanel" class="eq-panel" hidden>
-        <label class="row"
-          ><input id="eqOn" type="checkbox" /> Эквалайзер</label
-        >
+          <h3 class="sect-title">Скан вкладки ВКонтакте</h3>
+          <div class="row">
+            <input id="scanName" type="text" placeholder="Имя плейлиста" spellcheck="false" />
+            <button id="btnScan" class="chip">Сканировать</button>
+          </div>
+          <div id="scanResult" class="tiny muted"></div>
+          <button id="btnDiag" class="chip">Диагностика</button>
+          <div id="diagResult" class="tiny muted"></div>
+          <div id="connState" class="tiny muted"></div>
+          <ul id="plList" class="tracks"></ul>
+          <div class="row">
+            <button id="btnAll">Выбрать все</button>
+            <button id="btnNone">Снять</button>
+            <span id="libTotal" class="muted"></span>
+          </div>
+          <button id="btnDownload" class="chip active">Скачать выбранное</button>
+        </section>
+
+        <section class="view" id="view-settings">
+          <h2 class="sect-title">Прокси для VK</h2>
+          <p class="tiny muted">
+            В режиме «только VK» через прокси идут лишь домены ВКонтакте, остальной браузер — напрямую.
+          </p>
+          <label class="tiny">Режим</label>
+          <select id="proxyMode">
+            <option value="vk-only">Только VK (рекомендуется)</option>
+            <option value="all">Весь браузер</option>
+            <option value="off">Выключен</option>
+          </select>
+          <div id="proxyApplied" class="tiny muted"></div>
+          <ul id="proxyList" class="tracks"></ul>
+          <div class="row">
+            <button id="btnProxyAdd">Добавить прокси</button>
+            <button id="btnProxyCheck">Проверить</button>
+          </div>
+
+          <h2 class="sect-title">Правила заголовков</h2>
+          <div id="dnrState" class="tiny muted"></div>
+          <button id="btnDnrInstall">Переустановить правила</button>
+
+          <h2 class="sect-title">Пропуск треков</h2>
+          <label class="tiny">Артисты через запятую</label>
+          <input id="blockedArtists" type="text" placeholder="Кино, AC/DC" spellcheck="false" />
+          <div id="blockedState" class="tiny muted"></div>
+
+          <h2 class="sect-title">Last.fm</h2>
+          <p class="tiny muted">
+            Ключи — на <a href="https://www.last.fm/api/account/create" target="_blank">last.fm/api</a>.
+            Затем «Войти» → авторизация → «Готово».
+          </p>
+          <input id="lfApiKey" type="text" placeholder="API key" spellcheck="false" />
+          <input id="lfSecret" type="text" placeholder="Shared secret" spellcheck="false" />
+          <div class="row">
+            <button id="btnLfSave">Сохранить ключи</button>
+            <button id="btnLfLogin">Войти</button>
+            <button id="btnLfDone" hidden>Готово</button>
+            <button id="btnLfUnlink" hidden>Отключить</button>
+          </div>
+          <div id="lfState" class="tiny muted"></div>
+          <div id="lfPending" class="tiny muted"></div>
+          <button id="btnLfFlush" hidden>Отправить отложенные</button>
+
+          <h2 class="sect-title">Прочее</h2>
+          <button id="btnReset" class="danger">Сбросить каталог</button>
+        </section>
+      </main>
+
+      <!-- Equalizer overlay: toggled from the player bar, floats over content. -->
+      <div id="eqPanel" class="eq-overlay" hidden>
+        <div class="eq-head">
+          <span>Эквалайзер</span>
+          <label class="switch"><input id="eqOn" type="checkbox" /><span></span></label>
+        </div>
         <div id="eqBands" class="eq-bands"></div>
-        <button id="eqReset">Сбросить</button>
+        <div class="eq-foot">
+          <select id="eqPreset">
+            <option value="">— пресеты —</option>
+          </select>
+          <button id="eqSave">Сохранить</button>
+          <button id="eqReset">Сбросить</button>
+        </div>
       </div>
+
+      <footer class="player">
+        <div class="p-left">
+          <div id="pCover" class="p-cover"></div>
+          <div class="p-meta">
+            <div id="pTitle" class="p-title">Ничего не играет</div>
+            <div id="pArtist" class="p-artist"></div>
+          </div>
+        </div>
+
+        <div class="p-center">
+          <div class="p-row">
+            <button id="pPrev" class="icon" title="Предыдущий">⏮</button>
+            <button id="pToggle" class="icon play" title="Пуск/пауза">▶</button>
+            <button id="pNext" class="icon" title="Следующий">⏭</button>
+          </div>
+          <div class="p-row p-progress">
+            <span id="pTime" class="tiny muted">0:00</span>
+            <input id="pSeek" type="range" min="0" max="1000" value="0" />
+            <span id="pDur" class="tiny muted">0:00</span>
+          </div>
+        </div>
+
+        <div class="p-right">
+          <button id="pLike" class="icon" title="Нравится">♡</button>
+          <button id="pDislike" class="icon" title="Не нравится">✕</button>
+          <button id="pEq" class="icon" title="Эквалайзер">EQ</button>
+          <span class="ico small">🔊</span>
+          <input id="pVolume" type="range" min="0" max="100" value="100" />
+        </div>
+      </footer>
     </div>
 
     <script type="module" src="popup.ts"></script>

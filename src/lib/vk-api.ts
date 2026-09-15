@@ -340,3 +340,22 @@ export async function getStreamMix(ownerId: number, count = 50): Promise<VkAudio
   // Fall back to recommendations rather than surfacing an empty "wave".
   return await getRecommendations(ownerId, count);
 }
+
+/* ------------------------------------------------------------------ */
+/* Library actions                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Add a track to the signed-in account's music.
+ *
+ * `audio.add` needs the *owner* of the audio, not the listener, so a track
+ * from someone else's playlist is added to "My music" rather than modified.
+ */
+export async function addAudio(ownerId: number, audioId: number): Promise<void> {
+  await vkCall('audio.add', { owner_id: ownerId, audio_id: audioId });
+}
+
+/** Remove a track from the signed-in account's music. */
+export async function deleteAudio(ownerId: number, audioId: number): Promise<void> {
+  await vkCall('audio.delete', { owner_id: ownerId, audio_id: audioId });
+}

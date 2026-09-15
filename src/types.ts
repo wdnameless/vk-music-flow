@@ -208,6 +208,12 @@ export interface PlayerTrack {
   cover: string | null;
 }
 
+/**
+ * Equalizer bands in Hz, shared by the player (which builds the filters) and the
+ * UI (which renders one fader per band), so the two cannot drift apart.
+ */
+export const EQ_BANDS: readonly number[] = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+
 /** One equalizer band state. */
 export interface EqBand {
   hz: number;
@@ -278,6 +284,109 @@ export interface HeaderRule {
   headers: { name: string; value: string }[];
   /** Restrict to requests initiated by our own extension pages/worker. */
   ownOriginOnly?: boolean;
+}
+
+/* ------------------------------------------------------------------ */
+/* Universal player — platform-neutral model.                         */
+/*                                                                    */
+/* VK is the only implementation today; Spotify and YouTube are       */
+/* planned. Nothing above this layer may mention a specific service,  */
+/* so adding one does not touch the popup or the player.              */
+/* ------------------------------------------------------------------ */
+
+export type PlatformId = 'vk' | 'spotify' | 'youtube';
+
+export const PLATFORM_LABELS: Record<PlatformId, string> = {
+  vk: 'ВКонтакте',
+  spotify: 'Spotify',
+  youtube: 'YouTube',
+};
+
+/** A track as the UI and player see it, independent of the source service. */
+export interface Track {
+  /** Globally unique: `<platform>:<native id>`. */
+  key: string;
+  platform: PlatformId;
+  /** Id within the platform, e.g. `-2001001383_127001383` for VK. */
+  nativeId: string;
+  artist: string;
+  title: string;
+  album: string;
+  duration: number | null;
+  cover: string | null;
+  /** True when the platform reports the track as unplayable. */
+  restricted: boolean;
+  /**
+   * Platform-specific handle needed to re-resolve a stream later (VK's
+   * `access_key`). Kept opaque above this layer.
+   */
+  resolveToken?: string;
+  /** The account's own playlist/album this track came from, when known. */
+  collectionId?: string;
+}
+
+/** Which list the UI is asking a provider for. */
+export type PlatformKind =
+  | 'my-tracks'
+  | 'playlists'
+  | 'playlist'
+  | 'recommendations'
+  | 'sections'
+  | 'section'
+  | 'search';
+
+/** A playlist or album the user can open. */
+export interface PlaylistRef {
+  key: string;
+  platform: PlatformId;
+  nativeId: string;
+  title: string;
+  trackCount: number | null;
+  cover: string | null;
+  /** Opaque handle the provider needs to list the tracks. */
+  resolveToken?: string;
+}
+
+/** A navigable catalogue section ("My music", "Radio", …). */
+export interface CatalogSection {
+  id: string;
+  title: string;
+}
+
+/** A fresh playable stream for a track. */
+export interface StreamRef {
+  /**
+   * Direct URL when the platform exposes one. Empty for platforms that stream
+   * through their own SDK (Spotify), which the player must handle.
+   */
+  url: string;
+  /** MIME hint, when the platform provides one. */
+  mime?: string;
+  /** True when the URL is a manifest that must be assembled/decrypted. */
+  hls?: boolean;
+  /** Epoch ms after which the URL is expected to stop working. */
+  expiresAt?: number;
+  /**
+   * Which source answered (fresh API call, cached copy, …), for diagnostics
+   * and for the UI to explain a degraded result.
+   */
+  via?: 'api' | 'cached' | 'sdk';
+}
+
+/** Sign-in state for one platform. */
+export interface AuthStatus {
+  platform: PlatformId;
+  signedIn: boolean;
+  /** Account id/name when known. */
+  account: string | null;
+  /** Why sign-in is unavailable, when it is. */
+  reason: string | null;
+}
+
+/** Search results plus the query that produced them. */
+export interface SearchResult {
+  query: string;
+  tracks: Track[];
 }
 
 /** A harvested track object, produced by hook-main / collector / VK API, stored in the SW catalog. */
@@ -408,6 +517,16 @@ export interface Settings {
   storageMode: 'fsa' | 'downloads';
   /** Display name of the picked root directory (handle itself lives in IndexedDB). */
   rootName?: string;
+  /** Named equalizer curves, band gains in the player's band order. */
+  eqPresets?: Record<string, number[]>;
+  /**
+   * Player preferences. The offscreen document is torn down whenever playback
+   * goes idle, so without these the volume jumped back to full and the
+   * equalizer switched itself off on every new track.
+   */
+  playerVolume?: number;
+  playerEqEnabled?: boolean;
+  playerEqGains?: number[];
   // Phase 1 queue tuning (anti-ban / resilience):
   maxAttempts: number;
   baseBackoffMs: number;
@@ -493,6 +612,16 @@ export type RuntimeMessage =
   | { t: 'VK_SECTION'; sectionId: string }
   /** Endless personalised mix ("Волна"). */
   | { t: 'VK_MIX' }
+  /* Platform-neutral API (works for any registered provider): */
+  | { t: 'P_LIST'; platform?: PlatformId; kind: PlatformKind; id?: string }
+  | { t: 'P_PLATFORMS' }
+  | { t: 'P_AUTH'; platform: PlatformId }
+  | { t: 'P_RESOLVE'; keys: string[] }
+  | { t: 'P_LIKE'; key: string; liked: boolean; track?: Track }
+  /* Equalizer presets */
+  | { t: 'GET_PRESETS' }
+  | { t: 'SAVE_PRESET'; name: string; gains: number[] }
+  | { t: 'APPLY_PRESET'; name: string }
   /**
    * Put a set of resolved VK tracks into the download queue under `name`.
    * The SW converts them to catalog entries (keeping access_key/restricted) so
