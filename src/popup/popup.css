@@ -1,25 +1,49 @@
-/* Universal player — layout follows the target design: a narrow icon rail, a
-   scrolling content column, and a player bar pinned to the bottom. The palette
-   is the dark chrome of the reference UI; VK's own blue is the only accent. */
+/* Universal player — warm monochrome.
+   No gradients, no colour: hierarchy comes from type weight, size and spacing,
+   and every surface is flat with a 1px hairline border. The only saturated
+   value in the whole interface is the "unavailable" red, because that is a
+   real state and deserves to read as one. */
 
 :root {
-  --bg: #17171b;
-  --panel: #1e1e24;
-  --panel-2: #26262e;
-  --line: #2f2f39;
-  --text: #eceef3;
-  --muted: #8d8f9c;
-  --accent: #3b7dff;
-  --accent-soft: #2b5ed8;
-  --danger: #ff5f6d;
-  --ok: #37d67a;
-  --radius: 12px;
-  --side: 132px;
-  --player: 76px;
+  /* Warm graphite. A touch of red in each step keeps the greys from reading
+     blue on a display that is already cool. */
+  --canvas: #0f0e0d;
+  --surface: #17161400;
+  --raised: #1b1a18;
+  --sunken: #0b0a0a;
+  --line: #26241f;
+  --line-soft: #1e1c19;
+
+  --text: #eae7e2;
+  --muted: #8b857c;
+  --dim: #5d5851;
+
+  /* Inverted for actions, exactly like ink on paper — the same move the light
+     version makes, flipped because the canvas is dark. */
+  --ink: #eae7e2;
+  --ink-text: #141311;
+  --hover: #232019;
+
+  --danger: #c8665e;
+
+  --r-sm: 6px;
+  --r: 10px;
+  --side: 148px;
+  --player: 72px;
+
+  --sans: 'Segoe UI Variable Display', 'SF Pro Display', 'Geist Sans', system-ui, 'Segoe UI', sans-serif;
+  --mono: 'Cascadia Mono', 'SF Mono', 'JetBrains Mono', Consolas, monospace;
 }
 
 * {
   box-sizing: border-box;
+}
+
+/* Layout rules below set `display`, which would otherwise win over the
+   `hidden` attribute — the selection tray and the playlist grid were both
+   visible while "hidden". */
+[hidden] {
+  display: none !important;
 }
 
 html,
@@ -29,14 +53,37 @@ body {
 }
 
 body {
-  /* The popup is a fixed 720x560 window; the app fills it and only the content
-     column scrolls, so the player bar never leaves the screen. */
-  width: 720px;
-  height: 560px;
-  background: var(--bg);
+  width: 780px;
+  height: 600px;
+  background: var(--canvas);
   color: var(--text);
-  font: 13px/1.45 'Segoe UI', system-ui, sans-serif;
+  font: 13px/1.5 var(--sans);
+  font-feature-settings: 'cv05' 1;
   overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+.sprite {
+  display: none;
+}
+
+/* Icons inherit colour and never carry their own weight, so a row can dim as
+   a whole without the icon staying bright. */
+.ic {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ic.small {
+  width: 15px;
+  height: 15px;
+  color: var(--dim);
 }
 
 .app {
@@ -51,32 +98,31 @@ body {
 
 .side {
   grid-row: 1 / 3;
-  background: var(--panel);
+  background: var(--sunken);
   border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
-  padding: 10px 8px;
-  gap: 6px;
+  padding: 14px 10px 12px;
+  gap: 4px;
   overflow: hidden;
 }
 
 .side-logo {
-  width: 34px;
-  height: 34px;
-  margin: 2px auto 8px;
-  border-radius: 10px;
-  background: linear-gradient(135deg, var(--accent), #7aa2ff);
-  color: #fff;
+  width: 30px;
+  height: 30px;
+  margin: 2px 0 18px 4px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
+  color: var(--text);
 }
 
 .side-nav {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 .side-bottom {
@@ -86,54 +132,73 @@ body {
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
-  padding: 8px 9px;
+  padding: 7px 8px;
   border: 0;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   background: transparent;
   color: var(--muted);
   font: inherit;
+  font-size: 12.5px;
+  letter-spacing: -0.005em;
   text-align: left;
   cursor: pointer;
+  transition: color 0.14s, background 0.14s;
 }
 
 .nav-item:hover {
-  background: var(--panel-2);
+  background: var(--raised);
   color: var(--text);
 }
 
 .nav-item.active {
-  background: var(--panel-2);
   color: var(--text);
+  background: var(--raised);
 }
 
-.nav-item .ico {
-  width: 18px;
-  text-align: center;
-  font-size: 14px;
+/* The active row is marked by a rule at the edge rather than a fill, so the
+   sidebar stays quiet. */
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  width: 2px;
+  height: 16px;
+  border-radius: 1px;
+  background: var(--text);
 }
 
-.nav-item .cap {
-  font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.nav-item {
+  position: relative;
 }
 
 .side-source {
   border-top: 1px solid var(--line);
-  padding-top: 8px;
+  margin-top: 10px;
+  padding: 10px 4px 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
 }
 
 /* ---------------- Content ---------------- */
 
 .content {
   overflow-y: auto;
-  padding: 14px 16px 18px;
+  padding: 22px 26px 26px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+.content::-webkit-scrollbar {
+  width: 10px;
+}
+
+.content::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 5px;
+  border: 3px solid var(--canvas);
 }
 
 .view {
@@ -142,19 +207,69 @@ body {
 
 .view.active {
   display: block;
+  animation: rise 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-.sect-title {
-  font-size: 12px;
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.page-head {
+  margin-bottom: 18px;
+}
+
+.page-head h1 {
+  margin: 0 0 2px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.022em;
+}
+
+.page-head p {
+  margin: 0;
+}
+
+.list-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 22px 0 6px;
+}
+
+.list-head h2,
+.sect {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+
+.sect {
+  margin: 26px 0 10px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.meta {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--dim);
+  line-height: 1.5;
+}
+
+.label {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
-  margin: 16px 0 8px;
-  font-weight: 600;
-}
-
-.sect-title:first-child {
-  margin-top: 0;
 }
 
 .row {
@@ -162,106 +277,194 @@ body {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
-/* ---------------- Inputs ---------------- */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+  max-width: 340px;
+}
+
+/* ---------------- Controls ---------------- */
 
 input[type='text'],
 input[type='search'],
 input[type='number'],
 select {
-  background: var(--panel-2);
+  background: var(--sunken);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   color: var(--text);
   font: inherit;
-  padding: 7px 9px;
+  font-size: 12.5px;
+  padding: 8px 10px;
   min-width: 0;
+  transition: border-color 0.14s;
 }
 
 input[type='search'] {
   flex: 1;
+  min-width: 200px;
+}
+
+input::placeholder {
+  color: var(--dim);
 }
 
 input:focus,
 select:focus {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
+  outline: none;
+  border-color: var(--dim);
 }
 
 input[type='range'] {
-  accent-color: var(--accent);
+  accent-color: var(--text);
+  height: 3px;
+}
+
+/* A zeroed volume slider is dimmed, so "no sound" is visible at a glance. */
+input[type='range'].muted {
+  accent-color: var(--dim);
+  opacity: 0.55;
 }
 
 input[type='checkbox'] {
-  accent-color: var(--accent);
+  accent-color: var(--ink);
 }
 
 button {
-  background: var(--panel-2);
+  background: transparent;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   color: var(--text);
   font: inherit;
-  padding: 7px 12px;
+  font-size: 12.5px;
+  padding: 8px 13px;
   cursor: pointer;
+  transition: background 0.14s, border-color 0.14s, transform 0.08s;
 }
 
 button:hover:not(:disabled) {
-  border-color: var(--accent-soft);
+  background: var(--raised);
+  border-color: var(--dim);
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.985);
 }
 
 button:disabled {
-  opacity: 0.45;
+  opacity: 0.38;
   cursor: default;
 }
 
-button.chip.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+/* One solid action per view. Ink-on-paper, no shadow. */
+.btn-primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--ink-text);
+  font-weight: 500;
 }
 
-button.danger {
-  border-color: var(--danger);
+.btn-primary:hover:not(:disabled) {
+  background: #fff;
+  border-color: #fff;
+}
+
+.btn-danger {
   color: var(--danger);
+  border-color: #3a2926;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #1d1513;
+}
+
+button.chip {
+  border-radius: 100px;
+  padding: 6px 13px;
+  color: var(--muted);
+}
+
+button.chip.active {
+  background: var(--raised);
+  border-color: var(--dim);
+  color: var(--text);
 }
 
 button.mini {
-  padding: 2px 8px;
-  font-size: 11px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+button.mini .ic {
+  width: 10px;
+  height: 10px;
+}
+
+button.mini:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--dim);
+}
+
+/* Player controls get a little more room than a list row. */
+.p-right .ic,
+.p-row .ic {
+  width: 18px;
+  height: 18px;
 }
 
 /* ---------------- Track lists ---------------- */
 
-.tracks {
+.tracks,
+.notes {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
 
-.track {
+.tracks > li,
+.notes > li {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 6px 8px;
-  border-radius: 9px;
+  gap: 12px;
+  padding: 7px 10px 7px 4px;
+  border-radius: var(--r-sm);
+  animation: rise 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-.track:hover {
-  background: var(--panel);
+/* Hairlines instead of boxes: the list reads as a document, not a set of cards. */
+.tracks > li + li {
+  border-top: 1px solid var(--line-soft);
+}
+
+.tracks > li:hover {
+  background: var(--surface);
+}
+
+.tracks > li::after {
+  content: '';
 }
 
 .t-cover,
 .pl-cover {
-  width: 34px;
-  height: 34px;
-  border-radius: 7px;
-  background: var(--panel-2) center/cover no-repeat;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-sm);
+  background: var(--raised) center/cover no-repeat;
+  border: 1px solid var(--line-soft);
   flex: 0 0 auto;
 }
 
@@ -270,17 +473,54 @@ button.mini {
   flex-direction: column;
   min-width: 0;
   flex: 1;
+  gap: 1px;
 }
 
 .t-body b {
-  font-weight: 600;
+  font-weight: 500;
+  font-size: 13px;
+  letter-spacing: -0.008em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.t-body span {
+  font-size: 11.5px;
+  color: var(--dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .t-dur {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
   flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.track.muted .t-body b,
+.track.muted .t-body span {
+  color: var(--dim);
+}
+
+.bad {
+  color: var(--danger);
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+
+.ok {
+  color: var(--text);
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
 }
 
 .pl-grid {
@@ -288,22 +528,39 @@ button.mini {
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 6px;
 }
 
 .pl {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px;
-  border-radius: var(--radius);
-  background: var(--panel);
+  gap: 11px;
+  padding: 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
   cursor: pointer;
+  transition: background 0.14s, border-color 0.14s;
 }
 
 .pl:hover {
-  background: var(--panel-2);
+  background: var(--raised);
+  border-color: var(--line);
+}
+
+.pl-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.pl-body b {
+  font-weight: 500;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .hero-grid {
@@ -313,102 +570,138 @@ button.mini {
 }
 
 .hero {
-  background: var(--panel);
-  border-radius: var(--radius);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
   padding: 10px;
   cursor: pointer;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+  transition: background 0.14s, border-color 0.14s;
 }
 
 .hero:hover {
-  background: var(--panel-2);
+  background: var(--raised);
+  border-color: var(--line);
 }
 
 .hero-cover {
-  height: 92px;
-  border-radius: 9px;
-  background: var(--panel-2) center/cover no-repeat;
+  height: 104px;
+  border-radius: var(--r-sm);
+  background: var(--raised) center/cover no-repeat;
+  border: 1px solid var(--line-soft);
 }
 
-/* ---------------- Small text ---------------- */
-
-.tiny {
-  font-size: 11px;
+.hero .t-body b {
+  font-size: 12.5px;
 }
 
-.muted {
-  color: var(--muted);
+.notes > li {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line-soft);
 }
 
-.bad {
-  color: var(--danger);
+.notes > li b {
+  font-weight: 500;
+  font-size: 13px;
 }
 
-.ok {
-  color: var(--ok);
-}
-
-.mono {
-  font-family: ui-monospace, Consolas, monospace;
+.notes > li span {
+  font-size: 12px;
+  color: var(--dim);
 }
 
 .err-msg {
   color: var(--danger);
   font-size: 11px;
+  font-family: var(--mono);
 }
+
+/* ---------------- Stats ---------------- */
 
 .stats {
-  display: flex;
-  gap: 14px;
-  font-size: 12px;
-  color: var(--muted);
-  margin-bottom: 10px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--line-soft);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  overflow: hidden;
+  margin-bottom: 16px;
 }
 
-.stats b {
-  color: var(--text);
+.stat {
+  background: var(--canvas);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stat span {
+  font-family: var(--mono);
+  font-size: 20px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.stat label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--dim);
 }
 
 a {
-  color: var(--accent);
+  color: var(--text);
+  text-decoration-color: var(--dim);
+  text-underline-offset: 2px;
 }
 
 /* ---------------- Player bar ---------------- */
 
 .player {
   grid-column: 2;
-  background: var(--panel);
+  background: var(--sunken);
   border-top: 1px solid var(--line);
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: minmax(0, 1fr) auto max-content;
   align-items: center;
   gap: 12px;
-  padding: 8px 14px;
+  padding: 0 16px;
 }
 
 .p-left {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 11px;
   min-width: 0;
 }
 
 .p-cover {
-  width: 42px;
-  height: 42px;
-  border-radius: 9px;
-  background: var(--panel-2) center/cover no-repeat;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-sm);
+  background: var(--raised) center/cover no-repeat;
+  border: 1px solid var(--line-soft);
   flex: 0 0 auto;
 }
 
 .p-meta {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  gap: 1px;
 }
 
 .p-title {
-  font-weight: 600;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.008em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -416,7 +709,7 @@ a {
 
 .p-artist {
   font-size: 11px;
-  color: var(--muted);
+  color: var(--dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -426,17 +719,18 @@ a {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
 }
 
 .p-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .p-progress {
-  width: 260px;
+  width: 176px;
+  gap: 8px;
 }
 
 .p-progress input {
@@ -447,77 +741,115 @@ a {
 button.icon {
   border: 0;
   background: transparent;
-  padding: 4px 6px;
-  font-size: 15px;
-  color: var(--text);
-  border-radius: 8px;
+  padding: 4px;
+  color: var(--muted);
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-button.icon:hover {
-  background: var(--panel-2);
+button.icon:hover:not(:disabled) {
+  background: var(--raised);
+  border-color: transparent;
+  color: var(--text);
 }
 
 button.icon.play {
-  background: var(--accent);
-  color: #fff;
-  width: 34px;
-  height: 34px;
+  background: var(--ink);
+  color: var(--ink-text);
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
-  font-size: 14px;
 }
 
 button.icon.play:hover {
-  background: var(--accent-soft);
+  background: #fff;
 }
 
 button.icon.liked {
-  color: var(--accent);
+  color: var(--text);
 }
 
 .p-right {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
+  gap: 4px;
 }
 
 .p-right input[type='range'] {
-  width: 90px;
+  width: 68px;
 }
 
-.ico.small {
-  font-size: 13px;
+/* ---------------- Selection tray ----------------
+   Floats above the player bar so a long list can be acted on without
+   scrolling back to a button. */
+
+.sel-tray {
+  position: absolute;
+  left: calc(var(--side) + 26px);
+  right: 26px;
+  bottom: calc(var(--player) + 14px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 9px 10px 9px 16px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 100px;
+  z-index: 15;
+  animation: rise 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.sel-count {
+  font-size: 12px;
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
-/* ---------------- Equalizer overlay ---------------- */
+.sel-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.sel-actions button {
+  border-radius: 100px;
+  padding: 6px 14px;
+}
+
+/* ---------------- Equalizer ---------------- */
 
 .eq-overlay {
   position: absolute;
-  right: 16px;
-  bottom: calc(var(--player) + 12px);
-  width: 320px;
-  background: var(--panel);
+  right: 20px;
+  bottom: calc(var(--player) + 14px);
+  width: 336px;
+  background: var(--raised);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 12px;
+  border-radius: var(--r);
+  padding: 14px;
   z-index: 20;
-  box-shadow: 0 12px 32px rgb(0 0 0 / 45%);
+  animation: rise 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .eq-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-weight: 600;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: -0.008em;
 }
 
 .eq-bands {
   display: flex;
   justify-content: space-between;
-  gap: 4px;
-  height: 150px;
+  gap: 2px;
+  height: 152px;
+  padding: 0 2px;
 }
 
 .eq-bands .band {
@@ -525,48 +857,51 @@ button.icon.liked {
   flex-direction: column;
   align-items: center;
   justify-content: flex-end;
-  gap: 4px;
+  gap: 5px;
   flex: 1;
 }
 
 .eq-bands input[type='range'] {
-  /* Vertical sliders: the band layout in the design is a column of faders. */
   writing-mode: vertical-lr;
   direction: rtl;
-  width: 18px;
+  width: 16px;
   height: 100px;
 }
 
 .eq-bands .hz,
 .eq-bands .db {
-  font-size: 10px;
-  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
 }
 
 .eq-foot {
   display: flex;
   gap: 6px;
-  margin-top: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
 }
 
 .eq-foot select {
   flex: 1;
 }
 
-/* Switch used by the equalizer header. */
 .switch input {
   display: none;
 }
 
 .switch span {
   display: block;
-  width: 34px;
-  height: 18px;
+  width: 32px;
+  height: 17px;
   border-radius: 9px;
-  background: var(--panel-2);
+  background: var(--sunken);
+  border: 1px solid var(--line);
   position: relative;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.16s, border-color 0.16s;
 }
 
 .switch span::after {
@@ -574,17 +909,19 @@ button.icon.liked {
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 14px;
-  height: 14px;
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
-  background: #fff;
-  transition: transform 0.15s;
+  background: var(--dim);
+  transition: transform 0.16s, background 0.16s;
 }
 
 .switch input:checked + span {
-  background: var(--accent);
+  background: var(--ink);
+  border-color: var(--ink);
 }
 
 .switch input:checked + span::after {
-  transform: translateX(16px);
+  transform: translateX(15px);
+  background: var(--ink-text);
 }

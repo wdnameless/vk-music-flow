@@ -618,6 +618,8 @@ export type RuntimeMessage =
   | { t: 'P_AUTH'; platform: PlatformId }
   | { t: 'P_RESOLVE'; keys: string[] }
   | { t: 'P_LIKE'; key: string; liked: boolean; track?: Track }
+  /** Queue an explicit set of tracks for download, from any list in the UI. */
+  | { t: 'P_ENQUEUE'; tracks: Track[]; name?: string }
   /* Equalizer presets */
   | { t: 'GET_PRESETS' }
   | { t: 'SAVE_PRESET'; name: string; gains: number[] }

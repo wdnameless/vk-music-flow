@@ -1,4 +1,5 @@
 import type {
+  AudioMeta,
   AuthStatus,
   CatalogSection,
   PlaylistRef,
@@ -11,6 +12,7 @@ import type {
 import type { ProviderCapabilities } from './provider.js';
 import { trackKey } from './provider.js';
 import type { MusicProvider } from './provider.js';
+import { audioMetaFromVk } from '../lib/vk-track.js';
 import {
   addAudio,
   authState,
@@ -192,6 +194,26 @@ class VkProvider implements MusicProvider {
       if (url) out[t.key] = { url, hls: /\.m3u8/i.test(url), via: 'api' };
     }
     return out;
+  }
+
+  /**
+   * VK's catalog entry is exactly what `audioMetaFromVk` produces, so the
+   * downloader reuses one conversion rather than a second, drifting copy.
+   */
+  catalogEntry(track: Track): AudioMeta | null {
+    const parts = splitNativeId(track.nativeId);
+    if (!parts) return null;
+    return audioMetaFromVk({
+      id: parts.id,
+      owner_id: parts.owner,
+      artist: track.artist,
+      title: track.title,
+      album: track.album ? { title: track.album } : undefined,
+      duration: track.duration ?? undefined,
+      access_key: track.resolveToken,
+      thumb: track.cover ? { src: track.cover } : undefined,
+      content_restricted: track.restricted ? 3 : undefined,
+    });
   }
 
   async setLiked(track: Track, liked: boolean): Promise<void> {

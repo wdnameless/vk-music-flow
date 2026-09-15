@@ -36,6 +36,8 @@ let activePlatform: PlatformId = 'vk';
 /** Tracks currently rendered in the platform list, and the ticked subset. */
 let listTracks: Track[] = [];
 const ticked = new Set<string>();
+/** Host element of the list currently on screen, so a repaint knows where to go. */
+let lastListTarget = 'homeTracks';
 
 function send<T = unknown>(msg: RuntimeMessage): Promise<T> {
   return chrome.runtime.sendMessage(msg) as Promise<T>;
@@ -117,7 +119,7 @@ async function loadList(
   target: string,
 ): Promise<void> {
   const host = $(target);
-  host.innerHTML = '<li class="muted">Загружаю…</li>';
+  host.innerHTML = '<li class="meta">Загружаю…</li>';
   try {
     const r = await send<{ ok: boolean; tracks?: Track[]; playlists?: PlaylistRef[]; sections?: CatalogSection[]; reason?: string }>({
       t: 'P_LIST',
@@ -126,14 +128,14 @@ async function loadList(
       id,
     });
     if (!r.ok) {
-      host.innerHTML = `<li class="muted">${escapeHtml(r.reason || 'не удалось получить данные')}</li>`;
+      host.innerHTML = `<li class="meta">${escapeHtml(r.reason || 'не удалось получить данные')}</li>`;
       return;
     }
     if (r.sections) {
       host.innerHTML = '';
       $('exploreSections').innerHTML = r.sections.length
         ? r.sections.map((s) => `<button class="chip" data-section="${escapeHtml(s.id)}">${escapeHtml(s.title)}</button>`).join('')
-        : '<span class="muted">Разделов нет.</span>';
+        : '<span class="meta">Разделов нет.</span>';
       return;
     }
     if (r.playlists) {
@@ -151,7 +153,7 @@ async function loadList(
 function renderPlaylists(items: PlaylistRef[], target: string): void {
   const host = $(target);
   if (!items.length) {
-    host.innerHTML = '<li class="muted">Плейлистов нет.</li>';
+    host.innerHTML = '<li class="meta">Плейлистов нет.</li>';
     return;
   }
   host.innerHTML = items
@@ -160,42 +162,71 @@ function renderPlaylists(items: PlaylistRef[], target: string): void {
         `<li class="pl" data-pl="${escapeHtml(p.key)}">` +
         `<div class="pl-cover"${p.cover ? ` style="background-image:url('${escapeHtml(p.cover)}')"` : ''}></div>` +
         `<div class="pl-body"><b>${escapeHtml(p.title)}</b>` +
-        `<span class="tiny muted">${p.trackCount ?? '?'} треков</span></div></li>`,
+        `<span class="meta">${p.trackCount ?? '?'} треков</span></div></li>`,
     )
     .join('');
 }
 
-function trackRow(t: Track, opts: { tick?: boolean; play?: boolean } = {}): string {
+function trackRow(t: Track, opts: { tick?: boolean } = {}): string {
   const isTicked = ticked.has(t.key);
+  const play = `<button class="mini" data-play="${escapeHtml(t.key)}"><svg class="ic" style="width:11px;height:11px"><use href="#i-play"/></svg></button>`;
   return (
     `<li data-key="${escapeHtml(t.key)}" class="track${t.restricted ? ' muted' : ''}">` +
     (opts.tick !== false
       ? `<input type="checkbox" data-tick="${escapeHtml(t.key)}"${isTicked ? ' checked' : ''}${t.restricted ? ' disabled' : ''}/>`
       : '') +
     `<div class="t-cover"${t.cover ? ` style="background-image:url('${escapeHtml(t.cover)}')"` : ''}></div>` +
-    `<div class="t-body"><b>${escapeHtml(t.title || '—')}</b><span class="tiny muted">${escapeHtml(t.artist)}</span></div>` +
-    `<span class="tiny muted t-dur">${fmtDur(t.duration)}</span>` +
-    `${t.restricted ? ' <span class="bad">недоступен</span>' : `<button class="mini" data-play="${escapeHtml(t.key)}">▶</button>`}` +
+    `<div class="t-body"><b>${escapeHtml(t.title || '—')}</b><span>${escapeHtml(t.artist)}</span></div>` +
+    `<span class="t-dur">${fmtDur(t.duration)}</span>` +
+    (t.restricted ? '<span class="bad">недоступен</span>' : play) +
     '</li>'
   );
 }
 
 function renderTracks(target: string): void {
+  lastListTarget = target;
   const host = $(target);
   if (!listTracks.length) {
-    host.innerHTML = '<li class="muted">Пусто.</li>';
+    host.innerHTML = '<li class="meta">Ничего нет.</li>';
+    updateCount();
     return;
   }
   host.innerHTML = listTracks.map((t) => trackRow(t)).join('');
   updateCount();
 }
 
+/** Keep the tray and the download button honest about what will be queued. */
 function updateCount(): void {
   const el = $('libTotal');
-  if (el) el.textContent = listTracks.length ? `${listTracks.length} треков, выбрано ${ticked.size}` : '';
-  const dl = document.getElementById('btnDownload') as HTMLButtonElement | null;
-  if (dl) dl.disabled = ticked.size === 0;
+  if (el) {
+    el.textContent = listTracks.length
+      ? `${listTracks.length} треков · выбрано ${ticked.size}`
+      : '';
+  }
+  const tray = $('selTray');
+  if (tray) {
+    tray.hidden = ticked.size === 0;
+    $('selCount').textContent = `Выбрано ${ticked.size}`;
+  }
+  const dl = $btn('btnDownload');
+  if (dl) dl.disabled = ticked.size === 0 && selected.size === 0;
 }
+
+/* ---------------- Selection tray ---------------- */
+
+$('selClear').addEventListener('click', () => {
+  ticked.clear();
+  renderTracks(lastListTarget);
+});
+$('selPlay').addEventListener('click', () => {
+  const keys = listTracks.filter((t) => ticked.has(t.key) && !t.restricted).map((t) => t.key);
+  if (keys.length) void playTracks(keys);
+});
+$('selDownload').addEventListener('click', async () => {
+  showView('downloads');
+  await queueTicked();
+  void refresh();
+});
 
 /** Shared click handling for every track list: tick and play. */
 function wireTrackList(target: string): void {
@@ -211,15 +242,19 @@ function wireTrackList(target: string): void {
     }
     const playKey = el.dataset.play;
     if (playKey) await playTracks([playKey]);
-    const plKey = (el.closest('.pl') as HTMLElement | null)?.dataset.pl;
-    if (plKey) {
-      // Opening a playlist replaces the platform list. The queue labels its
-      // folder with the playlist title, so carry the human name over rather
-      // than the opaque key.
-      const title = el.closest('.pl')?.querySelector('b')?.textContent;
-      await loadList('playlist', plKey, target);
-      if (title) $in('scanName').value = title;
+    // Shift-click a playlist card opens it; a plain click on the card body does
+    // the same, which is the only affordance that reads as "this is a folder".
+    if (el.closest('.pl') && !el.closest('button')) {
+      const card = el.closest('.pl') as HTMLElement;
+      const key = card.dataset.pl;
+      if (key) {
+        const title = card.querySelector('b')?.textContent;
+        await loadList('playlist', key, target);
+        if (title) $in('scanName').value = title;
+      }
+      return;
     }
+
   });
 }
 
@@ -277,17 +312,27 @@ function render(): void {
   const qList = $('qList');
   qList.innerHTML = '';
   const qShow = state.queue.slice(0, 30);
-  if (!qShow.length) qList.innerHTML = '<li class="muted">Очередь пуста</li>';
+  if (!qShow.length) qList.innerHTML = '<li class="meta">Очередь пуста</li>';
   for (const q of qShow) {
     const li = document.createElement('li');
-    li.textContent = `[${String(q.idx).padStart(2, '0')}] ${q.pl} — ${q.a ? q.a.artist + ' — ' + q.a.title : '?'}`;
+    const num = document.createElement('span');
+    num.className = 't-dur';
+    num.textContent = String(q.idx).padStart(2, '0');
+    const body = document.createElement('div');
+    body.className = 't-body';
+    const title = document.createElement('b');
+    title.textContent = q.a ? q.a.title || '?' : '?';
+    const sub = document.createElement('span');
+    sub.textContent = (q.a?.artist ? q.a.artist + ' · ' : '') + q.pl;
+    body.append(title, sub);
+    li.append(num, body);
     qList.appendChild(li);
   }
 
   const fList = $('fList');
   fList.innerHTML = '';
   const fShow = state.failed.slice(0, 30);
-  if (!fShow.length) fList.innerHTML = '<li class="muted">Нет ошибок</li>';
+  if (!fShow.length) fList.innerHTML = '<li class="meta">Ошибок нет</li>';
   for (const f of fShow) {
     const li = document.createElement('li');
     const t = document.createElement('span');
@@ -304,7 +349,7 @@ function render(): void {
   const names = Object.keys(state.playlists).sort((a, b) => a.localeCompare(b));
   if (!names.length) {
     plList.innerHTML =
-      '<li class="muted">Плейлисты не собраны. Открой плейлист в VK и нажми «Сканировать».</li>';
+      '<li class="meta">Плейлисты не собраны. Открой плейлист во ВКонтакте и нажми «Сканировать вкладку».</li>';
   }
   for (const name of names) {
     const li = document.createElement('li');
@@ -328,7 +373,7 @@ function render(): void {
 }
 
 function updateDlBtn(): void {
-  $btn('btnDownload').disabled = !selected.size;
+  $btn('btnDownload').disabled = !selected.size && !ticked.size;
 }
 
 async function refresh(): Promise<void> {
@@ -344,8 +389,15 @@ async function refresh(): Promise<void> {
 
 /** Resolve fresh URLs (VK links expire) then hand the list to the player. */
 async function playTracks(keys: string[]): Promise<void> {
-  const picked = listTracks.filter((t) => keys.includes(t.key) && !t.restricted);
-  if (!picked.length) return;
+  const wanted = new Set(keys);
+  const picked = listTracks.filter((t) => wanted.has(t.key) && !t.restricted);
+  if (!picked.length) {
+    $('dlNote').textContent = 'Эти треки недоступны для воспроизведения.';
+    return;
+  }
+  if (picked.length < keys.length) {
+    $('dlNote').textContent = `Пропущено недоступных: ${keys.length - picked.length}.`;
+  }
   const r = await send<{ ok: boolean; streams: Record<string, { url: string }> }>({
     t: 'P_RESOLVE',
     keys: picked.map((t) => t.key),
@@ -445,6 +497,10 @@ function renderPlayer(): void {
   }
   const vol = $in('pVolume');
   if (document.activeElement !== vol) vol.value = String(Math.round(s.volume * 100));
+  // Silence while a track plays is indistinguishable from a broken player, so
+  // the bar states it explicitly.
+  vol.classList.toggle('muted', s.volume === 0);
+  vol.title = s.volume === 0 ? 'Звук выключен' : `Громкость ${Math.round(s.volume * 100)}%`;
   const eqOn = $in('eqOn');
   if (document.activeElement !== eqOn) eqOn.checked = s.eqEnabled;
   renderEqBands(s.eqBands);
@@ -600,23 +656,69 @@ $('eqSave').addEventListener('click', async () => {
 
 /* ---------------- Download selection ---------------- */
 
+/**
+ * Two independent selections feed the download button:
+ *  - `ticked` — individual tracks picked in any list (my music, search, radio,
+ *    catalogue, an opened playlist);
+ *  - `selected` — whole playlists collected by the page scanner.
+ *
+ * They are queued through different paths because a scanned playlist is the
+ * downloader's own catalog, while a ticked track arrives as a Track and needs
+ * the platform to convert it into a catalog entry first.
+ */
+async function queueTicked(): Promise<number> {
+  const picked = listTracks.filter((t) => ticked.has(t.key));
+  if (!picked.length) return 0;
+  // Label the folder after the open playlist when there is one, so a download
+  // from inside a playlist lands under that playlist's name.
+  const name = $in('scanName').value.trim() || 'Загрузки';
+  const r = await send<{ ok: boolean; queued: number; skipped: number; reason?: string }>({
+    t: 'P_ENQUEUE',
+    tracks: picked,
+    name,
+  });
+  if (!r?.ok) {
+    $('dlNote').textContent = r?.reason || 'не удалось поставить в очередь';
+    return 0;
+  }
+  $('dlNote').textContent = r.skipped
+    ? `В очередь: ${r.queued}. Пропущено недоступных: ${r.skipped}.`
+    : `В очередь: ${r.queued}.`;
+  return r.queued;
+}
+
 $('btnAll').addEventListener('click', () => {
+  // Scan results and ticked tracks are separate: this button belongs to the
+  // scanner block, so it selects playlists, and the track lists have their own
+  // "выбрать всё" behaviour below.
   Object.keys(state?.playlists ?? {}).forEach((n) => selected.add(n));
   render();
 });
 $('btnNone').addEventListener('click', () => {
   selected.clear();
+  ticked.clear();
   render();
+  if (listTracks.length) renderTracks(lastListTarget);
 });
 $('btnDownload').addEventListener('click', async () => {
-  const r = await send<{ queued: number; skipped: number }>({ t: 'ENQUEUE', names: [...selected] });
   showView('downloads');
-  const note = $('dlNote');
-  note.textContent = r?.skipped
-    ? `Пропущено без ссылки: ${r.skipped}. Проиграй эти треки в плеере, чтобы получить ссылку, и повтори.`
-    : r
-      ? `В очередь: ${r.queued}`
-      : '';
+  const fromTracks = await queueTicked();
+  let fromPlaylists = 0;
+  if (selected.size) {
+    const r = await send<{ queued: number; skipped: number }>({ t: 'ENQUEUE', names: [...selected] });
+    fromPlaylists = r?.queued ?? 0;
+    if (!fromTracks && r?.skipped) {
+      $('dlNote').textContent =
+        `Пропущено без ссылки: ${r.skipped}. Проиграй эти треки в плеере, чтобы получить ссылку, и повтори.`;
+    } else if (!fromTracks) {
+      $('dlNote').textContent = `В очередь: ${r?.queued ?? 0}`;
+    }
+    selected.clear();
+  }
+  if (!fromTracks && !fromPlaylists) {
+    $('dlNote').textContent = 'Нечего скачивать: отметь треки галочками или плейлист ниже.';
+  }
+  refresh();
 });
 $('btnRetry').addEventListener('click', () => void send({ t: 'RETRY_FAILED' }));
 $('btnPause').addEventListener('click', () => void send({ t: 'PAUSE' }));
@@ -651,15 +753,19 @@ $('baseDir').addEventListener('input', (e) => {
 async function loadHome(): Promise<void> {
   // The home shelf mirrors what VK itself puts first: the account's own music.
   await loadList('my-tracks', undefined, 'homeTracks');
-  $('homeHero').innerHTML = listTracks
+  const playable = listTracks.filter((t) => !t.restricted);
+  $('homeHero').innerHTML = playable
     .slice(0, 3)
     .map(
       (t) =>
         `<div class="hero" data-play="${escapeHtml(t.key)}">` +
         `<div class="hero-cover"${t.cover ? ` style="background-image:url('${escapeHtml(t.cover)}')"` : ''}></div>` +
-        `<div class="t-body"><b>${escapeHtml(t.title)}</b><span class="tiny muted">${escapeHtml(t.artist)}</span></div></div>`,
+        `<div class="t-body"><b>${escapeHtml(t.title)}</b><span>${escapeHtml(t.artist)}</span></div></div>`,
     )
     .join('');
+  $('homeCount').textContent = listTracks.length
+    ? `${listTracks.length} треков` + (playable.length < listTracks.length ? `, из них ${playable.length} играбельных` : '')
+    : '';
   $('homeHero').addEventListener('click', (e) => {
     const hero = (e.target as HTMLElement).closest('.hero') as HTMLElement | null;
     const key = hero?.dataset.play;
@@ -1120,56 +1226,4 @@ $('btnDiag').addEventListener('click', async () => {
   } finally {
     btn.disabled = false;
   }
-});
-
-$('btnAll').addEventListener('click', () => {
-  Object.keys(state!.playlists).forEach((n) => selected.add(n));
-  render();
-});
-$('btnNone').addEventListener('click', () => {
-  selected.clear();
-  render();
-});
-$('btnDownload').addEventListener('click', async () => {
-  const r = await send<{ queued: number; skipped: number }>({ t: 'ENQUEUE', names: [...selected] });
-  showView('downloads');
-  const note = $('dlNote');
-  if (r && r.skipped) {
-    note.textContent =
-      `Пропущено без ссылки: ${r.skipped}. Открой треки в плеере (проиграй их), чтобы хук получил ссылку, и повтори.`;
-  } else {
-    note.textContent = r ? `В очередь: ${r.queued}` : '';
-  }
-});
-$('btnRetry').addEventListener('click', () => void send({ t: 'RETRY_FAILED' }));
-$('btnPause').addEventListener('click', () => void send({ t: 'PAUSE' }));
-$('btnResume').addEventListener('click', () => void send({ t: 'RESUME' }));
-$('btnCancel').addEventListener('click', () => void send({ t: 'CANCEL' }));
-$('btnReset').addEventListener('click', async () => {
-  if (confirm('Удалить весь собранный каталог?')) {
-    await send({ t: 'RESET' });
-    selected.clear();
-    void refresh();
-  }
-});
-$('conc').addEventListener('input', (e) => {
-  const target = e.target as HTMLInputElement;
-  $('concVal').textContent = target.value;
-  void send({ t: 'SETTINGS', patch: { conc: +target.value } });
-});
-$('gap').addEventListener('change', (e) => {
-  const target = e.target as HTMLInputElement;
-  void send({ t: 'SETTINGS', patch: { gapMs: +target.value } });
-});
-$('baseDir').addEventListener('input', (e) => {
-  const target = e.target as HTMLInputElement;
-  const v = target.value.trim() || 'VK Music';
-  $('pathExample').textContent =
-    'Загрузки/' +
-    v
-      .split(/[\\/]+/)
-      .filter(Boolean)
-      .join('/') +
-    '/<плейлист>/01 Artist - Title.mp3';
-  void send({ t: 'SETTINGS', patch: { baseDir: v } });
 });

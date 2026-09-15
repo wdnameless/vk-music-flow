@@ -1,4 +1,5 @@
 import type {
+  AudioMeta,
   AuthStatus,
   CatalogSection,
   PlatformId,
@@ -89,6 +90,16 @@ export interface MusicProvider {
    * control when a platform cannot do it, rather than showing a dead button.
    */
   setLiked?(track: Track, liked: boolean): Promise<void>;
+
+  /**
+   * Convert a track into a self-sufficient catalog entry for the downloader.
+   *
+   * The downloader works from the catalog, not from `Track`: it needs the
+   * platform's own token to re-resolve a fresh URL minutes later (VK's links
+   * expire) and the restriction marker, so a track that can never be fetched
+   * fails terminally instead of being retried forever.
+   */
+  catalogEntry?(track: Track): AudioMeta | null;
 }
 
 /** Build the globally unique key for a track on a platform. */

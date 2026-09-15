@@ -374,6 +374,7 @@ type HandlerResult =
   | { ok: boolean; tracks?: Track[]; playlists?: unknown[]; sections?: CatalogSection[] }
   | { ok: boolean; streams: Record<string, StreamRef> }
   | { ok: boolean; presets: Record<string, number[]> }
+  | { ok: boolean; queued: number; skipped: number; total?: number; reason?: string }
   | { ok: boolean; blocks: VkCatalogBlock[] }
   | { ok: boolean; rules: BlockRules; disliked?: boolean }
   | { ok: boolean; lyrics: LyricsResult | null; error?: string }
@@ -594,6 +595,53 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
         default:
           return { ok: false, tracks: [], reason: 'неизвестный запрос' };
       }
+    }
+    case 'P_ENQUEUE': {
+      // Downloading a selection the user made in a list (my music, search,
+      // recommendations, a playlist). Entries go through the platform's
+      // catalogEntry so the downloader has the token it needs to re-resolve a
+      // stream later, which a bare Track does not carry.
+      stopFlag = false;
+      paused = false;
+      const name = (m.name || '').trim() || 'Загрузки';
+      let skipped = 0;
+      const usable: AudioMeta[] = [];
+      for (const t of m.tracks) {
+        if (t.restricted) {
+          skipped++;
+          continue;
+        }
+        const p = providerForKey(t.key);
+        const meta = p?.catalogEntry?.(t) ?? null;
+        if (!meta) {
+          skipped++;
+          continue;
+        }
+        mergeAudio(meta);
+        usable.push(meta);
+      }
+      if (!usable.length) {
+        return { ok: false, queued: 0, skipped, reason: skipped ? 'все выбранные треки недоступны' : 'ничего не выбрано' };
+      }
+      // The queue is keyed by the CATALOG key, not the UI's `Track.key`: the
+      // downloader looks entries up in `S.audios`, which stores them under the
+      // platform's own id (`<owner>_<id>`), so a `vk:`-prefixed key would never
+      // resolve and every item failed with "трек не найден в каталоге".
+      for (const meta of usable) attachToPlaylist(name, meta.key);
+      persist();
+      const width = String(Math.max(1, usable.length)).length;
+      let queued = 0;
+      usable.forEach((meta, i) => {
+        const doneKey = name + '/' + meta.key;
+        if (S.done[doneKey]) return;
+        if (S.queue.some((q) => q.pl === name && q.key === meta.key)) return;
+        S.queue.push({ key: meta.key, pl: name, idx: i + 1, w: width });
+        queued++;
+      });
+      for (const qj of S.queue) await journal.ensure(qj);
+      persist();
+      pump();
+      return { ok: true, queued, skipped, total: m.tracks.length };
     }
     case 'P_LIKE': {
       const p = providerForKey(m.key);
