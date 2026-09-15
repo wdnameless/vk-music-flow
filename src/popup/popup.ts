@@ -47,10 +47,13 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }
 
-const fmtDur = (s: number | null): string =>
-  typeof s === 'number' && s > 0
-    ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
-    : '';
+const fmtDur = (s: number | null): string => {
+  if (typeof s !== 'number' || s <= 0) return '';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = String(Math.floor(s % 60)).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+};
 
 /* ---------------- Navigation ---------------- */
 
@@ -167,18 +170,23 @@ function renderPlaylists(items: PlaylistRef[], target: string): void {
     .join('');
 }
 
-function trackRow(t: Track, opts: { tick?: boolean } = {}): string {
+function trackRow(t: Track, opts: { tick?: boolean; index?: number } = {}): string {
   const isTicked = ticked.has(t.key);
-  const play = `<button class="mini" data-play="${escapeHtml(t.key)}"><svg class="ic" style="width:11px;height:11px"><use href="#i-play"/></svg></button>`;
+  // The play affordance sits on the artwork, so the row keeps one hover target.
+  const play = `<span class="t-play" data-play="${escapeHtml(t.key)}" role="button" aria-label="Играть"><svg class="ic"><use href="#i-play"/></svg></span>`;
   return (
-    `<li data-key="${escapeHtml(t.key)}" class="track${t.restricted ? ' muted' : ''}">` +
+    `<li data-key="${escapeHtml(t.key)}" class="track${t.restricted ? ' muted' : ''}" style="--i:${opts.index ?? 0}">` +
     (opts.tick !== false
       ? `<input type="checkbox" data-tick="${escapeHtml(t.key)}"${isTicked ? ' checked' : ''}${t.restricted ? ' disabled' : ''}/>`
       : '') +
-    `<div class="t-cover"${t.cover ? ` style="background-image:url('${escapeHtml(t.cover)}')"` : ''}></div>` +
+    // Artwork and play overlay share one box, so the cover can act as the button.
+    `<span class="t-wrap">` +
+    `<span class="t-cover"${t.cover ? ` style="background-image:url('${escapeHtml(t.cover)}')"` : ''}></span>` +
+    (t.restricted ? '' : play) +
+    `</span>` +
     `<div class="t-body"><b>${escapeHtml(t.title || '—')}</b><span>${escapeHtml(t.artist)}</span></div>` +
     `<span class="t-dur">${fmtDur(t.duration)}</span>` +
-    (t.restricted ? '<span class="bad">недоступен</span>' : play) +
+    (t.restricted ? '<span class="bad">недоступен</span>' : '') +
     '</li>'
   );
 }
@@ -191,7 +199,7 @@ function renderTracks(target: string): void {
     updateCount();
     return;
   }
-  host.innerHTML = listTracks.map((t) => trackRow(t)).join('');
+  host.innerHTML = listTracks.map((t, i) => trackRow(t, { index: i })).join('');
   updateCount();
 }
 
@@ -438,10 +446,25 @@ let seeking = false;
 /** Last known equalizer curve, so the panel can render before a track plays. */
 let pEqGains: number[] | null = null;
 
+/**
+ * Show play or pause on the main transport button.
+ *
+ * The button holds an <svg><use href="#i-…">, so assigning textContent would
+ * delete the icon and leave a raw glyph in its place.
+ */
+function setPlayIcon(playing: boolean): void {
+  const use = $btn('pToggle').querySelector('use');
+  use?.setAttribute('href', playing ? '#i-pause' : '#i-play');
+}
+
+/** Clock for the transport. Past an hour the minutes field would read "96:02",
+ *  which looks like a typo, so long tracks get an hours field. */
 const fmtTime = (s: number): string => {
   if (!Number.isFinite(s) || s < 0) s = 0;
-  const m = Math.floor(s / 60);
-  return `${m}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = String(Math.floor(s % 60)).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
 };
 
 function renderEqBands(bands: EqBand[]): void {
@@ -471,7 +494,7 @@ function renderPlayer(): void {
     $('pTitle').textContent = 'Ничего не играет';
     $('pArtist').textContent = '';
     cover.style.backgroundImage = '';
-    $btn('pToggle').textContent = '▶';
+    setPlayIcon(false);
     // Bands are a property of the player, not of the current track, so the
     // equalizer must still be usable with nothing playing.
     if (s) {
@@ -488,7 +511,7 @@ function renderPlayer(): void {
   $('pArtist').textContent = s.track.artist || '';
   cover.style.backgroundImage = s.track.cover ? `url('${s.track.cover}')` : '';
   const toggle = $btn('pToggle');
-  toggle.textContent = s.playing ? '⏸' : '▶';
+  setPlayIcon(s.playing);
   toggle.classList.toggle('playing', s.playing);
   $('pTime').textContent = fmtTime(s.currentTime);
   $('pDur').textContent = fmtTime(s.duration);
@@ -754,20 +777,25 @@ async function loadHome(): Promise<void> {
   // The home shelf mirrors what VK itself puts first: the account's own music.
   await loadList('my-tracks', undefined, 'homeTracks');
   const playable = listTracks.filter((t) => !t.restricted);
-  $('homeHero').innerHTML = playable
-    .slice(0, 3)
-    .map(
-      (t) =>
-        `<div class="hero" data-play="${escapeHtml(t.key)}">` +
-        `<div class="hero-cover"${t.cover ? ` style="background-image:url('${escapeHtml(t.cover)}')"` : ''}></div>` +
-        `<div class="t-body"><b>${escapeHtml(t.title)}</b><span>${escapeHtml(t.artist)}</span></div></div>`,
-    )
-    .join('');
+  const head = playable[0];
+  // One dominant artwork, the way the reference lays out its hero: the cover
+  // carries the page and the text stays subordinate to it.
+  $('homeHero').innerHTML = head
+    ? `<div class="feat-art"${head.cover ? ` style="background-image:url('${escapeHtml(head.cover)}')"` : ''}>` +
+      `<button class="feat-play" data-play="${escapeHtml(head.key)}" aria-label="Играть">` +
+      `<svg class="ic"><use href="#i-play"/></svg></button></div>` +
+      `<div class="feat-body">` +
+      `<span class="feat-kicker">Продолжить слушать</span>` +
+      `<h2 class="feat-title">${escapeHtml(head.title)}</h2>` +
+      `<p class="feat-artist">${escapeHtml(head.artist)}</p>` +
+      `<div class="feat-meta mono">${fmtDur(head.duration) || '—'} · ${escapeHtml(head.album || 'ВКонтакте')}</div>` +
+      `</div>`
+    : '';
   $('homeCount').textContent = listTracks.length
-    ? `${listTracks.length} треков` + (playable.length < listTracks.length ? `, из них ${playable.length} играбельных` : '')
+    ? `${listTracks.length} треков` + (playable.length < listTracks.length ? ` · ${playable.length} играбельных` : '')
     : '';
   $('homeHero').addEventListener('click', (e) => {
-    const hero = (e.target as HTMLElement).closest('.hero') as HTMLElement | null;
+    const hero = (e.target as HTMLElement).closest('[data-play]') as HTMLElement | null;
     const key = hero?.dataset.play;
     if (key) void playTracks([key]);
   });
@@ -847,6 +875,25 @@ async function refreshStorage(): Promise<void> {
   }
   renderStorage();
 }
+
+// Both of these were dropped when this file was rebuilt, which left the mode
+// dropdown and the reset button doing nothing at all.
+$('storageMode').addEventListener('change', (e) => {
+  const mode = (e.target as HTMLSelectElement).value === 'fsa' ? 'fsa' : 'downloads';
+  void (async () => {
+    await send({ t: 'SETTINGS', patch: { storageMode: mode } });
+    await refreshStorage();
+  })();
+});
+
+$('btnClearDir').addEventListener('click', async () => {
+  try {
+    storageState = await send<StorageStateResult>({ t: 'CLEAR_DIR' });
+  } catch {
+    /* keep the last view */
+  }
+  renderStorage();
+});
 
 // Must run from a click handler: showDirectoryPicker() requires a user gesture.
 $('btnPickDir').addEventListener('click', async () => {

@@ -17,6 +17,7 @@ import {
   DEFAULT_SETTINGS,
   type AudioMeta,
   type FailedItem,
+  type PlaylistRef,
   type FlowState,
   type JournalResponse,
   type ProxyCheckResult,
@@ -346,6 +347,26 @@ function mergeAudio(a: AudioMeta): boolean {
   return ch;
 }
 
+/**
+ * Rebuild a playlist ref from its key (`<platform>:<owner>_<id>`).
+ *
+ * The access token is not part of the key, so a private playlist without one
+ * will fail at the provider; VK returns a key for every playlist it lists.
+ */
+function playlistRefFromKey(key: string): PlaylistRef | null {
+  const parsed = parseTrackKey(key);
+  const m = /^(-?\d+)_(\d+)$/.exec(parsed.nativeId);
+  if (!m) return null;
+  return {
+    key,
+    platform: parsed.platform,
+    nativeId: parsed.nativeId,
+    title: '',
+    trackCount: null,
+    cover: null,
+  };
+}
+
 function attachToPlaylist(name: string | undefined | null, key: string): void {
   if (!name) return;
   if (!S.playlists[name]) S.playlists[name] = [];
@@ -578,11 +599,13 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
         case 'playlists':
           return { ok: true, playlists: await p.playlists() };
         case 'playlist': {
-          // Resolve the playlist ref by key; a stale UI could send an id that no
-          // longer exists, which must not throw inside the message handler.
-          const all = await p.playlists();
-          const ref = all.find((x) => x.key === m.id);
-          return { ok: !!ref, tracks: ref ? await p.playlistTracks(ref) : [] };
+          // The ref is rebuilt from the key rather than looked up in the user's
+          // playlist list: that lookup cost a second API round-trip and failed
+          // for any playlist not in it (community playlists from search).
+          const ref = m.id ? playlistRefFromKey(m.id) : null;
+          if (!ref) return { ok: false, tracks: [], reason: 'плейлист не найден' };
+          const tracks = await p.playlistTracks(ref);
+          return { ok: true, tracks };
         }
         case 'recommendations':
           return { ok: true, tracks: await p.recommendations() };
@@ -631,14 +654,19 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
       persist();
       const width = String(Math.max(1, usable.length)).length;
       let queued = 0;
+      const added: QueueItem[] = [];
       usable.forEach((meta, i) => {
         const doneKey = name + '/' + meta.key;
         if (S.done[doneKey]) return;
         if (S.queue.some((q) => q.pl === name && q.key === meta.key)) return;
-        S.queue.push({ key: meta.key, pl: name, idx: i + 1, w: width });
+        const item: QueueItem = { key: meta.key, pl: name, idx: i + 1, w: width };
+        S.queue.push(item);
+        added.push(item);
         queued++;
       });
-      for (const qj of S.queue) await journal.ensure(qj);
+      // Only the new items need a journal entry; re-ensuring the whole queue
+      // cost one IndexedDB round-trip per pending track on every enqueue.
+      for (const qj of added) await journal.ensure(qj);
       persist();
       pump();
       return { ok: true, queued, skipped, total: m.tracks.length };
@@ -1160,6 +1188,11 @@ async function runItem(item: QueueItem): Promise<void> {
     const base = sanitizePath(S.settings.baseDir) || 'VK Music';
     await saveBlob(body, `${base}/${sanitize(item.pl)}/${label}`);
   }
+
+  // A cancel that arrived while this track was in flight already cleared the
+  // queue and journal; recording completion now would resurrect it as a
+  // phantom "already downloaded" entry.
+  if (stopFlag) return;
 
   S.done[doneKey] = Date.now();
   const fi = S.failed.findIndex((f) => f.key === item.key && f.pl === item.pl);
