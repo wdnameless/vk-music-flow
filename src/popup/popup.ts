@@ -1,5 +1,7 @@
 import type {
   BlockRules,
+  VkCatalogBlock,
+  VkCatalogSection,
   EqBand,
   LastfmAuth,
   PlayerState,
@@ -767,6 +769,55 @@ $('blockedArtists').addEventListener('change', async (e) => {
   await refreshRules();
 });
 
+/* ---------------- Wave 3: catalogue navigation + "Волна" ---------------- */
+
+async function loadVkSections(): Promise<void> {
+  try {
+    const r = await send<{ ok: boolean; sections: VkCatalogSection[]; reason?: string }>({
+      t: 'VK_SECTIONS',
+    });
+    if (!r.ok || !r.sections.length) {
+      $('vkSections').innerHTML = '';
+      return;
+    }
+    // Section titles are the same navigation the reference UI shows (General,
+    // My music, Explore, Radio, New additions).
+    $('vkSections').innerHTML = r.sections
+      .map((s) => `<button data-section="${escapeHtml(s.id)}">${escapeHtml(s.title)}</button>`)
+      .join('');
+  } catch {
+    $('vkSections').innerHTML = '';
+  }
+}
+
+$('vkSections').addEventListener('click', async (e) => {
+  const el = e.target as HTMLElement;
+  const id = el.dataset.section;
+  if (!id) return;
+  $('vkList').innerHTML = '<li class="muted">Загружаю раздел…</li>';
+  try {
+    const r = await send<{ ok: boolean; blocks: VkCatalogBlock[] }>({ t: 'VK_SECTION', sectionId: id });
+    // A block is a titled shelf. VK often returns shelves empty, so say so
+    // instead of rendering nothing at all.
+    const withTracks = r.blocks.filter((b) => b.audios.length > 0);
+    const source = withTracks.length ? withTracks : r.blocks;
+    vkTracks = source.flatMap((b) => b.audios);
+    vkSelected.clear();
+    if (!vkTracks.length) {
+      $('vkList').innerHTML =
+        `<li class="muted">В разделе ${r.blocks.length} блоков, но VK не отдал треки. ` +
+        'Попробуй другую вкладку — «Моя музыка» или «Волна».</li>';
+    } else {
+      renderVkList();
+    }
+    $('vkNote').textContent = '';
+  } catch (err) {
+    $('vkNote').textContent = 'Ошибка: ' + ((err as Error).message || err);
+  }
+});
+
+$('btnVkMix').addEventListener('click', () => void loadVk({ t: 'VK_MIX' }));
+
 $('btnClearDir').addEventListener('click', async () => {
   try {
     storageState = await send<StorageStateResult>({ t: 'CLEAR_DIR' });
@@ -943,6 +994,7 @@ void (async function init() {
   void refreshPlayer();
   void refreshRules();
   void refreshLastfm();
+  void loadVkSections();
   setInterval(refresh, 800);
   // The player lives in the offscreen document, so poll it on its own cadence.
   setInterval(() => void refreshPlayer(), 700);

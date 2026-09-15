@@ -34,7 +34,9 @@ import {
   type StorageStateResult,
   type VkAudio,
   type VkAuthState,
+  type VkCatalogBlock,
   type VkCatalogResult,
+  type VkCatalogSection,
   type VkPlaylist,
 } from '../types.js';
 import { applyProxy, checkProxy, installProxyAuth, normalizeProxySettings, pickActiveEntry, readApplied } from '../lib/proxy.js';
@@ -66,7 +68,10 @@ import { audioMetaListFromVk } from '../lib/vk-track.js';
 import {
   authState,
   vkCall,
+  getCatalogSection,
+  getCatalogSections,
   getMyAudios,
+  getStreamMix,
   getPlaylistAudios,
   getPlaylists,
   getRecommendations,
@@ -356,6 +361,8 @@ type HandlerResult =
   | { ok: boolean; queued: number; skipped: number; total: number }
   | { ok: boolean; state: PlayerState | null; skipped?: number }
   | { ok: boolean; urls: string[]; via?: string; restricted?: boolean; reason?: string }
+  | { ok: boolean; sections: VkCatalogSection[] }
+  | { ok: boolean; blocks: VkCatalogBlock[] }
   | { ok: boolean; rules: BlockRules; disliked?: boolean }
   | { ok: boolean; lyrics: LyricsResult | null; error?: string }
   | {
@@ -524,6 +531,19 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
       const s = await authState();
       if (!s.signedIn || !s.userId) return { ok: false, items: [], reason: s.reason };
       return { ok: true, items: await getRecommendations(s.userId) };
+    }
+    case 'VK_SECTIONS': {
+      const s = await authState();
+      if (!s.signedIn || !s.userId) return { ok: false, items: [], reason: s.reason };
+      return { ok: true, sections: await getCatalogSections(s.userId) };
+    }
+    case 'VK_SECTION': {
+      return { ok: true, blocks: await getCatalogSection(m.sectionId) };
+    }
+    case 'VK_MIX': {
+      const s = await authState();
+      if (!s.signedIn || !s.userId) return { ok: false, items: [], reason: s.reason };
+      return { ok: true, items: await getStreamMix(s.userId) };
     }
     case 'VK_ENQUEUE': {
       // Convert API tracks into catalog entries, then reuse the normal queue

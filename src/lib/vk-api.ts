@@ -1,4 +1,11 @@
-import type { VkApiResponse, VkAudio, VkPlaylist, VkToken } from '../types.js';
+import type {
+  VkApiResponse,
+  VkAudio,
+  VkCatalogBlock,
+  VkCatalogSection,
+  VkPlaylist,
+  VkToken,
+} from '../types.js';
 import { VK_API_VERSION, clearToken, getToken } from './vk-auth.js';
 
 /**
@@ -263,4 +270,73 @@ export async function authState(): Promise<{
 /** Hosts the API client touches, for proxy routing decisions. */
 export function apiHosts(): readonly string[] {
   return VK_API_HOSTS;
+}
+
+/* ------------------------------------------------------------------ */
+/* Catalogue (sections / blocks)                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The catalogue is what the reference extension's left-hand navigation renders:
+ * "General", "My music", "Explore", "Radio", "New additions". Measured on the
+ * live account: `catalog.getAudio` returns 5 sections, and `catalog.getSection`
+ * returns 17 blocks inside "My music" (Recently played, Playlists, …).
+ *
+ * Blocks frequently come back empty and fill in only when VK decides to serve
+ * them, so the UI must treat an empty block as normal rather than an error.
+ */
+export async function getCatalogSections(ownerId: number): Promise<VkCatalogSection[]> {
+  const r = await vkCall<{ catalog?: { sections?: { id?: string; title?: string }[] } }>(
+    'catalog.getAudio',
+    { owner_id: ownerId, count: 10 },
+  );
+  const sections = r.ok ? (r.data?.catalog?.sections ?? []) : [];
+  return sections
+    .filter((s): s is { id: string; title?: string } => typeof s?.id === 'string')
+    .map((s) => ({ id: s.id, title: String(s.title ?? 'Раздел') }));
+}
+
+/** Fetch one section's blocks (titled shelves). */
+export async function getCatalogSection(sectionId: string): Promise<VkCatalogBlock[]> {
+  const r = await vkCall<{
+    section?: {
+      blocks?: {
+        id?: string;
+        title?: string;
+        data_type?: string;
+        audios?: VkAudio[];
+        playlists?: VkPlaylist[];
+      }[];
+    };
+  }>('catalog.getSection', { section_id: sectionId, count: 20 });
+  const blocks = r.ok ? (r.data?.section?.blocks ?? []) : [];
+  return blocks.map((b, i) => ({
+    id: String(b.id ?? `block-${i}`),
+    title: String(b.title ?? ''),
+    type: String(b.data_type ?? 'none'),
+    audios: Array.isArray(b.audios) ? b.audios : [],
+    playlists: Array.isArray(b.playlists) ? b.playlists : [],
+  }));
+}
+
+/* ------------------------------------------------------------------ */
+/* Stream mix ("Волна")                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Fetch an endless personalised mix.
+ *
+ * `audio.getStreamMixAudios` exists but returns nothing without a mix id, and
+ * the endpoints that would hand one out are closed (`audio.getStreamMix` answers
+ * error 3 "Unknown method passed"). Recommendations are therefore used as the
+ * practical equivalent — they are personalised from the same listening history.
+ */
+export async function getStreamMix(ownerId: number, count = 50): Promise<VkAudio[]> {
+  const r = await vkCall<{ items?: VkAudio[] }>('audio.getStreamMixAudios', {
+    mix_id: 'music_stream_mix',
+    count,
+  });
+  if (r.ok && r.data?.items?.length) return r.data.items;
+  // Fall back to recommendations rather than surfacing an empty "wave".
+  return await getRecommendations(ownerId, count);
 }

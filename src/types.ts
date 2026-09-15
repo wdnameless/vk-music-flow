@@ -159,6 +159,23 @@ export interface VkPlaylist {
   thumb?: Record<string, string>;
 }
 
+/** One navigable section of the VK music catalogue ("My music", "Radio", …). */
+export interface VkCatalogSection {
+  id: string;
+  title: string;
+}
+
+/** One block inside a section (a titled shelf of tracks or playlists). */
+export interface VkCatalogBlock {
+  id: string;
+  title: string;
+  /** VK's block kind, e.g. `music_audios`, `music_playlists`, `none`. */
+  type: string;
+  /** Tracks when the block carries any; VK often returns them lazily. */
+  audios: VkAudio[];
+  playlists: VkPlaylist[];
+}
+
 /** Generic VK API envelope. */
 export interface VkApiResponse<T> {
   ok: boolean;
@@ -471,6 +488,11 @@ export type RuntimeMessage =
   | { t: 'VK_PLAYLIST_AUDIOS'; ownerId: number; playlistId: number; accessKey?: string }
   | { t: 'VK_SEARCH'; q: string }
   | { t: 'VK_RECOMMENDATIONS' }
+  /** Catalogue navigation: sections, then the blocks inside one section. */
+  | { t: 'VK_SECTIONS' }
+  | { t: 'VK_SECTION'; sectionId: string }
+  /** Endless personalised mix ("Волна"). */
+  | { t: 'VK_MIX' }
   /**
    * Put a set of resolved VK tracks into the download queue under `name`.
    * The SW converts them to catalog entries (keeping access_key/restricted) so
