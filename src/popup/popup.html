@@ -9,6 +9,7 @@
       <div class="logo">VK Music Flow</div>
       <nav>
         <button class="tab active" data-tab="scan">Скан</button>
+        <button class="tab" data-tab="music">Музыка</button>
         <button class="tab" data-tab="lib">Плейлисты</button>
         <button class="tab" data-tab="dl">Загрузки</button>
         <button class="tab" data-tab="net">Сеть</button>
@@ -30,6 +31,27 @@
       <div id="scanResult" class="result"></div>
       <div id="diagResult" class="conn"></div>
       <div id="connState" class="conn"></div>
+    </section>
+
+    <section id="tab-music" class="pane">
+      <div id="vkAuth" class="conn"></div>
+      <div class="row">
+        <button id="btnVkMine">Моя музыка</button>
+        <button id="btnVkRecs">Рекомендации</button>
+      </div>
+      <div class="row">
+        <input id="vkQuery" type="text" placeholder="Поиск треков…" spellcheck="false" />
+        <button id="btnVkSearch">Найти</button>
+      </div>
+      <div class="row">
+        <button id="btnVkAll">Выбрать все</button>
+        <button id="btnVkNone">Снять</button>
+        <span id="vkCount" class="muted"></span>
+      </div>
+      <ul id="vkList" class="list"></ul>
+      <input id="vkPlaylistName" type="text" placeholder="Имя плейлиста для скачивания" />
+      <button id="btnVkDownload" class="primary">Скачать выбранное</button>
+      <div id="vkNote" class="hint small"></div>
     </section>
 
     <section id="tab-lib" class="pane">

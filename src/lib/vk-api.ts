@@ -189,7 +189,7 @@ export async function searchAudios(q: string, count = 30): Promise<VkAudio[]> {
  * carried none — in `audio.get`, in `audio.getById` and without `access_key`.
  * It is a property of the track, not of the request, so retrying is pointless.
  */
-export function isRestricted(a: VkAudio | null): boolean {
+export function isRestricted(a: Pick<VkAudio, 'content_restricted'> | null | undefined): boolean {
   const cr = a?.content_restricted;
   return cr === 2 || cr === 3;
 }

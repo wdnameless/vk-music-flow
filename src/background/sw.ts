@@ -31,6 +31,8 @@ import {
 } from '../types.js';
 import { applyProxy, checkProxy, installProxyAuth, normalizeProxySettings, pickActiveEntry, readApplied } from '../lib/proxy.js';
 import { installDnrRules, readDnrRules, toDnrRules } from '../lib/dnr.js';
+import { RestrictedTrackError, resolveTrackUrls } from '../lib/resolve.js';
+import { audioMetaListFromVk } from '../lib/vk-track.js';
 import {
   authState,
   getMyAudios,
@@ -207,6 +209,7 @@ type HandlerResult =
   | VkAuthState
   | VkCatalogResult<VkAudio>
   | VkCatalogResult<VkPlaylist>
+  | { ok: boolean; queued: number; skipped: number; total: number }
   | null;
 
 async function handle(m: RuntimeMessage): Promise<HandlerResult> {
@@ -362,6 +365,34 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
       const s = await authState();
       if (!s.signedIn || !s.userId) return { ok: false, items: [], reason: s.reason };
       return { ok: true, items: await getRecommendations(s.userId) };
+    }
+    case 'VK_ENQUEUE': {
+      // Convert API tracks into catalog entries, then reuse the normal queue
+      // path so journal/rehydrate/pause semantics all stay identical.
+      const metas = audioMetaListFromVk(m.audios);
+      let ch = false;
+      for (const meta of metas) if (mergeAudio(meta)) ch = true;
+      if (ch) persist();
+      for (const meta of metas) attachToPlaylist(m.name, meta.key);
+      let skipped = 0;
+      const arr = S.playlists[m.name] || [];
+      const w = String(Math.max(1, arr.length)).length;
+      arr.forEach((key, i) => {
+        const doneKey = m.name + '/' + key;
+        if (S.done[doneKey]) return;
+        if (S.queue.some((q) => q.pl === m.name && q.key === key)) return;
+        const meta = S.audios[key];
+        // Restricted tracks have no URL anywhere — do not queue them at all.
+        if (!meta || (meta.restricted === 2 || meta.restricted === 3)) {
+          skipped++;
+          return;
+        }
+        S.queue.push({ key, pl: m.name, idx: i + 1, w });
+      });
+      for (const qj of S.queue) await journal.ensure(qj);
+      persist();
+      pump();
+      return { ok: true, queued: S.queue.length, skipped, total: metas.length };
     }
     case 'CLEAR_DIR': {
       await clearRootHandle();
@@ -523,6 +554,15 @@ async function workerLoop(): Promise<void> {
             fail(item, msg);
             break;
           }
+          if (e instanceof RestrictedTrackError) {
+            // VK serves no URL for this track from any endpoint (measured), so
+            // retrying only burns time and pollutes the journal with a permanent
+            // error. Fail it once, immediately.
+            await journal.noteError(id, msg);
+            await journal.setStatus(id, 'failed');
+            fail(item, msg);
+            break;
+          }
           attempts++;
           await journal.bumpAttempt(id, msg);
           if (attempts >= max) {
@@ -564,7 +604,6 @@ async function runItem(item: QueueItem): Promise<void> {
 
   let body = await getAudioBytes(a);
   const ext = sniffExt(body);
-
   // MPEG-TS and MP3 both accept a leading ID3v2 tag (and players skip it); the
   // AAC/ADTS container does not, so those stay untagged.
   if (ext === 'mp3' || ext === 'ts') {
@@ -606,18 +645,39 @@ async function rawFetch(url: string): Promise<Uint8Array> {
   return new Uint8Array(await r.arrayBuffer());
 }
 
+/**
+ * Fetch a track's bytes, resolving a fresh stream URL first.
+ *
+ * VK stream URLs expire, so the catalog's copy is a fallback, not the primary
+ * source: `resolveTrackUrls` asks the API (via `access_key`) and only then falls
+ * back to whatever the page hook captured. A track VK marks restricted throws
+ * `RestrictedTrackError`, which the queue treats as terminal.
+ */
 async function getAudioBytes(a: AudioMeta): Promise<Uint8Array> {
-  const direct = (a.urls || []).find((u) => !/\.m3u8/i.test(u));
-  if (direct) {
-    const b = await rawFetch(direct);
-    if (!(b[0] === 0x23 && b[1] === 0x45 && b[2] === 0x58)) return b;
-    const txt = new TextDecoder().decode(b);
-    return assembleHls(txt, direct);
+  const outcome = await resolveTrackUrls(a);
+  let lastErr: Error | null = null;
+  for (const url of outcome.urls) {
+    try {
+      return await fetchStream(url);
+    } catch (e) {
+      lastErr = e instanceof Error ? e : new Error(String(e));
+    }
   }
-  const hls = (a.urls || []).find((u) => /\.m3u8/i.test(u)) || (a.urls || [])[0];
-  if (!hls) throw new Error('нет доступных ссылок');
-  const txt = await (await fetch(hls)).text();
-  return assembleHls(txt, hls);
+  throw lastErr ?? new Error('нет доступных ссылок');
+}
+
+/** Fetch one resolved URL, assembling HLS when the payload is a playlist. */
+async function fetchStream(url: string): Promise<Uint8Array> {
+  const direct = !/\.m3u8/i.test(url);
+  if (direct) {
+    const b = await rawFetch(url);
+    // An .m3u8 can also arrive at a non-.m3u8 URL; EXT-X magic means playlist.
+    if (!(b[0] === 0x23 && b[1] === 0x45 && b[2] === 0x58)) return b;
+    return assembleHls(new TextDecoder().decode(b), url);
+  }
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return assembleHls(await r.text(), url);
 }
 
 /**

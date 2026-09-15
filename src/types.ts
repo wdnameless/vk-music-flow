@@ -177,7 +177,7 @@ export interface HeaderRule {
   ownOriginOnly?: boolean;
 }
 
-/** A harvested track object, produced by hook-main / collector, stored in the SW catalog. */
+/** A harvested track object, produced by hook-main / collector / VK API, stored in the SW catalog. */
 export interface AudioMeta {
   key: string;
   id: string;
@@ -189,6 +189,18 @@ export interface AudioMeta {
   duration: number | string | null;
   urls: string[];
   covers: string[];
+  /**
+   * VK `access_key` for this track. Required to re-resolve a fresh stream URL
+   * at download time, so it is persisted with the catalog entry.
+   */
+  access_key?: string;
+  /**
+   * VK's playback restriction marker (2/3 = no stream URL exists at all).
+   * Carried through so the queue can fail it terminally instead of retrying.
+   */
+  restricted?: number;
+  /** Where this entry came from: the VK API, or the page network hook. */
+  source?: 'api' | 'hook' | 'dom';
 }
 
 /** One queued download job (playlist-relative). */
@@ -372,7 +384,13 @@ export type RuntimeMessage =
   | { t: 'VK_PLAYLISTS' }
   | { t: 'VK_PLAYLIST_AUDIOS'; ownerId: number; playlistId: number; accessKey?: string }
   | { t: 'VK_SEARCH'; q: string }
-  | { t: 'VK_RECOMMENDATIONS' };
+  | { t: 'VK_RECOMMENDATIONS' }
+  /**
+   * Put a set of resolved VK tracks into the download queue under `name`.
+   * The SW converts them to catalog entries (keeping access_key/restricted) so
+   * the downloader can re-resolve a fresh URL at download time.
+   */
+  | { t: 'VK_ENQUEUE'; name: string; audios: VkAudio[] };
 
 /** Commands the popup sends to the isolated-world collector content script. */
 export type CollectorCommand =

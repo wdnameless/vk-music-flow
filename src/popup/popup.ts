@@ -3,6 +3,9 @@ import type {
   ProxyEntry,
   ProxyRoutingMode,
   ProxyStateResult,
+  VkAudio,
+  VkAuthState,
+  VkCatalogResult,
   ResponseSample,
   RuntimeMessage,
   ScanResult,
@@ -341,6 +344,127 @@ $('btnDnrInstall').addEventListener('click', async () => {
   await refreshDnr();
 });
 
+/* ---------------- Wave 2: VK catalog (tabless) ---------------- */
+
+let vkTracks: VkAudio[] = [];
+const vkSelected = new Set<string>();
+
+/** Key for a VK track, matching how the SW names catalog entries. */
+const vkKey = (a: VkAudio): string => `${a.owner_id}_${a.id}`;
+
+function vkTrackHtml(a: VkAudio): string {
+  const key = vkKey(a);
+  const restricted = a.content_restricted === 2 || a.content_restricted === 3;
+  const dur = typeof a.duration === 'number'
+    ? `${Math.floor(a.duration / 60)}:${String(a.duration % 60).padStart(2, '0')}`
+    : '';
+  return (
+    `<li data-key="${key}"${restricted ? ' class="muted"' : ''}>` +
+    `<input type="checkbox" data-key="${key}"${vkSelected.has(key) ? ' checked' : ''}${restricted ? ' disabled' : ''}/> ` +
+    `<b>${escapeHtml(a.artist || '')}</b> — ${escapeHtml(a.title || '')} ` +
+    `<span class="muted">${dur}</span>` +
+    `${restricted ? ' <span class="bad">недоступен (VK)</span>' : ''}` +
+    '</li>'
+  );
+}
+
+function renderVkList(): void {
+  const list = $('vkList');
+  list.innerHTML = vkTracks.length
+    ? vkTracks.map(vkTrackHtml).join('')
+    : '<li class="muted">Пусто. Нажми «Моя музыка», «Рекомендации» или найди треки.</li>';
+  const sel = vkSelected.size;
+  const restricted = vkTracks.filter((a) => a.content_restricted === 2 || a.content_restricted === 3).length;
+  $('vkCount').textContent = vkTracks.length
+    ? `${vkTracks.length} треков, выбрано ${sel}${restricted ? `, недоступно ${restricted}` : ''}`
+    : '';
+  $btn('btnVkDownload').disabled = sel === 0;
+}
+
+async function refreshVkAuth(): Promise<void> {
+  try {
+    const s = await send<VkAuthState>({ t: 'GET_VK_AUTH' });
+    $('vkAuth').textContent = s.signedIn
+      ? `Вошёл в VK (id ${s.userId}).`
+      : s.reason || 'Не удалось войти в VK.';
+  } catch {
+    $('vkAuth').textContent = 'Не удалось проверить сессию VK.';
+  }
+}
+
+async function loadVk(
+  msg: RuntimeMessage,
+): Promise<void> {
+  $('vkList').innerHTML = '<li class="muted">Загружаю…</li>';
+  try {
+    const r = await send<VkCatalogResult<VkAudio>>(msg);
+    vkTracks = r.items ?? [];
+    vkSelected.clear();
+    if (!r.ok) $('vkNote').textContent = r.reason || 'Не удалось получить треки.';
+    else $('vkNote').textContent = '';
+  } catch (e) {
+    vkTracks = [];
+    $('vkNote').textContent = 'Ошибка: ' + ((e as Error).message || e);
+  }
+  renderVkList();
+}
+
+$('btnVkMine').addEventListener('click', () => void loadVk({ t: 'VK_MY_AUDIOS', count: 100 }));
+$('btnVkRecs').addEventListener('click', () => void loadVk({ t: 'VK_RECOMMENDATIONS' }));
+
+$('btnVkSearch').addEventListener('click', () => {
+  const q = $in('vkQuery').value.trim();
+  if (!q) return;
+  void loadVk({ t: 'VK_SEARCH', q });
+});
+
+$('vkList').addEventListener('click', (e) => {
+  const el = e.target as HTMLInputElement;
+  if (el.tagName !== 'INPUT') return;
+  const key = el.dataset.key;
+  if (!key) return;
+  if (el.checked) vkSelected.add(key);
+  else vkSelected.delete(key);
+  const sel = vkSelected.size;
+  $btn('btnVkDownload').disabled = sel === 0;
+  $('vkCount').textContent = `${vkTracks.length} треков, выбрано ${sel}`;
+});
+
+$('btnVkAll').addEventListener('click', () => {
+  // Restricted tracks can never be downloaded, so "select all" must not pretend
+  // otherwise — they stay unticked and are reported by the download button.
+  for (const a of vkTracks) {
+    if (a.content_restricted === 2 || a.content_restricted === 3) continue;
+    vkSelected.add(vkKey(a));
+  }
+  renderVkList();
+});
+
+$('btnVkNone').addEventListener('click', () => {
+  vkSelected.clear();
+  renderVkList();
+});
+
+$('btnVkDownload').addEventListener('click', async () => {
+  const picked = vkTracks.filter((a) => vkSelected.has(vkKey(a)));
+  if (!picked.length) return;
+  const name = $in('vkPlaylistName').value.trim() || 'VK Музыка';
+  $('vkNote').textContent = 'Ставлю в очередь…';
+  try {
+    const r = await send<{ ok: boolean; queued: number; skipped: number; total: number }>({
+      t: 'VK_ENQUEUE',
+      name,
+      audios: picked,
+    });
+    $('vkNote').textContent = r.skipped
+      ? `В очередь: ${r.queued}. Пропущено недоступных: ${r.skipped}.`
+      : `В очередь: ${r.queued}.`;
+    switchTab('dl');
+  } catch (e) {
+    $('vkNote').textContent = 'Ошибка: ' + ((e as Error).message || e);
+  }
+});
+
 $('btnClearDir').addEventListener('click', async () => {
   try {
     storageState = await send<StorageStateResult>({ t: 'CLEAR_DIR' });
@@ -513,5 +637,6 @@ void (async function init() {
   void refresh();
   void refreshProxy();
   void refreshDnr();
+  void refreshVkAuth();
   setInterval(refresh, 800);
 })();
