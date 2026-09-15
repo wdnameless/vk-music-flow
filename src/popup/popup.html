@@ -11,6 +11,7 @@
         <button class="tab active" data-tab="scan">Скан</button>
         <button class="tab" data-tab="lib">Плейлисты</button>
         <button class="tab" data-tab="dl">Загрузки</button>
+        <button class="tab" data-tab="net">Сеть</button>
         <button class="tab" data-tab="set">⚙</button>
       </nav>
     </header>
@@ -60,6 +61,36 @@
       <ul id="qList" class="list"></ul>
       <h3>Неудачные</h3>
       <ul id="fList" class="list err"></ul>
+    </section>
+
+    <section id="tab-net" class="pane">
+      <h3>Прокси для VK</h3>
+      <p class="hint small">
+        Зарубежный доступ к ВКонтакте без сторонних прокси на весь браузер. В режиме
+        «только VK» через прокси идут лишь домены ВКонтакте, остальной браузер работает напрямую.
+      </p>
+      <label>Режим</label>
+      <select id="proxyMode">
+        <option value="vk-only">Только VK (рекомендуется)</option>
+        <option value="all">Весь браузер</option>
+        <option value="off">Выключен</option>
+      </select>
+      <div id="proxyApplied" class="conn"></div>
+
+      <h3>Список прокси</h3>
+      <div id="proxyList" class="list"></div>
+      <div class="row">
+        <button id="btnProxyAdd">Добавить прокси</button>
+        <button id="btnProxyCheck">Проверить</button>
+      </div>
+
+      <h3>Правила заголовков (DNR)</h3>
+      <p class="hint small">
+        Без подмены <code>Origin</code> ВКонтакте отвечает <code>wrong origin</code> на запросы из
+        расширения: этот заголовок нельзя задать скриптом, только правилами браузера.
+      </p>
+      <div id="dnrState" class="conn"></div>
+      <button id="btnDnrInstall">Переустановить правила</button>
     </section>
 
     <section id="tab-set" class="pane">

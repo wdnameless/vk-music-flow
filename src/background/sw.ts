@@ -10,19 +10,26 @@ import {
   StoragePermissionError,
   writeToRoot,
 } from '../storage/fs.js';
-import { DEFAULT_SETTINGS } from '../types.js';
-import type {
-  AudioMeta,
-  FailedItem,
-  FlowState,
-  JournalResponse,
-  QueueItem,
-  RuntimeMessage,
-  StateSnapshot,
-  StorageStateResult,
+import {
+  DEFAULT_PROXY_SETTINGS,
+  DEFAULT_SETTINGS,
+  type AudioMeta,
+  type FailedItem,
+  type FlowState,
+  type JournalResponse,
+  type ProxyCheckResult,
+  type ProxySettings,
+  type ProxyStateResult,
+  type QueueItem,
+  type RuntimeMessage,
+  type StateSnapshot,
+  type StorageStateResult,
 } from '../types.js';
+import { applyProxy, checkProxy, installProxyAuth, normalizeProxySettings, pickActiveEntry, readApplied } from '../lib/proxy.js';
+import { installDnrRules, readDnrRules, toDnrRules } from '../lib/dnr.js';
 
 const SKEY = 'vmf_state_v1';
+const PKEY = 'vmf_proxy_v1';
 
 let S: FlowState = {
   audios: {},
@@ -33,6 +40,9 @@ let S: FlowState = {
   done: {},
   settings: { ...DEFAULT_SETTINGS },
 };
+
+/** Proxy routing config, persisted separately from the download catalog. */
+let P: ProxySettings = { ...DEFAULT_PROXY_SETTINGS, entries: [] };
 
 let pumping = false;
 let stopFlag = false; // CANCEL: stop loops + drop pending
@@ -64,6 +74,17 @@ async function load(): Promise<void> {
     await rehydrateQueueFromJournal();
   } catch {
     /* journal unavailable — plain in-session queueing still works */
+  }
+  // Wave 1 network layer: hydrate proxy config, install header rules, then push
+  // the routing into Chromium. DNR must go in first: VK rejects token minting
+  // from an extension origin until the Origin header is spoofed.
+  try {
+    const o = await chrome.storage.local.get(PKEY);
+    P = normalizeProxySettings(o[PKEY]);
+    await installDnrRules();
+    await applyProxy(P);
+  } catch {
+    /* no network permissions — downloads still work direct */
   }
 }
 
@@ -99,6 +120,23 @@ function persist(): void {
       /* best-effort */
     });
   }, 400);
+}
+
+let savePT: number | undefined;
+function persistProxy(): void {
+  clearTimeout(savePT);
+  savePT = setTimeout(() => {
+    chrome.storage.local.set({ [PKEY]: JSON.parse(JSON.stringify(P)) }).catch(() => {
+      /* best-effort */
+    });
+  }, 200) as unknown as number;
+}
+
+/** Proxy settings + what Chromium actually has installed. */
+async function proxyState(): Promise<ProxyStateResult> {
+  const applied = await readApplied();
+  const entry = pickActiveEntry(P);
+  return { ok: true, settings: P, applied: { ...applied, proxyFor: applied.error ? null : (entry?.host ?? null) } };
 }
 
 function mergeAudio(a: AudioMeta): boolean {
@@ -150,6 +188,9 @@ type HandlerResult =
   | { queued: number; skipped: number }
   | JournalResponse
   | StorageStateResult
+  | ProxyStateResult
+  | ProxyCheckResult
+  | { ok: boolean; ids: number[]; rules: number; error: string | null }
   | null;
 
 async function handle(m: RuntimeMessage): Promise<HandlerResult> {
@@ -226,6 +267,50 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
     }
     case 'GET_STORAGE_STATE': {
       return await storageState();
+    }
+    // ---- Wave 1: proxy routing + header rules ----
+    case 'GET_PROXY_STATE': {
+      return await proxyState();
+    }
+    case 'SET_PROXY_ENTRIES': {
+      P = normalizeProxySettings({ ...P, entries: m.entries });
+      persistProxy();
+      await applyProxy(P);
+      return await proxyState();
+    }
+    case 'SET_PROXY_MODE': {
+      P = { ...P, mode: m.mode };
+      persistProxy();
+      await applyProxy(P);
+      return await proxyState();
+    }
+    case 'SET_PROXY_ACTIVE': {
+      P = { ...P, activeId: m.id };
+      persistProxy();
+      await applyProxy(P);
+      return await proxyState();
+    }
+    case 'CHECK_PROXY': {
+      const entry = m.id ? (P.entries.find((e) => e.id === m.id) ?? null) : pickActiveEntry(P);
+      const res = await checkProxy();
+      if (entry) {
+        P = {
+          ...P,
+          entries: P.entries.map((e) =>
+            e.id === entry.id ? { ...e, lastCheckTs: Date.now(), lastCheckOk: res.ok } : e,
+          ),
+        };
+        persistProxy();
+      }
+      return { ok: res.ok, status: res.status, latencyMs: res.latencyMs, error: res.error };
+    }
+    case 'GET_DNR_STATE': {
+      const r = await readDnrRules();
+      return { ok: r.ok, ids: r.ids, rules: toDnrRules().length, error: r.error };
+    }
+    case 'INSTALL_DNR': {
+      const r = await installDnrRules();
+      return { ok: r.ok, ids: r.ids, rules: toDnrRules().length, error: r.error };
     }
     case 'CLEAR_DIR': {
       await clearRootHandle();
@@ -624,6 +709,11 @@ async function saveBlob(bytes: Uint8Array, fname: string): Promise<void> {
 
 /** Reuse the one cold-start hydration for all four boot triggers below. */
 const boot = (): Promise<void> => (booted ??= load());
+
+// Answer proxy credential challenges for the configured entries. Registered at
+// module scope (not inside boot()) because MV3 requires listeners to exist
+// synchronously on every worker start, even when it only wakes for an event.
+installProxyAuth(() => P);
 
 chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
   handle(m as RuntimeMessage)

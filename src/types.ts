@@ -1,5 +1,105 @@
 // Shared typed contracts (Phase 0 structure + Phase 1 storage/queue additions).
 
+/* ------------------------------------------------------------------ */
+/* Wave 1 — network layer: proxy routing + header rules.              */
+/*                                                                    */
+/* Verified against a real MV3 service worker on the live VK profile: */
+/*  - chrome.proxy.settings.set/get/clear exist in MV3 with the       */
+/*    "proxy" permission; PAC routing is per-host (api.vk.ru went     */
+/*    through the proxy while example.com stayed DIRECT).             */
+/*  - VK refuses tabless auth from an extension origin with           */
+/*    `{"type":"error","error_info":"wrong origin"}`; `Origin` is a   */
+/*    forbidden fetch header, so declarativeNetRequest MUST spoof it. */
+/* ------------------------------------------------------------------ */
+
+export type ProxyScheme = 'http' | 'https' | 'socks4' | 'socks5';
+
+/** One user-supplied proxy endpoint. */
+export interface ProxyEntry {
+  id: string;
+  label: string;
+  scheme: ProxyScheme;
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+  enabled: boolean;
+  /** Last liveness probe result (epoch ms), null when never probed. */
+  lastCheckTs?: number | null;
+  lastCheckOk?: boolean | null;
+}
+
+export type ProxyRoutingMode =
+  /** Direct connection, proxy ignored. */
+  | 'off'
+  /** Only VK hosts go through the proxy (default: keeps the rest of the browser untouched). */
+  | 'vk-only'
+  /** Everything goes through the proxy. */
+  | 'all';
+
+/** Persisted proxy configuration. */
+export interface ProxySettings {
+  mode: ProxyRoutingMode;
+  entries: ProxyEntry[];
+  /** id of the entry used when mode !== 'off'; null = first enabled entry. */
+  activeId: string | null;
+}
+
+export const DEFAULT_PROXY_SETTINGS: ProxySettings = {
+  mode: 'vk-only',
+  entries: [],
+  activeId: null,
+};
+
+/** Hosts routed through the proxy in `vk-only` mode. */
+export const VK_PROXY_HOSTS: readonly string[] = [
+  'vk.com',
+  'vk.ru',
+  'login.vk.ru',
+  'api.vk.ru',
+  'web.api.vk.ru',
+  'vk-cdn.net',
+  'userapi.com',
+  'mycdn.me',
+  'vkuser.net',
+  'vkuservideo.net',
+  'vkusercontent.ru',
+  'vkuseraudio.ru',
+  'vkuserphoto.ru',
+];
+
+/** GET_PROXY_STATE / SET_PROXY_* response. */
+export interface ProxyStateResult {
+  ok: true;
+  settings: ProxySettings;
+  /** What Chromium currently has installed, as reported by chrome.proxy.settings.get. */
+  applied: ProxyAppliedState;
+}
+
+export interface ProxyAppliedState {
+  mode: ProxyRoutingMode;
+  /** Host routed through the proxy, or null when direct. */
+  proxyFor: string | null;
+  error: string | null;
+}
+
+/** Proxy liveness probe outcome. */
+export interface ProxyCheckResult {
+  ok: boolean;
+  status?: number;
+  latencyMs?: number;
+  error?: string;
+}
+
+/** A declarativeNetRequest rule owned by this extension (see lib/dnr.ts). */
+export interface HeaderRule {
+  id: number;
+  urlFilter: string;
+  headers: { name: string; value: string }[];
+  /** Restrict to requests initiated by our own extension pages/worker. */
+  ownOriginOnly?: boolean;
+}
+
 /** A harvested track object, produced by hook-main / collector, stored in the SW catalog. */
 export interface AudioMeta {
   key: string;
@@ -178,7 +278,15 @@ export type RuntimeMessage =
   // Phase 1 slice B — queue control (CANCEL already existed above):
   | { t: 'PAUSE' }
   | { t: 'RESUME' }
-  | { t: 'GET_JOURNAL' };
+  | { t: 'GET_JOURNAL' }
+  // Wave 1 — proxy / network:
+  | { t: 'GET_PROXY_STATE' }
+  | { t: 'SET_PROXY_ENTRIES'; entries: ProxyEntry[] }
+  | { t: 'SET_PROXY_MODE'; mode: ProxyRoutingMode }
+  | { t: 'SET_PROXY_ACTIVE'; id: string | null }
+  | { t: 'CHECK_PROXY'; id?: string }
+  | { t: 'GET_DNR_STATE' }
+  | { t: 'INSTALL_DNR' };
 
 /** Commands the popup sends to the isolated-world collector content script. */
 export type CollectorCommand =

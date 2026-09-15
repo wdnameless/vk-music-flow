@@ -1,4 +1,8 @@
 import type {
+  ProxyCheckResult,
+  ProxyEntry,
+  ProxyRoutingMode,
+  ProxyStateResult,
   ResponseSample,
   RuntimeMessage,
   ScanResult,
@@ -187,6 +191,156 @@ $('btnPickDir').addEventListener('click', async () => {
   renderStorage();
 });
 
+/* ---------------- Wave 1: proxy for VK ---------------- */
+
+let proxyState: ProxyStateResult | null = null;
+
+function proxyRowHtml(e: ProxyEntry): string {
+  const used = proxyState?.settings.activeId === e.id || (!proxyState?.settings.activeId && e.enabled);
+  const stamp = e.lastCheckTs
+    ? new Date(e.lastCheckTs).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+    : null;
+  const status = e.lastCheckOk === null || e.lastCheckOk === undefined
+    ? ''
+    : e.lastCheckOk
+      ? '<span class="ok">доступен</span>'
+      : '<span class="bad">недоступен</span>';
+  return (
+    `<li data-id="${e.id}"${used ? ' class="cur"' : ''}>` +
+    `<b>${escapeHtml(e.label || e.host)}</b> ` +
+    `<span class="mono">${escapeHtml(e.scheme)}://${escapeHtml(e.host)}:${e.port}</span> ` +
+    `${e.username ? '<span class="muted">с логином</span> ' : ''}${status}` +
+    `${stamp ? ` <span class="muted">· ${stamp}</span>` : ''}` +
+    `<button data-act="use" data-id="${e.id}">${used ? 'активен' : 'использовать'}</button>` +
+    `<button data-act="del" data-id="${e.id}">удалить</button>` +
+    '</li>'
+  );
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+}
+
+function renderProxy(): void {
+  if (!proxyState) return;
+  const s = proxyState.settings;
+  ($('proxyMode') as HTMLSelectElement).value = s.mode;
+  const a = proxyState.applied;
+  $('proxyApplied').textContent = a.error
+    ? 'Прокси не применён: ' + a.error
+    : s.mode === 'off'
+      ? 'Прокси выключен — прямое соединение.'
+      : `${s.mode === 'vk-only' ? 'Только VK' : 'Весь браузер'} → ${a.proxyFor ?? '—'}`;
+
+  $('proxyList').innerHTML = s.entries.length
+    ? s.entries.map(proxyRowHtml).join('')
+    : '<li class="muted">Прокси не добавлены. Без них VK недоступен из-за рубежа напрямую.</li>';
+}
+
+async function refreshProxy(): Promise<void> {
+  try {
+    proxyState = await send<ProxyStateResult>({ t: 'GET_PROXY_STATE' });
+  } catch {
+    proxyState = null;
+  }
+  renderProxy();
+}
+
+async function refreshDnr(): Promise<void> {
+  try {
+    const r = await send<{ ok: boolean; ids: number[]; rules: number; error: string | null }>({
+      t: 'GET_DNR_STATE',
+    });
+    const text = r.error
+      ? 'Правила недоступны: ' + r.error
+      : `Установлено правил: ${r.ids.length} (Origin-спуф, Genius, снятие фрейм-запретов).`;
+    $('dnrState').textContent = text;
+    $('dnrState').dataset.text = text;
+  } catch {
+    $('dnrState').textContent = 'Не удалось прочитать состояние правил.';
+  }
+}
+
+$('proxyMode').addEventListener('change', async (e) => {
+  const mode = (e.target as HTMLSelectElement).value as ProxyRoutingMode;
+  proxyState = await send<ProxyStateResult>({ t: 'SET_PROXY_MODE', mode });
+  renderProxy();
+});
+
+$('proxyList').addEventListener('click', async (e) => {
+  const el = e.target as HTMLElement;
+  const act = el.dataset.act;
+  const id = el.dataset.id;
+  if (!act || !id || !proxyState) return;
+  if (act === 'use') {
+    proxyState = await send<ProxyStateResult>({ t: 'SET_PROXY_ACTIVE', id });
+  } else if (act === 'del') {
+    const entries = proxyState.settings.entries.filter((x) => x.id !== id);
+    proxyState = await send<ProxyStateResult>({ t: 'SET_PROXY_ENTRIES', entries });
+  }
+  renderProxy();
+});
+
+$('btnProxyAdd').addEventListener('click', async () => {
+  const raw = prompt('Прокси (scheme://host:port), например socks5://1.2.3.4:1080');
+  if (!raw) return;
+  let parsed: URL;
+  try {
+    parsed = new URL(raw.includes('://') ? raw : 'http://' + raw);
+  } catch {
+    alert('Не похоже на адрес прокси.');
+    return;
+  }
+  const scheme = (parsed.protocol.replace(':', '') || 'http') as ProxyEntry['scheme'];
+  if (!['http', 'https', 'socks4', 'socks5'].includes(scheme)) {
+    alert('Поддерживаются http, https, socks4, socks5.');
+    return;
+  }
+  const user = prompt('Логин (оставь пустым, если не нужен)') ?? '';
+  const pass = user ? (prompt('Пароль') ?? '') : '';
+  const entry: ProxyEntry = {
+    id: crypto.randomUUID(),
+    label: parsed.hostname + ':' + parsed.port,
+    scheme,
+    host: parsed.hostname,
+    port: Number(parsed.port) || (scheme.startsWith('socks') ? 1080 : 8080),
+    username: user || undefined,
+    password: pass || undefined,
+    enabled: true,
+    lastCheckTs: null,
+    lastCheckOk: null,
+  };
+  proxyState = await send<ProxyStateResult>({
+    t: 'SET_PROXY_ENTRIES',
+    entries: [...(proxyState?.settings.entries ?? []), entry],
+  });
+  renderProxy();
+  void checkActiveProxy();
+});
+
+async function checkActiveProxy(): Promise<void> {
+  const el = $('proxyApplied');
+  const prev = el.textContent;
+  el.textContent = 'Проверяю прокси…';
+  try {
+    const r = await send<ProxyCheckResult>({ t: 'CHECK_PROXY' });
+    el.textContent = r.ok
+      ? `Прокси отвечает (${r.latencyMs} мс, HTTP ${r.status}).`
+      : `Прокси не отвечает: ${r.error ?? 'ошибка'}`;
+  } catch {
+    el.textContent = prev ?? '';
+  }
+  await refreshProxy();
+}
+
+$('btnProxyCheck').addEventListener('click', () => void checkActiveProxy());
+
+$('btnDnrInstall').addEventListener('click', async () => {
+  $('dnrState').textContent = 'Переустанавливаю правила…';
+  await send({ t: 'INSTALL_DNR' });
+  await refreshDnr();
+});
+
 $('btnClearDir').addEventListener('click', async () => {
   try {
     storageState = await send<StorageStateResult>({ t: 'CLEAR_DIR' });
@@ -357,5 +511,7 @@ void (async function init() {
   }
   void refreshStorage();
   void refresh();
+  void refreshProxy();
+  void refreshDnr();
   setInterval(refresh, 800);
 })();

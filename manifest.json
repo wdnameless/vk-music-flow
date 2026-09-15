@@ -1,21 +1,36 @@
 {
   "manifest_version": 3,
   "name": "VK Music Flow",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "Выгрузка музыки из ВКонтакте: плейлисты -> папки, ID3-теги, обложки, тексты.",
-  "minimum_chrome_version": "111",
-  "permissions": ["downloads", "storage", "scripting", "alarms"],
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "downloads",
+    "storage",
+    "scripting",
+    "alarms",
+    "proxy",
+    "declarativeNetRequestWithHostAccess",
+    "webRequest",
+    "webRequestAuthProvider",
+    "unlimitedStorage"
+  ],
   "host_permissions": [
     "https://vk.com/*",
     "https://*.vk.com/*",
     "https://vk.ru/*",
     "https://*.vk.ru/*",
+    "https://login.vk.ru/*",
+    "https://api.vk.ru/*",
+    "https://web.api.vk.ru/*",
     "https://*.vk-cdn.net/*",
     "https://*.userapi.com/*",
     "https://*.mycdn.me/*",
     "https://*.vkuser.net/*",
     "https://*.vkuservideo.net/*",
-    "https://*.vkusercontent.ru/*"
+    "https://*.vkusercontent.ru/*",
+    "https://*.vkuseraudio.ru/*",
+    "https://*.vkuserphoto.ru/*"
   ],
   "background": {
     "service_worker": "src/background/sw.ts",
