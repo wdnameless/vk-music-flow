@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'vitest';
 
-import { dbToGain, gainToDb, nightSettings } from '../src/offscreen/audio-graph.js';
+import { dbToGain, gainToDb, nightMakeupDb, nightSettings } from '../src/offscreen/audio-graph.js';
 import {
   addBlock,
   addToBlock,
@@ -177,6 +177,18 @@ describe('звук: ночной режим', () => {
     assert.ok(hard.threshold < soft.threshold, 'сильнее — ниже порог');
     assert.ok(hard.ratio > soft.ratio, 'сильнее — выше степень сжатия');
     assert.ok(hard.release < soft.release, 'сильнее — быстрее отпускает');
+  });
+
+  it('компенсирует снижение уровня, иначе режим только делает тише', () => {
+    // A compressor alone only reduces level, which is the opposite of what a
+    // night mode is for.
+    assert.equal(nightMakeupDb(0), 0, 'без силы компенсации нет');
+    const soft = nightMakeupDb(0.5);
+    const hard = nightMakeupDb(1);
+    assert.ok(soft > 0 && soft < 6, `компенсация ${soft} должна быть умеренной`);
+    assert.ok(hard > soft, 'сильнее режим — больше компенсации');
+    // Conservative on purpose: the limiter catches the rest.
+    assert.ok(hard < 20, `компенсация ${hard} не должна перекрывать порог целиком`);
   });
 
   it('держит параметры в осмысленных пределах', () => {

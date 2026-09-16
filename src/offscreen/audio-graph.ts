@@ -70,6 +70,19 @@ export function nightSettings(amount: number): { threshold: number; ratio: numbe
   };
 }
 
+/**
+ * Makeup gain that turns a compressor into a night mode.
+ *
+ * A compressor on its own only ever reduces level, so enabling it would simply
+ * make everything quieter. Restoring half of the threshold drop is deliberately
+ * conservative: the limiter catches the rest, and restoring more would undo the
+ * dynamic control that is the reason to use it.
+ */
+export function nightMakeupDb(amount: number): number {
+  const a = Math.min(1, Math.max(0, amount));
+  return -nightSettings(a).threshold * 0.5 * a;
+}
+
 export class AudioGraph {
   readonly ctx: AudioContext;
   private readonly norm: GainNode;
@@ -85,7 +98,13 @@ export class AudioGraph {
    * listening level.
    */
   private readonly volume: GainNode;
-  /** Hard stop at full scale, so the limiter is the only thing that can clip. */
+  /**
+   * Hard ceiling just below full scale.
+   *
+   * The limiter already prevents clipping upstream; this exists so that any
+   * future node added after it cannot overshoot, and so the output stage has one
+   * defined maximum. It is a fixed value, set once.
+   */
   private readonly ceiling: GainNode;
   /** Split point for the analyser: taken after the effects, before the volume. */
   private readonly tap: GainNode;
@@ -114,6 +133,9 @@ export class AudioGraph {
     this.limiter = ctx.createDynamicsCompressor();
     this.volume = ctx.createGain();
     this.ceiling = ctx.createGain();
+    // -0.1 dBFS: a hair below full scale, so rounding in any later stage cannot
+    // tip a sample over. The limiter sits above and does the real work.
+    this.ceiling.gain.value = dbToGain(-0.1);
     this.tap = ctx.createGain();
     // Stereo, not downmixed: a track with everything in one channel would
     // measure 3 dB low through a mono sum and be over-amplified.
@@ -336,16 +358,21 @@ export class AudioGraph {
     const gain = this.fx.normalize === 'off' ? 0 : this.normGainDb;
     set(this.norm.gain, dbToGain(gain));
     set(this.bass.gain, this.fx.bassDb);
-    set(this.preamp.gain, dbToGain(this.fx.preampDb));
 
     const n = nightSettings(this.fx.nightAmount);
     set(this.night.threshold, this.fx.nightMode ? n.threshold : 0);
     set(this.night.ratio, this.fx.nightMode ? n.ratio : 1);
     set(this.night.release, n.release);
-    // Makeup gain keeps the level up as the threshold drops, so enabling night
-    // mode does not simply make everything quieter.
     set(this.night.knee, this.fx.nightMode ? 12 : 0);
     set(this.night.attack, 0.01);
+
+    // Makeup gain is what turns a compressor into a night mode. Without it the
+    // compressor only ever reduces level, so switching it on would just make
+    // everything quieter — the opposite of the point. Half the threshold drop is
+    // restored, which is a deliberately conservative amount: the limiter catches
+    // the rest, and over-restoring would undo the dynamic control.
+    const makeupDb = this.fx.nightMode ? nightMakeupDb(this.fx.nightAmount) : 0;
+    set(this.preamp.gain, dbToGain(this.fx.preampDb + makeupDb));
   }
 
   /**

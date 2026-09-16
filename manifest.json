@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Universal player: VK, Spotify, YouTube",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Единый музыкальный плеер: ВКонтакте, Spotify и YouTube. Слушай без вкладки, качай плейлисты, свои прокси.",
   "minimum_chrome_version": "116",
   "permissions": [
