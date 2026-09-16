@@ -88,38 +88,53 @@ body[data-host='popup'] {
   height: 600px;
 }
 
-/* Side panel and standalone window: fill the available space and let the
-   content column take the slack. */
+/* Panel, window and a plain tab: fill the available space and let the content
+   column take the slack. */
 body[data-host='panel'],
 body[data-host='window'] {
   width: 100%;
   height: 100vh;
 }
 
-/* The side panel is narrow, so the rail collapses to icons only. */
-body[data-host='panel'] {
-  --side: 56px;
+/* A tab is not a host the app chooses, but it needs the same fill behaviour. */
+body:not([data-host]) {
+  width: 100%;
+  height: 100vh;
 }
 
-body[data-host='panel'] .side {
-  padding-left: 8px;
-  padding-right: 8px;
-}
+/* Narrow hosts collapse the rail to icons. Keyed on width rather than on the
+   host, because a narrow window and a narrow tab need the same treatment and
+   the side panel cannot always be identified. */
+@media (max-width: 620px) {
+  :root {
+    --side: 56px;
+  }
 
-body[data-host='panel'] .nav-item {
-  justify-content: center;
-  padding-left: 0;
-  padding-right: 0;
-}
+  .side {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
 
-body[data-host='panel'] .nav-item span,
-body[data-host='panel'] .side-source,
-body[data-host='panel'] .side-logo {
-  display: none;
-}
+  .nav-item {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+  }
 
-body[data-host='panel'] .nav-item::before {
-  left: 3px;
+  /* The caption and the source picker have nowhere to go at this width. */
+  .nav-item span,
+  .side-source {
+    display: none;
+  }
+
+  .side-logo {
+    margin-left: 0;
+    margin-right: 0;
+  }
+
+  .nav-item::before {
+    left: 3px;
+  }
 }
 
 .sprite {
@@ -380,16 +395,15 @@ body[data-host='panel'] .nav-item::before {
   height: 14px;
 }
 
-/* The panel is already the panel, and a popup cannot open itself again. */
+/* A popup cannot open itself again, and the panel has no panel to open. */
+body[data-host='popup'] #btnOpenPanel,
 body[data-host='panel'] #btnOpenPanel,
-body[data-host='window'] #btnOpenWindow,
-body[data-host='panel'] .host-actions span,
-body[data-host='window'] .host-actions span {
+body[data-host='window'] #btnOpenWindow {
   display: none;
 }
 
-body[data-host='window'] #btnOpenPanel,
-body[data-host='panel'] #btnOpenWindow {
+/* With one action left it takes the full width and shows its label. */
+body[data-host='window'] .host-actions #btnOpenPanel {
   flex: 1;
 }
 

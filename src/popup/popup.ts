@@ -63,15 +63,26 @@ const fmtDur = (s: number | null): string => {
 const HOST: 'popup' | 'window' | 'panel' = (() => {
   const mode = new URLSearchParams(location.search).get('mode');
   if (mode === 'window' || mode === 'panel') return mode;
-  // The side panel loads this page with no query string, and it is the only
-  // host that is reliably narrow, so width is a safe hint for it.
-  if (window.innerWidth <= 480) return 'panel';
-  // Everything else keeps the popup size. That is the safe default: the fixed
-  // 780x600 box is what a toolbar popup requires, and getting it wrong there
-  // would collapse the popup, while a wrong guess in a tab costs nothing but an
-  // unused margin.
-  return 'popup';
+
+  // The popup is the only host whose size Chrome derives from the page, so it
+  // must be identified positively rather than guessed. Doing it by viewport
+  // width was wrong: at the moment the popup's script runs its width is still
+  // 0, so it declared itself the side panel, never applied the fixed size, and
+  // Chrome then sized the popup to the collapsed content — an empty window.
+  try {
+    const views = chrome.extension?.getViews?.({ type: 'popup' }) ?? [];
+    if (views.includes(window)) return 'popup';
+  } catch {
+    /* getViews is not available everywhere; fall through */
+  }
+
+  // The side panel with no query parameter (the manifest's default path) and a
+  // page in a tab both land here. Both fill their viewport, and the narrow
+  // layout is driven by a width media query rather than by the host, so this
+  // default is safe for either.
+  return 'window';
 })();
+
 document.body.dataset.host = HOST;
 
 /** Open the player in its own window. */
