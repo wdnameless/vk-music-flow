@@ -21,6 +21,9 @@ const player = new Player({
     // message has nowhere to go, which is expected rather than an error.
     chrome.runtime.sendMessage({ t: 'SPECTRUM', left, right }).catch(() => undefined);
   },
+  onNeedUrls: (keys) => {
+    void chrome.runtime.sendMessage({ t: 'PLAYER_NEED_URLS', keys }).catch(() => undefined);
+  },
   onClip: (key) => {
     void chrome.runtime.sendMessage({ t: 'PLAYER_CLIP', key }).catch(() => undefined);
   },
@@ -119,9 +122,15 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, reply) => {
       reply({ ok: true });
       return false;
     }
+    case 'P_URL': {
+      const c = m as Extract<PlayerCommand, { t: 'P_URL' }>;
+      player.setTrackUrl(c.key, c.url);
+      reply({ ok: true });
+      return false;
+    }
     case 'P_LOUDNESS': {
       const c = m as Extract<PlayerCommand, { t: 'P_LOUDNESS' }>;
-      player.setTrackLoudness(c.lufs, c.peakDb);
+      player.setTrackLoudness(c.lufs, c.peakDb, c.albumLufs ?? null);
       reply(player.state());
       return false;
     }

@@ -231,8 +231,11 @@ export type RepeatMode = 'off' | 'all' | 'one';
 /* document, between the media element and the output.                */
 /* ------------------------------------------------------------------ */
 
-/** Loudness normalisation. `track` also covers albums: VK gives no album gain. */
-export type LoudnessMode = 'off' | 'track';
+/**
+ * Loudness normalisation mode. `album` keeps the level differences *within* an
+ * album, which is the point of mastering one as a set.
+ */
+export type LoudnessMode = 'off' | 'track' | 'album';
 
 export interface AudioFx {
   /** Target level in dBFS; -14 matches what streaming services use. */
@@ -278,6 +281,19 @@ export interface LoudnessEntry {
   measuredAt: number;
 }
 
+/**
+ * An album's loudness, keyed by album title and artist.
+ *
+ * Derived from the tracks that have been measured rather than stored per track,
+ * so it improves as more of the album is heard.
+ */
+export interface AlbumLoudness {
+  key: string;
+  lufs: number;
+  /** Tracks that contributed, so a partial album can be reported as such. */
+  tracks: number;
+}
+
 export interface PlayerState {
   track: PlayerTrack | null;
   /** Position within the play order, i.e. a cursor into `order`. */
@@ -300,6 +316,8 @@ export interface PlayerState {
   trackLufs: number | null;
   /** Measured true peak of the current track, in dBFS. */
   trackPeakDb: number | null;
+  /** Album loudness when the mode is set to album and it is known. */
+  albumLufs: number | null;
   /** Output level for the meter, 0..1. */
   level: number;
   /** Per-channel levels, 0..1, for a stereo meter. */
@@ -626,6 +644,8 @@ export interface Settings {
    * so a track is analysed once ever, not once per playback session.
    */
   loudness?: Record<string, LoudnessEntry>;
+  /** Album-level loudness, recomputed from the measured tracks. */
+  albums?: Record<string, AlbumLoudness>;
   // Phase 1 queue tuning (anti-ban / resilience):
   maxAttempts: number;
   baseBackoffMs: number;
@@ -753,6 +773,11 @@ export type RuntimeMessage =
   | { t: 'GET_DEVICES' }
   /** Tracks whose master was measured clipping at full scale. */
   | { t: 'GET_CLIPPED' }
+  /**
+   * The player wants fresh URLs for tracks it is about to reach, because stream
+   * links expire and a long queue outlives them.
+   */
+  | { t: 'PLAY_NEED_URLS'; keys: string[] }
   /** Ask the player to start or stop pushing spectrum frames. */
   | { t: 'PLAY_SPECTRUM'; on: boolean }
   | { t: 'GET_PLAYER_STATE' }
@@ -810,9 +835,17 @@ export type PlayerCommand =
   | { t: 'P_OUTPUT'; deviceId: string }
   | { t: 'P_DEVICES' }
   /** Echo the measured loudness back so the UI can show it. */
-  | { t: 'P_LOUDNESS'; lufs: number | null; peakDb: number | null }
+  | { t: 'P_LOUDNESS'; lufs: number | null; peakDb: number | null; albumLufs?: number | null }
   /** Start or stop streaming spectrum frames to the UI. */
   | { t: 'P_SPECTRUM'; on: boolean }
+  /**
+   * Replace the stream URL of a queued track in place.
+   *
+   * VK's links expire, so a queue built an hour ago holds dead URLs. Replacing
+   * them as playback approaches keeps a long queue usable without restarting it
+   * and without losing the listener's position.
+   */
+  | { t: 'P_URL'; key: string; url: string }
   /** The offscreen player reports a settled loudness measurement. */
   /** The offscreen player reports a settled BS.1770 measurement. */
   | { t: 'PLAYER_LOUDNESS'; key: string; lufs: number; peakDb: number; drDb: number | null }
@@ -820,6 +853,8 @@ export type PlayerCommand =
   | { t: 'PLAYER_CLIP'; key: string }
   /** One spectrum frame per channel, pushed while the panel is open. */
   | { t: 'PLAYER_SPECTRUM'; on: boolean }
+  /** The player is about to reach these tracks and needs fresh links. */
+  | { t: 'PLAYER_NEED_URLS'; keys: string[] }
   | { t: 'P_PLAY' }
   | { t: 'P_PAUSE' }
   | { t: 'P_NEXT' }

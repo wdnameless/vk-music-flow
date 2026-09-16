@@ -181,6 +181,74 @@ export function gainToDb(gain: number): number {
 }
 
 /**
+ * Reference level for ReplayGain tags.
+ *
+ * ReplayGain 2.0 measures against -18 LUFS, not the -14 the streaming services
+ * use. Writing our own -14 figures into the tags would make every file play 4 dB
+ * louder in foobar2000 than here, so the conversion happens at the tag boundary
+ * and nowhere else.
+ */
+export const REPLAYGAIN_REFERENCE_LUFS = -18;
+
+/** Convert a loudness measurement into a ReplayGain gain value, in dB. */
+export function replayGainDb(lufs: number, reference = REPLAYGAIN_REFERENCE_LUFS): number {
+  return reference - lufs;
+}
+
+/** ReplayGain stores peaks as linear amplitude, not decibels. */
+export function replayGainPeak(truePeakDb: number): number {
+  return dbToGain(truePeakDb);
+}
+
+/**
+ * Album loudness from its tracks.
+ *
+ * The correct figure is the gated loudness of the album measured as one
+ * continuous programme, which would need every block of every track retained.
+ * Averaging the tracks' energies is the standard approximation and is what
+ * ReplayGain implementations do: it is the energy mean, not the arithmetic mean,
+ * so a quiet interlude cannot pull the album level up.
+ */
+export function albumLufs(trackLufs: number[]): number | null {
+  const usable = trackLufs.filter((v) => Number.isFinite(v) && v > GATE_ABSOLUTE_LUFS);
+  if (!usable.length) return null;
+  let sum = 0;
+  for (const v of usable) sum += Math.pow(10, v / 10);
+  return 10 * Math.log10(sum / usable.length);
+}
+
+/** Whether to even out every track or preserve an album's internal dynamics. */
+export type LoudnessMode = 'off' | 'track' | 'album';
+
+/**
+ * Gain for one track under the chosen mode.
+ *
+ * `album` preserves the differences between tracks of the same album, which is
+ * the point of mastering one as a set: a quiet ballad is supposed to be quiet
+ * next to the loud opener. Normalising per track would flatten that intention.
+ */
+export function modeGain(
+  trackLufs: number,
+  trackPeakDb: number,
+  album: { lufs: number; peakDb: number } | null,
+  target: number,
+  mode: LoudnessMode,
+): number {
+  if (mode === 'off') return 0;
+  if (mode === 'album' && album !== null) {
+    // Album gain is ONE value for the whole album, limited by the album's
+    // loudest peak — not a per-track figure that happens to use the album
+    // loudness. Deriving it from each track's own peak would leave the tracks
+    // gaining different amounts, which is exactly the difference the mode is
+    // supposed to preserve.
+    return normalisationGain(album.lufs, album.peakDb, target);
+  }
+  // The peak limit applies in both modes: not clipping is not a level-matching
+  // question.
+  return normalisationGain(trackLufs, trackPeakDb, target);
+}
+
+/**
  * Dynamic range in dB, as `crest factor`: peak minus loudness.
  *
  * The usual streaming "DR" number. It is a rough but honest indicator of how

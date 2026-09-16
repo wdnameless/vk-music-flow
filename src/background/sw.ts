@@ -1,4 +1,4 @@
-import { buildTag, stripTag } from '../lib/id3.js';
+import { buildTag, stripTag, type Id3Meta } from '../lib/id3.js';
 import { parseM3U8, type M3U8ParseResult } from '../lib/m3u8.js';
 import { sanitize, pad, sniffExt, concatBytes, sanitizePath } from '../lib/util.js';
 import { computeBackoff, computeStartDelay } from '../lib/backoff.js';
@@ -88,7 +88,14 @@ import {
 } from '../lib/vk-api.js';
 import { clearToken } from '../lib/vk-auth.js';
 import { normalisationGain } from '../offscreen/audio-graph.js';
-import { GATE_ABSOLUTE_LUFS } from '../lib/loudness.js';
+import {
+  albumLufs,
+  GATE_ABSOLUTE_LUFS,
+  modeGain,
+  replayGainDb,
+  replayGainPeak,
+  REPLAYGAIN_REFERENCE_LUFS,
+} from '../lib/loudness.js';
 
 const SKEY = 'vmf_state_v1';
 const PKEY = 'vmf_proxy_v1';
@@ -1248,7 +1255,16 @@ async function runItem(item: QueueItem): Promise<void> {
     const cover = await getCover(a);
     const lyrics = S.lyrics[String(a.id)] || '';
     const tag = buildTag(
-      { title: a.title, artist: a.artist, album: a.album, year: a.year, track: item.idx },
+      {
+        title: a.title,
+        artist: a.artist,
+        album: a.album,
+        year: a.year,
+        track: item.idx,
+        // Written only if this track has actually been measured. A guessed value
+        // would be worse than none: every other player would act on it.
+        replayGain: replayGainFor(a),
+      },
       cover,
       lyrics,
     );
@@ -1479,18 +1495,96 @@ async function applyNormalisation(): Promise<void> {
     return;
   }
   const entry = S.settings.loudness?.[st.track.key];
+  const album = st.track ? albumFor(st.track) : null;
   if (!entry) {
     // Unknown yet: play as-is, and the measurement collected during playback
     // will be applied the next time this track starts.
     await sendToPlayer({ t: 'P_GAIN', gainDb: 0 });
     return;
   }
-  const db = normalisationGain(entry.lufs, entry.truePeakDb, fx.normalizeTargetDb);
+  const db = modeGain(entry.lufs, entry.truePeakDb, album, fx.normalizeTargetDb, fx.normalize);
   const live = await sendToPlayer({ t: 'P_GAIN', gainDb: db });
   if (live) rememberPlayerState(live as PlayerState);
   // Echo the figures back so the UI can show what was measured for this track.
-  const echo = await sendToPlayer({ t: 'P_LOUDNESS', lufs: entry.lufs, peakDb: entry.truePeakDb });
+  const echo = await sendToPlayer({
+    t: 'P_LOUDNESS',
+    lufs: entry.lufs,
+    peakDb: entry.truePeakDb,
+    albumLufs: album?.lufs ?? null,
+  });
   if (echo) rememberPlayerState(echo as PlayerState);
+}
+
+/**
+ * ReplayGain tags for a track, from its measured loudness.
+ *
+ * The measurement is already cached, so this costs nothing; if the track has
+ * never been played the tags are simply omitted rather than filled with a guess
+ * that other players would then act on.
+ */
+function replayGainFor(a: AudioMeta): Id3Meta['replayGain'] {
+  const entry = S.settings.loudness?.[a.key];
+  if (!entry) return null;
+  const gain = replayGainDb(entry.lufs, REPLAYGAIN_REFERENCE_LUFS);
+  const albumValues: number[] = [];
+  const albumKey = (a.album ?? '').trim().toLowerCase();
+  let albumPeak: number | null = null;
+  if (albumKey) {
+    for (const [k, meta] of Object.entries(S.audios)) {
+      if ((meta.album ?? '').trim().toLowerCase() !== albumKey) continue;
+      const e = S.settings.loudness?.[k];
+      if (e) {
+        albumValues.push(e.lufs);
+        // The album peak is the loudest track's peak: it is what limits the
+        // album gain, so it must be a maximum, not an average.
+        if (albumPeak === null || e.truePeakDb > albumPeak) albumPeak = e.truePeakDb;
+      }
+    }
+  }
+  const album = albumLufs(albumValues);
+  return {
+    trackGainDb: gain,
+    trackPeak: replayGainPeak(entry.truePeakDb),
+    albumGainDb: album === null ? null : replayGainDb(album, REPLAYGAIN_REFERENCE_LUFS),
+    albumPeak: albumPeak === null ? null : replayGainPeak(albumPeak),
+  };
+}
+
+/** Album key for a track: title plus artist, the pair that identifies a release. */
+function albumKeyOf(track: PlayerTrack): string | null {
+  const meta = S.audios[track.key];
+  const album = (meta?.album ?? '').trim();
+  if (!album) return null;
+  // VK returns a compilation's tracks under different artists, so the artist is
+  // part of the key only when it is consistent; the title alone groups better.
+  return album.toLowerCase();
+}
+
+/**
+ * Album loudness from the tracks of that album which have been measured.
+ *
+ * Recomputed from the cache rather than stored when measured, so it improves as
+ * more of the album is played instead of being fixed by whichever track happened
+ * to be heard first.
+ */
+function albumFor(track: PlayerTrack): { lufs: number; peakDb: number } | null {
+  const key = albumKeyOf(track);
+  if (!key) return null;
+  const loud: number[] = [];
+  let peakDb = -120;
+  for (const [k, meta] of Object.entries(S.audios)) {
+    if ((meta.album ?? '').trim().toLowerCase() !== key) continue;
+    const entry = S.settings.loudness?.[k];
+    if (!entry) continue;
+    loud.push(entry.lufs);
+    // The album peak is the loudest track's peak: it is what limits a single
+    // album gain, so it must be a maximum rather than an average.
+    if (entry.truePeakDb > peakDb) peakDb = entry.truePeakDb;
+  }
+  const lufs = albumLufs(loud);
+  if (lufs === null) return null;
+  S.settings.albums = { ...(S.settings.albums ?? {}), [key]: { key, lufs, tracks: loud.length } };
+  return { lufs, peakDb };
 }
 
 /**
@@ -1566,6 +1660,14 @@ const boot = (): Promise<void> => (booted ??= load());
 // module scope (not inside boot()) because MV3 requires listeners to exist
 // synchronously on every worker start, even when it only wakes for an event.
 installProxyAuth(() => P);
+
+/**
+ * Cap on how many links one refresh request may resolve.
+ *
+ * A seek across a playlist can ask for several at once; resolving them all
+ * serially would keep the worker busy for links that may never be played.
+ */
+const PRELOAD_MAX = 4;
 
 /** Tracks whose master was measured at full scale, for the UI to report. */
 const clipReported = new Set<string>();
@@ -1649,6 +1751,22 @@ chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
       // Echo the figures so the panel can show them for this track.
       void sendToPlayer({ t: 'P_LOUDNESS', lufs: m2.lufs, peakDb: m2.peakDb });
     }
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg?.t === 'PLAYER_NEED_URLS') {
+    // The queue was built with links that are now ageing; refresh the ones the
+    // player is about to reach and push them back, so a long queue keeps working
+    // without being rebuilt.
+    const m2 = m as { keys: string[] };
+    void (async () => {
+      for (const key of m2.keys.slice(0, PRELOAD_MAX)) {
+        const entry = S.audios[key];
+        if (!entry) continue;
+        const url = await resolveForPlayback(entry.owner, entry.id, key);
+        if (url) await sendToPlayer({ t: 'P_URL', key, url });
+      }
+    })();
     sendResponse({ ok: true });
     return false;
   }

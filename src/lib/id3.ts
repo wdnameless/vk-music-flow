@@ -4,6 +4,20 @@ export interface Id3Meta {
   album?: string | null;
   year?: number | string | null;
   track?: number | string | null;
+  /**
+   * ReplayGain 2.0 tags.
+   *
+   * Written so the files sound the same in any other player (foobar2000,
+   * MusicBee, Roon) as they do here. Note the reference level: ReplayGain is
+   * defined against -18 LUFS, not the -14 the streaming services use, and the
+   * conversion happens before this point.
+   */
+  replayGain?: {
+    trackGainDb: number;
+    trackPeak: number;
+    albumGainDb?: number | null;
+    albumPeak?: number | null;
+  } | null;
 }
 
 function syncsafe(n: number): number[] {
@@ -47,6 +61,17 @@ function textPayload(value: string | number): Uint8Array {
   return concat([new Uint8Array([3]), body]);
 }
 
+/**
+ * A TXXX frame: description plus value, for tags that have no frame of their own.
+ *
+ * Encoding is UTF-8 with the terminator byte the format expects between the two
+ * strings, which is what makes ReplayGain readable rather than garbled.
+ */
+function txxxPayload(description: string, value: string): Uint8Array {
+  const enc = new TextEncoder();
+  return concat([new Uint8Array([3]), enc.encode(description), new Uint8Array([0]), enc.encode(value)]);
+}
+
 function usltPayload(lyrics: string): Uint8Array {
   return concat([
     new Uint8Array([3]),
@@ -82,6 +107,21 @@ function buildFrameList(
   if (meta.track) f.push(frame('TRCK', textPayload(String(meta.track))));
   if (meta.year) f.push(frame('TDRC', textPayload(String(meta.year))));
   if (lyrics) f.push(frame('USLT', usltPayload(lyrics)));
+  // ReplayGain lives in TXXX frames with a description, which is the de facto
+  // convention every player reads. Values are fixed-point with two decimals:
+  // the tags are defined that way, and some players parse nothing else.
+  const rg = meta.replayGain;
+  if (rg) {
+    f.push(frame('TXXX', txxxPayload('REPLAYGAIN_TRACK_GAIN', `${rg.trackGainDb.toFixed(2)} dB`)));
+    f.push(frame('TXXX', txxxPayload('REPLAYGAIN_TRACK_PEAK', rg.trackPeak.toFixed(6))));
+    if (typeof rg.albumGainDb === 'number') {
+      f.push(frame('TXXX', txxxPayload('REPLAYGAIN_ALBUM_GAIN', `${rg.albumGainDb.toFixed(2)} dB`)));
+    }
+    if (typeof rg.albumPeak === 'number') {
+      f.push(frame('TXXX', txxxPayload('REPLAYGAIN_ALBUM_PEAK', rg.albumPeak.toFixed(6))));
+    }
+    f.push(frame('TXXX', txxxPayload('REPLAYGAIN_REFERENCE_LOUDNESS', '-18.00 LUFS')));
+  }
   if (coverBytes && coverBytes.length > 100) f.push(frame('APIC', apicPayload(coverBytes)));
   return f;
 }

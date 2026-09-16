@@ -282,11 +282,15 @@
           </div>
           <div id="fxReadout" class="fx-readout mono"></div>
 
-          <label class="fx-row">
-            <span>Выравнивать громкость</span>
-            <span class="switch"><input id="fxNorm" type="checkbox" /><span></span></span>
-          </label>
-          <p class="meta">Треки ВК отличаются по громкости до 12 дБ. Плеер измеряет каждый трек во время прослушивания и выравнивает следующий запуск.</p>
+          <div class="field">
+            <span class="label">Выравнивание громкости</span>
+            <select id="fxNormMode">
+              <option value="off">Выключено</option>
+              <option value="track">По треку</option>
+              <option value="album">По альбому</option>
+            </select>
+          </div>
+          <p class="meta">Треки ВК отличаются по громкости больше чем на 12 дБ. Плеер измеряет каждый трек во время прослушивания и выравнивает до −14 LUFS. Режим «по альбому» сохраняет разницу между тихой балладой и громким открывающим треком — так задумано при мастеринге.</p>
 
           <label class="fx-row">
             <span>Ночной режим</span>

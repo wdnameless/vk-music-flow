@@ -778,7 +778,7 @@ function renderFxPanel(): void {
   void (async () => {
     const st = await send<StateSnapshot | null>({ t: 'GET_STATE' });
     const fx = { ...DEFAULT_AUDIO_FX, ...(st?.settings?.audioFx ?? {}) };
-    $in('fxNorm').checked = fx.normalize !== 'off';
+    $sel('fxNormMode').value = fx.normalize;
     $in('fxNight').checked = fx.nightMode;
     $in('fxNightAmount').value = String(Math.round(fx.nightAmount * 100));
     $('fxNightVal').textContent = String(Math.round(fx.nightAmount * 100));
@@ -824,9 +824,10 @@ $('fxClose').addEventListener('click', () => {
 // A closed popup must not leave the stream running.
 window.addEventListener('pagehide', () => void send({ t: 'PLAY_SPECTRUM', on: false }));
 
-$('fxNorm').addEventListener('change', (e) =>
-  void pushFx({ normalize: (e.target as HTMLInputElement).checked ? 'track' : 'off' }),
-);
+$sel('fxNormMode').addEventListener('change', (e) => {
+  const mode = (e.target as HTMLSelectElement).value as 'off' | 'track' | 'album';
+  void pushFx({ normalize: mode });
+});
 $('fxNight').addEventListener('change', (e) =>
   void pushFx({ nightMode: (e.target as HTMLInputElement).checked }),
 );
@@ -909,6 +910,7 @@ function renderReadout(): void {
   if (p.trackLufs !== null && p.trackPeakDb !== null && p.trackLufs !== undefined && p.trackPeakDb !== undefined) {
     parts.push(`DR ${(p.trackPeakDb - p.trackLufs).toFixed(1)} дБ`);
   }
+  if (p.albumLufs !== null && p.albumLufs !== undefined) parts.push(`альбом ${p.albumLufs.toFixed(1)} LUFS`);
   if (p.normGainDb) parts.push(`коррекция ${p.normGainDb > 0 ? '+' : ''}${p.normGainDb.toFixed(1)} дБ`);
   el.textContent = parts.length ? parts.join('  ·  ') : 'Трек ещё не измерен — слушаю…';
 }

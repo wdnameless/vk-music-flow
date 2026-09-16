@@ -4,6 +4,11 @@ import { describe, it } from 'vitest';
 import { dbToGain, gainToDb, nightMakeupDb, nightSettings } from '../src/offscreen/audio-graph.js';
 import {
   addBlock,
+  albumLufs,
+  modeGain,
+  replayGainDb,
+  replayGainPeak,
+  REPLAYGAIN_REFERENCE_LUFS,
   addToBlock,
   BLOCK_SECONDS,
   closeBlock,
@@ -157,6 +162,94 @@ describe('звук: нормализация', () => {
     // the next track when audio starts.
     assert.equal(normalisationGain(GATE_ABSOLUTE_LUFS - 10, -60, DEFAULT_TARGET_DB), 0);
     assert.equal(normalisationGain(NaN, 0, DEFAULT_TARGET_DB), 0);
+  });
+});
+
+describe('звук: режим по альбому', () => {
+  it('усредняет энергию треков, а не их уровни', () => {
+    // The energy mean of -10 and -20 is -12.6, not -15: a quiet interlude must
+    // not pull the album level up the way an arithmetic mean would.
+    const album = albumLufs([-10, -20]);
+    assert.ok(album !== null && Math.abs(album - -12.596) < 0.01, `получено ${album}`);
+    assert.notEqual(album, -15, 'арифметическое среднее здесь было бы неверным');
+  });
+
+  it('на одном треке даёт ровно его уровень', () => {
+    assert.equal(albumLufs([-16.5]), -16.5);
+  });
+
+  it('не выдумывает альбом без измерений', () => {
+    assert.equal(albumLufs([]), null);
+    assert.equal(albumLufs([-90, -85]), null);
+  });
+
+  it('по треку выравнивает каждый трек к цели', () => {
+    // +6 by loudness, but the peak at -6 leaves room for only +5, so the peak
+    // limit is what applies.
+    assert.equal(modeGain(-20, -6, { lufs: -16, peakDb: -6 }, -14, 'track'), 5);
+    // The album figure is ignored in this mode.
+    assert.equal(modeGain(-20, -12, { lufs: -8, peakDb: -2 }, -14, 'track'), 6);
+  });
+
+  it('по альбому даёт один и тот же гейн всем трекам', () => {
+    // Album gain is a single value for the release, limited by the album's
+    // loudest peak. If it varied per track the mode would flatten the album's
+    // dynamics — the exact thing it exists to preserve.
+    // Album at -16 with its loudest peak at -3: +2 by loudness, but only +2 fits
+    // before the -1 ceiling, so that is the album gain.
+    const album = { lufs: -16, peakDb: -3 };
+    const quiet = modeGain(-24, -14, album, -14, 'album');
+    const loud = modeGain(-12, -4, album, -14, 'album');
+    assert.equal(quiet, loud, 'все треки альбома получают одинаковый гейн');
+    assert.equal(quiet, 2, 'гейн считается от громкости и пика альбома');
+    // And the 12 dB between the two tracks is untouched.
+    assert.equal(-12 - -24, 12);
+  });
+
+  it('по треку выравнивает каждый трек, ломая динамику альбома', () => {
+    // The contrast: per-track mode gives the quiet one +8 and the loud one -2.
+    const quiet = modeGain(-24, -14, null, -14, 'track');
+    const loud = modeGain(-12, -4, null, -14, 'track');
+    assert.equal(quiet, 10, 'тихий поднимается на 10 дБ');
+    assert.equal(loud, -2, 'громкий опускается на 2 дБ');
+    assert.notEqual(quiet, loud, 'именно этого режим «по альбому» и не делает');
+  });
+
+  it('по альбому без известного альбома ведёт себя как по треку', () => {
+    assert.equal(modeGain(-20, -12, null, -14, 'album'), 6);
+  });
+
+  it('в выключенном режиме ничего не меняет', () => {
+    assert.equal(modeGain(-24, -6, { lufs: -16, peakDb: -6 }, -14, 'off'), 0);
+  });
+
+  it('потолок по пикам действует в любом режиме', () => {
+    // Not clipping is not a level-matching question.
+    for (const mode of ['track', 'album'] as const) {
+      const g = modeGain(-30, -0.2, { lufs: -20, peakDb: -0.2 }, -14, mode);
+      assert.ok(-0.2 + g <= PEAK_CEILING_DB + 1e-9, `${mode}: пик вышел за потолок`);
+    }
+  });
+});
+
+describe('звук: ReplayGain', () => {
+  it('считает относительно эталона ReplayGain, а не стримингов', () => {
+    // Writing -14 figures into the tags would make every file play 4 dB louder
+    // in another player than it does here.
+    assert.equal(REPLAYGAIN_REFERENCE_LUFS, -18);
+    assert.equal(replayGainDb(-18), 0);
+    assert.equal(replayGainDb(-24), 6, 'тихий файл усиливается');
+    assert.equal(replayGainDb(-10), -8, 'громкий ослабляется');
+  });
+
+  it('пик пишет в линейной амплитуде, как требует формат', () => {
+    assert.ok(Math.abs(replayGainPeak(0) - 1) < 1e-9);
+    assert.ok(Math.abs(replayGainPeak(-6) - 0.5012) < 0.001);
+  });
+
+  it('на полной шкале не даёт NaN', () => {
+    assert.ok(Number.isFinite(replayGainPeak(0)));
+    assert.equal(replayGainDb(-14) - replayGainDb(-18), -4);
   });
 });
 

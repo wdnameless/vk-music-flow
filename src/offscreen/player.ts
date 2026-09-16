@@ -54,6 +54,24 @@ const MEASURE_SECONDS = 8;
  */
 const SPECTRUM_BANDS = 48;
 
+/**
+ * How many upcoming tracks to keep resolved.
+ *
+ * Three is enough that a skip, a crossfade and one more all have a live link,
+ * and few enough that seeking through a playlist does not fire a burst of
+ * requests for tracks the listener will never reach.
+ */
+const PRELOAD_AHEAD = 3;
+
+/**
+ * How often to refresh those links while a track plays.
+ *
+ * VK links live one to two hours. A ten-minute track playing for its full length
+ * ages the link resolved for the track after next by twenty minutes, so
+ * refreshing every few minutes keeps the window valid without polling hard.
+ */
+const URL_REFRESH_MS = 5 * 60 * 1000;
+
 export interface PlayerEvents {
   onState(state: PlayerState): void;
   /** Called when a track ends so the host can scrobble and advance. */
@@ -67,6 +85,8 @@ export interface PlayerEvents {
   onClip(key: string): void;
   /** One spectrum frame per channel; only sent while it is being displayed. */
   onSpectrum(left: number[], right: number[]): void;
+  /** The player wants fresh URLs for these keys; it is about to reach them. */
+  onNeedUrls(keys: string[]): void;
 }
 
 export class Player {
@@ -101,6 +121,8 @@ export class Player {
   /** Loudness of the current track, once it has been measured. */
   private trackLufs: number | null = null;
   private trackPeakDb: number | null = null;
+  /** Album loudness, when the worker has figured one out. */
+  private albumLufs: number | null = null;
   private outputDevices: { id: string; label: string }[] = [];
   /** Seconds left of the crossfade into the current track, for the meter. */
   private crossfadeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -261,6 +283,10 @@ export class Player {
     }
     this.scheduleCrossfade();
     this.startLoudnessSampling();
+    // Ask for the next few links straight away: resolving them is a network
+    // round-trip each, and waiting until the moment of the transition would mean
+    // a gap or a failure.
+    this.requestUpcomingUrls();
     // Published here rather than on a metadata event: the OS should show the
     // track as soon as it starts, not once the browser has parsed its header.
     this.publishMediaSession(t);
@@ -346,6 +372,13 @@ export class Player {
 
   private spectrumWanted = false;
 
+  private stopUrlRefresh(): void {
+    if (this.urlTimer !== null) {
+      clearInterval(this.urlTimer);
+      this.urlTimer = null;
+    }
+  }
+
   private stopLoudnessSampling(): void {
     if (this.loudnessTimer !== null) {
       clearInterval(this.loudnessTimer);
@@ -357,6 +390,25 @@ export class Player {
 
   /** True while the two elements are mid-overlap. */
   private crossfading = false;
+
+  /**
+   * Ask the worker to refresh the links of the next few tracks.
+   *
+   * Repeated every few minutes while a track plays, because a link resolved at
+   * the start of a ten-minute track is two hours old by the time a long queue
+   * reaches the end — which is exactly when it stops working.
+   */
+  private requestUpcomingUrls(): void {
+    if (this.urlTimer !== null) clearInterval(this.urlTimer);
+    const ask = (): void => {
+      const keys = this.upcomingKeys(PRELOAD_AHEAD);
+      if (keys.length) this.events.onNeedUrls(keys);
+    };
+    ask();
+    this.urlTimer = setInterval(ask, URL_REFRESH_MS);
+  }
+
+  private urlTimer: ReturnType<typeof setInterval> | null = null;
 
   /**
    * Arm the crossfade for the current track.
@@ -601,10 +653,42 @@ export class Player {
   }
 
   /** Loudness figures for the current track, sent by the worker once measured. */
-  setTrackLoudness(lufs: number | null, peakDb: number | null): void {
+  setTrackLoudness(lufs: number | null, peakDb: number | null, albumLufs: number | null = null): void {
     this.trackLufs = lufs;
     this.trackPeakDb = peakDb;
+    this.albumLufs = albumLufs;
     this.emit();
+  }
+
+  /**
+   * Replace a queued track's stream URL.
+   *
+   * The queue is built with URLs resolved at that moment, and VK's links expire
+   * in an hour or two — so a queue assembled for an evening holds dead links by
+   * the end of it. Refreshing them as playback approaches is what keeps a long
+   * queue playable without rebuilding it and losing the listener's place.
+   */
+  setTrackUrl(key: string, url: string): void {
+    let changed = false;
+    for (const t of this.queue) {
+      if (t.key === key && t.url !== url) {
+        t.url = url;
+        changed = true;
+      }
+    }
+    if (changed) this.emit();
+  }
+
+  /** Keys of the tracks coming up, in play order, that have no fresh URL yet. */
+  upcomingKeys(count: number): string[] {
+    const out: string[] = [];
+    for (let i = 1; i <= count; i++) {
+      const slot = this.pos + i;
+      if (slot >= this.order.length) break;
+      const t = this.queue[this.order[slot] ?? -1];
+      if (t) out.push(t.key);
+    }
+    return out;
   }
 
   /** Refresh the list of audio output devices. */
@@ -649,6 +733,7 @@ export class Player {
       normGainDb: this.graph.normalisationGainDb,
       trackLufs: this.trackLufs,
       trackPeakDb: this.trackPeakDb,
+      albumLufs: this.albumLufs,
       level: this.graph.level(),
       levels: this.graph.peakLevels(),
       clipped: this.graph.isClipping(),
@@ -732,6 +817,7 @@ export class Player {
 
   destroy(): void {
     this.stopLoudnessSampling();
+    this.stopUrlRefresh();
     if (this.crossfadeTimer) clearTimeout(this.crossfadeTimer);
     this.audio.pause();
     this.audio.removeAttribute('src');
