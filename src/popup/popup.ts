@@ -55,6 +55,48 @@ const fmtDur = (s: number | null): string => {
   return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
 };
 
+/* ---------------- Host mode ----------------
+   The same page runs as the toolbar popup, as a standalone window and as the
+   side panel. Only the popup has a fixed size, so the host is recorded on
+   <body> and the CSS adapts from there. */
+
+const HOST: 'popup' | 'window' | 'panel' = (() => {
+  const mode = new URLSearchParams(location.search).get('mode');
+  if (mode === 'window' || mode === 'panel') return mode;
+  // The side panel loads this page with no query string, and it is the only
+  // host that is reliably narrow, so width is a safe hint for it.
+  if (window.innerWidth <= 480) return 'panel';
+  // Everything else keeps the popup size. That is the safe default: the fixed
+  // 780x600 box is what a toolbar popup requires, and getting it wrong there
+  // would collapse the popup, while a wrong guess in a tab costs nothing but an
+  // unused margin.
+  return 'popup';
+})();
+document.body.dataset.host = HOST;
+
+/** Open the player in its own window. */
+$('btnOpenWindow').addEventListener('click', async () => {
+  await chrome.windows.create({
+    url: chrome.runtime.getURL('src/popup/popup.html?mode=window'),
+    type: 'popup',
+    width: 1100,
+    height: 760,
+  });
+  // A popup cannot stay open once a window steals focus; closing is cleaner
+  // than leaving a dead panel behind.
+  if (HOST === 'popup') window.close();
+});
+
+$('btnOpenPanel').addEventListener('click', async () => {
+  try {
+    const win = await chrome.windows.getCurrent();
+    await chrome.sidePanel.open({ windowId: win.id! });
+    if (HOST === 'popup') window.close();
+  } catch (e) {
+    $('platformState').textContent = 'Панель недоступна: ' + ((e as Error).message || e);
+  }
+});
+
 /* ---------------- Navigation ---------------- */
 
 function showView(name: string): void {

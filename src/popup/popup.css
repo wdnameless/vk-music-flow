@@ -62,15 +62,64 @@ body {
   height: 100%;
 }
 
+/**
+ * One layout serves three hosts: the toolbar popup, a standalone window opened
+ * from it, and the Chrome side panel.
+ *
+ * The popup is the only one with a fixed size — Chrome sizes it to its content
+ * and refuses to exceed ~800x600 — so the size is applied there and nowhere
+ * else. Everywhere else the app simply fills whatever it is given, which is why
+ * heights are percentage-based rather than hard-coded.
+ */
 body {
-  width: 780px;
-  height: 600px;
   background: var(--canvas);
   color: var(--text);
   font: 13px/1.5 var(--sans);
   font-feature-settings: 'cv05' 1;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
+  height: 100%;
+  min-height: 0;
+}
+
+/* Toolbar popup: fixed, because Chrome sizes the popup from this. */
+body[data-host='popup'] {
+  width: 780px;
+  height: 600px;
+}
+
+/* Side panel and standalone window: fill the available space and let the
+   content column take the slack. */
+body[data-host='panel'],
+body[data-host='window'] {
+  width: 100%;
+  height: 100vh;
+}
+
+/* The side panel is narrow, so the rail collapses to icons only. */
+body[data-host='panel'] {
+  --side: 56px;
+}
+
+body[data-host='panel'] .side {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+body[data-host='panel'] .nav-item {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+body[data-host='panel'] .nav-item span,
+body[data-host='panel'] .side-source,
+body[data-host='panel'] .side-logo {
+  display: none;
+}
+
+body[data-host='panel'] .nav-item::before {
+  left: 3px;
 }
 
 .sprite {
@@ -98,9 +147,10 @@ body {
 
 .app {
   display: grid;
-  grid-template-columns: var(--side) 1fr;
-  grid-template-rows: 1fr var(--player);
+  grid-template-columns: var(--side) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) var(--player);
   height: 100%;
+  min-height: 0;
   position: relative;
 }
 
@@ -307,9 +357,44 @@ body {
   margin-top: 4px;
 }
 
+.host-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.host-actions button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 6px;
+  font-size: 11px;
+}
+
+.host-actions .ic {
+  width: 14px;
+  height: 14px;
+}
+
+/* The panel is already the panel, and a popup cannot open itself again. */
+body[data-host='panel'] #btnOpenPanel,
+body[data-host='window'] #btnOpenWindow,
+body[data-host='panel'] .host-actions span,
+body[data-host='window'] .host-actions span {
+  display: none;
+}
+
+body[data-host='window'] #btnOpenPanel,
+body[data-host='panel'] #btnOpenWindow {
+  flex: 1;
+}
+
 /* ---------------- Content ---------------- */
 
 .content {
+  min-width: 0;
   overflow-y: auto;
   /* Bottom padding clears the floating player bar and the selection tray, so
      the last row is never trapped underneath either of them. */
@@ -1337,4 +1422,90 @@ button.icon.on {
 .switch input:checked + span::after {
   transform: translateX(15px);
   background: var(--ink-text);
+}
+
+/* ---------------- Narrow hosts ----------------
+   The side panel is roughly 320-420px wide. The desktop spacing and the
+   one-row player bar are what break first, so both are relaxed here rather
+   than squeezed. */
+
+@media (max-width: 620px) {
+  :root {
+    /* Two rows of controls need the extra height. */
+    --player: 108px;
+  }
+
+  .content {
+    padding: 16px 14px 120px;
+  }
+
+  .page-head h1 {
+    font-size: 19px;
+  }
+
+  .feat-art {
+    aspect-ratio: 16 / 9;
+  }
+
+  .stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .pl-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .q-overlay,
+  .eq-overlay {
+    left: 10px;
+    right: 10px;
+    width: auto;
+  }
+
+  .sel-tray {
+    left: 10px;
+    right: 10px;
+    padding-left: 14px;
+  }
+
+  /* Player bar stacks: meta, then transport + progress, then the rest. Three
+     groups cannot share one row at this width without spilling past the edge. */
+  .player {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto;
+    gap: 3px;
+    padding: 8px 12px 7px;
+  }
+
+  .p-left {
+    grid-column: 1;
+    min-width: 0;
+  }
+
+  .p-center {
+    grid-column: 1;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 12px;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .p-progress {
+    width: auto;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .p-right {
+    grid-column: 1;
+    justify-content: flex-start;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .p-right input[type='range'] {
+    width: 64px;
+  }
 }

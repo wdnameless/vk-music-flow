@@ -1,20 +1,21 @@
 {
   "manifest_version": 3,
   "name": "Universal player: VK, Spotify, YouTube",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Единый музыкальный плеер: ВКонтакте, Spotify и YouTube. Слушай без вкладки, качай плейлисты, свои прокси.",
   "minimum_chrome_version": "116",
   "permissions": [
-    "downloads",
-    "storage",
-    "scripting",
     "alarms",
-    "proxy",
     "declarativeNetRequestWithHostAccess",
-    "webRequest",
-    "webRequestAuthProvider",
+    "downloads",
+    "offscreen",
+    "proxy",
+    "scripting",
+    "sidePanel",
+    "storage",
     "unlimitedStorage",
-    "offscreen"
+    "webRequest",
+    "webRequestAuthProvider"
   ],
   "host_permissions": [
     "https://vk.com/*",
@@ -39,7 +40,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "VK Music Flow",
+    "default_title": "Universal player",
     "default_popup": "src/popup/popup.html"
   },
   "web_accessible_resources": [
@@ -101,5 +102,8 @@
       "run_at": "document_start"
     }
   ],
-  "short_name": "Universal player"
+  "short_name": "Universal player",
+  "side_panel": {
+    "default_path": "src/popup/popup.html"
+  }
 }
