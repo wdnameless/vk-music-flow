@@ -3,11 +3,15 @@ import { DEFAULT_AUDIO_FX, EQ_BANDS } from '../types.js';
 import { AudioGraph, gainToDb } from './audio-graph.js';
 import {
   addBlock,
+  addToBlock,
   BLOCK_SECONDS,
+  closeBlock,
+  createBlock,
   createMeter,
   dynamicRangeDb,
   GATE_ABSOLUTE_LUFS,
   integratedLufs,
+  type BlockAccumulator,
   type LoudnessMeter,
 } from '../lib/loudness.js';
 import { advancePos, buildOrder, insertIntoOrder, moveInOrder, removeFromOrder } from './queue-order.js';
@@ -672,24 +676,29 @@ export class Player {
       this.meterClock = 0;
     }
 
-    // Each poll contributes one interval to the current 400 ms block. Silence
-    // is still a block: the gates are defined over the block set, so a gap must
-    // be present to be rejected rather than simply missing.
+    // Every analyser read is folded into the current 400 ms block, so the block
+    // is the mean square over a contiguous window rather than one snapshot.
     const now = this.ctx.currentTime;
     const dt = this.lastSampleAt ? Math.min(0.25, Math.max(0, now - this.lastSampleAt)) : 0;
     this.lastSampleAt = now;
     this.meterClock += dt;
-    if (this.meterClock < BLOCK_SECONDS) return;
-    this.meterClock = 0;
 
-    const lufs = this.graph.momentLufs();
+    const [zl, zr] = this.graph.kWeightedMeanSquares();
     const peaks = this.graph.truePeakLevels();
     const peakDb = gainToDb(Math.max(peaks[0], peaks[1]));
-    addBlock(this.meter, lufs, peakDb, BLOCK_SECONDS);
+    // BS.1770 channel weights are 1.0 for left and right.
+    this.block = this.block ?? createBlock();
+    addToBlock(this.block, zl + zr, peakDb);
+
+    if (this.meterClock < BLOCK_SECONDS) return;
+    this.meterClock = 0;
+    const closed = closeBlock(this.block);
+    this.block = createBlock();
+    addBlock(this.meter, closed.lufs, closed.peakDb, BLOCK_SECONDS);
 
     // Report clipping once per track: a brick-walled master is at full scale for
     // much of its length, and reporting every occurrence would flood the worker.
-    if (!this.clipReported && this.graph.isClipping()) {
+    if (!this.clipReported && Math.max(peaks[0], peaks[1]) >= 1) {
       this.clipReported = true;
       this.events.onClip(cur.key);
     }
@@ -709,6 +718,9 @@ export class Player {
       }
     }
   }
+
+  /** Block currently being filled. */
+  private block: BlockAccumulator | null = null;
 
   private loudnessReported = false;
   /** Clipping is reported at most once per track, for the same reason. */

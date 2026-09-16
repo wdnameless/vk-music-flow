@@ -4,11 +4,16 @@ import { describe, it } from 'vitest';
 import { dbToGain, gainToDb, nightSettings } from '../src/offscreen/audio-graph.js';
 import {
   addBlock,
+  addToBlock,
+  BLOCK_SECONDS,
+  closeBlock,
+  createBlock,
   createMeter,
   DEFAULT_TARGET_DB,
   dynamicRangeDb,
   GATE_ABSOLUTE_LUFS,
   integratedLufs,
+  lufsFromMeanSquare,
   normalisationGain,
   PEAK_CEILING_DB,
 } from '../src/lib/loudness.js';
@@ -78,6 +83,45 @@ describe('звук: интегрированная громкость по BS.17
 
   it('порог абсолютного гейта соответствует стандарту', () => {
     assert.equal(GATE_ABSOLUTE_LUFS, -70);
+  });
+});
+
+describe('звук: сборка 400-мс блока', () => {
+  it('усредняет все замеры внутри окна, а не берёт последний', () => {
+    // A block defined by one instantaneous read captures a tenth of the audio
+    // and jumps around with whatever happened to be playing at that moment.
+    const b = createBlock();
+    addToBlock(b, 0.01, -30);
+    addToBlock(b, 0.04, -20);
+    const { lufs, peakDb } = closeBlock(b);
+    assert.ok(lufs !== null && Math.abs(lufs - lufsFromMeanSquare(0.025)!) < 1e-9);
+    assert.equal(peakDb, -20, 'пик берётся максимумом, а не средним');
+  });
+
+  it('блок длиной 400 мс по стандарту', () => {
+    assert.equal(BLOCK_SECONDS, 0.4);
+  });
+
+  it('пустой блок не выдумывает громкость', () => {
+    const { lufs, peakDb } = closeBlock(createBlock());
+    assert.equal(lufs, null);
+    assert.equal(peakDb, -120);
+  });
+
+  it('игнорирует мусорные отсчёты', () => {
+    const b = createBlock();
+    addToBlock(b, NaN, NaN);
+    addToBlock(b, -1, -5);
+    assert.equal(b.count, 0, 'отрицательная энергия невозможна');
+  });
+
+  it('формула LUFS совпадает с калибровкой стандарта', () => {
+    // A 1 kHz sine at -20 dBFS in both channels must read -20 LUFS; that is the
+    // definition the whole scale is built on.
+    const z = Math.pow(10, (-20 - -0.691) / 10);
+    const lufs = lufsFromMeanSquare(z);
+    assert.ok(lufs !== null && Math.abs(lufs - -20) < 1e-9, `получено ${lufs}`);
+    assert.equal(lufsFromMeanSquare(0), null);
   });
 });
 

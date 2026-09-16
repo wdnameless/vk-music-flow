@@ -290,6 +290,16 @@ export class AudioGraph {
   }
 
   /**
+   * K-weighted mean square per channel, the `z` of BS.1770.
+   *
+   * Exposed so a 400 ms block can be assembled from every read within the
+   * window; taking only the last read would capture a tenth of the audio.
+   */
+  kWeightedMeanSquares(): [number, number] {
+    return this.analyser.kWeightedMeanSquare();
+  }
+
+  /**
    * Whether the last block hit full scale.
    *
    * Checked on the pre-volume signal, because clipping happens in the signal

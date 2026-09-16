@@ -43,6 +43,18 @@ export const GATE_RELATIVE_LU = -10;
 /** Block length for the measurement, in seconds. BS.1770 specifies 400 ms. */
 export const BLOCK_SECONDS = 0.4;
 
+/**
+ * Convert a K-weighted mean square into loudness in LUFS.
+ *
+ * `z` is the channel-weighted mean square of the block. This is the same
+ * formula as the momentary path, exposed so a block assembled from several
+ * samples uses exactly the same calibration.
+ */
+export function lufsFromMeanSquare(z: number): number | null {
+  if (!(z > 0)) return null;
+  return -0.691 + 10 * Math.log10(z);
+}
+
 /** True-peak ceiling in dBFS. */
 export const PEAK_CEILING_DB = -1;
 
@@ -76,6 +88,41 @@ export function addBlock(meter: LoudnessMeter, lufs: number | null, peakDb: numb
   if (Number.isFinite(peakDb) && peakDb > meter.truePeakDb) meter.truePeakDb = peakDb;
   if (lufs === null || !Number.isFinite(lufs)) return;
   meter.blocks.push(lufs);
+}
+
+/**
+ * An in-progress 400 ms block.
+ *
+ * A block must be a *contiguous* window: BS.1770 defines it as the mean square
+ * over 400 ms, not as one instantaneous reading. Assembling it from every
+ * analyser read within the window is what makes the figure a measurement rather
+ * than a sample — taking only the last read captures about a tenth of the audio
+ * and makes the result jump around with whatever happened to be playing at that
+ * instant.
+ */
+export interface BlockAccumulator {
+  sum: number;
+  count: number;
+  peakDb: number;
+}
+
+export function createBlock(): BlockAccumulator {
+  return { sum: 0, count: 0, peakDb: -120 };
+}
+
+/** Fold one analyser read into the block. */
+export function addToBlock(block: BlockAccumulator, z: number, peakDb: number): void {
+  if (Number.isFinite(z) && z >= 0) {
+    block.sum += z;
+    block.count++;
+  }
+  if (Number.isFinite(peakDb) && peakDb > block.peakDb) block.peakDb = peakDb;
+}
+
+/** Close the block: its loudness and true peak, ready to be folded into a meter. */
+export function closeBlock(block: BlockAccumulator): { lufs: number | null; peakDb: number } {
+  const z = block.count ? block.sum / block.count : 0;
+  return { lufs: lufsFromMeanSquare(z), peakDb: block.peakDb };
 }
 
 /** Mean of the values, or null when there are none. */
