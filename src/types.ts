@@ -224,6 +224,52 @@ export interface EqBand {
 /** How the queue advances when a track ends. */
 export type RepeatMode = 'off' | 'all' | 'one';
 
+/* ------------------------------------------------------------------ */
+/* Sound processing.                                                  */
+/*                                                                    */
+/* Everything here runs in the WebAudio graph of the offscreen        */
+/* document, between the media element and the output.                */
+/* ------------------------------------------------------------------ */
+
+/** Loudness normalisation. `track` also covers albums: VK gives no album gain. */
+export type LoudnessMode = 'off' | 'track';
+
+export interface AudioFx {
+  /** Target level in dBFS; -14 matches what streaming services use. */
+  normalize: LoudnessMode;
+  normalizeTargetDb: number;
+  /** Seconds of overlap between tracks; 0 disables crossfade. */
+  crossfadeSec: number;
+  /** Night mode: gentle compression so quiet passages stay audible. */
+  nightMode: boolean;
+  /** How hard night mode works, 0..1. */
+  nightAmount: number;
+  /** Low-shelf boost in dB. */
+  bassDb: number;
+  /** Pre-gain in dB, applied before the limiter. */
+  preampDb: number;
+}
+
+export const DEFAULT_AUDIO_FX: AudioFx = {
+  normalize: 'track',
+  normalizeTargetDb: -14,
+  crossfadeSec: 0,
+  nightMode: false,
+  nightAmount: 0.5,
+  bassDb: 0,
+  preampDb: 0,
+};
+
+/** Measured loudness of one track, cached so it is measured only once. */
+export interface LoudnessEntry {
+  /** Integrated RMS in dBFS. */
+  rmsDb: number;
+  /** True peak in dBFS, used to stop the gain from clipping. */
+  peakDb: number;
+  /** When it was measured, so a future format change can invalidate the cache. */
+  measuredAt: number;
+}
+
 export interface PlayerState {
   track: PlayerTrack | null;
   /** Position within the play order, i.e. a cursor into `order`. */
@@ -240,6 +286,13 @@ export interface PlayerState {
      own order and dragging stays meaningful while shuffled. */
   shuffle: boolean;
   repeat: RepeatMode;
+  /** Effective normalisation gain for the current track, in dB. */
+  normGainDb: number;
+  /** Output level for the meter, 0..1. */
+  level: number;
+  /** Where audio is going, when a specific device is chosen. */
+  outputDeviceId: string;
+  outputDevices: { id: string; label: string }[];
   /** The queue in the user's order. */
   queue: PlayerTrack[];
   /** Play order as indices into `queue`. */
@@ -548,6 +601,15 @@ export interface Settings {
   playerQueueIndex?: number;
   playerShuffle?: boolean;
   playerRepeat?: RepeatMode;
+  /** Sound processing settings. */
+  audioFx?: AudioFx;
+  /** Chosen audio output; empty means the system default. */
+  outputDeviceId?: string;
+  /**
+   * Measured loudness per track key. Kept in the catalog rather than in memory
+   * so a track is analysed once ever, not once per playback session.
+   */
+  loudness?: Record<string, LoudnessEntry>;
   // Phase 1 queue tuning (anti-ban / resilience):
   maxAttempts: number;
   baseBackoffMs: number;
@@ -669,6 +731,10 @@ export type RuntimeMessage =
   | { t: 'PLAY_REMOVE'; index: number }
   | { t: 'PLAY_MOVE'; from: number; to: number }
   | { t: 'PLAY_JUMP'; index: number }
+  /* Sound processing. */
+  | { t: 'PLAY_FX'; fx: Partial<AudioFx> }
+  | { t: 'PLAY_OUTPUT'; deviceId: string }
+  | { t: 'GET_DEVICES' }
   | { t: 'GET_PLAYER_STATE' }
   | { t: 'EQ_SET'; enabled: boolean; gains: number[] }
   /**
@@ -717,6 +783,14 @@ export type PlayerCommand =
   | { t: 'P_MOVE'; from: number; to: number }
   /** Jump to a position in the play order. */
   | { t: 'P_JUMP'; index: number }
+  /* Sound processing. */
+  | { t: 'P_FX'; fx: Partial<AudioFx> }
+  /** Loudness of the track about to play, used to set the normalisation gain. */
+  | { t: 'P_GAIN'; gainDb: number }
+  | { t: 'P_OUTPUT'; deviceId: string }
+  | { t: 'P_DEVICES' }
+  /** The offscreen player reports a settled loudness measurement. */
+  | { t: 'PLAYER_LOUDNESS'; key: string; rms: number; peak: number }
   | { t: 'P_PLAY' }
   | { t: 'P_PAUSE' }
   | { t: 'P_NEXT' }

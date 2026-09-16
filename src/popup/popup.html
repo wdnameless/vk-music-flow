@@ -32,6 +32,7 @@
         <g id="i-grip"><path d="M9 6h.01M9 12h.01M9 18h.01M15 6h.01M15 12h.01M15 18h.01"/></g>
         <g id="i-window"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18"/></g>
         <g id="i-panel"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M15 5v14"/></g>
+        <g id="i-wave"><path d="M3 12h2M7 8v8M11 5v14M15 9v6M19 11v2"/></g>
       </defs>
     </svg>
 
@@ -267,6 +268,50 @@
         </section>
       </main>
 
+      <div id="fxPanel" class="fx-overlay" hidden>
+        <div class="q-head">
+          <span>Звук</span>
+          <button id="fxClose" class="icon" title="Закрыть"><svg class="ic"><use href="#i-cross"/></svg></button>
+        </div>
+
+        <div class="fx-body">
+          <label class="fx-row">
+            <span>Выравнивать громкость</span>
+            <span class="switch"><input id="fxNorm" type="checkbox" /><span></span></span>
+          </label>
+          <p class="meta">Треки ВК отличаются по громкости до 12 дБ. Плеер измеряет каждый трек во время прослушивания и выравнивает следующий запуск.</p>
+
+          <label class="fx-row">
+            <span>Ночной режим</span>
+            <span class="switch"><input id="fxNight" type="checkbox" /><span></span></span>
+          </label>
+          <div class="field">
+            <span class="label">Сила — <b id="fxNightVal">50</b>%</span>
+            <input id="fxNightAmount" type="range" min="0" max="100" value="50" />
+          </div>
+
+          <div class="field">
+            <span class="label">Бас — <b id="fxBassVal">0</b> дБ</span>
+            <input id="fxBass" type="range" min="0" max="12" step="1" value="0" />
+          </div>
+          <div class="field">
+            <span class="label">Предусиление — <b id="fxPreampVal">0</b> дБ</span>
+            <input id="fxPreamp" type="range" min="-6" max="12" step="1" value="0" />
+          </div>
+          <div class="field">
+            <span class="label">Кроссфейд — <b id="fxCrossVal">выкл</b></span>
+            <input id="fxCross" type="range" min="0" max="12" step="1" value="0" />
+          </div>
+
+          <div class="field">
+            <span class="label">Аудиовыход</span>
+            <select id="fxOutput"></select>
+          </div>
+
+          <button id="fxReset" class="chip">Сбросить звук</button>
+        </div>
+      </div>
+
       <div id="queuePanel" class="q-overlay" hidden>
         <div class="q-head">
           <span>Очередь</span>
@@ -306,7 +351,11 @@
 
       <footer class="player">
         <div class="p-left">
-          <div id="pCover" class="p-cover"></div>
+          <div class="p-cover-wrap">
+            <div id="pCover" class="p-cover"></div>
+            <!-- Level ring: the loudest thing on screen is the music itself. -->
+            <div id="pLevel" class="p-level"></div>
+          </div>
           <div class="p-meta">
             <span id="pTitle" class="p-title">Ничего не играет</span>
             <span id="pArtist" class="p-artist"></span>
@@ -329,6 +378,7 @@
         <div class="p-right">
           <button id="pLike" class="icon" title="Нравится"><svg class="ic"><use href="#i-heart" /></svg></button>
           <button id="pDislike" class="icon" title="Не нравится"><svg class="ic"><use href="#i-cross" /></svg></button>
+          <button id="pFx" class="icon" title="Звук"><svg class="ic"><use href="#i-wave" /></svg></button>
           <button id="pQueue" class="icon" title="Очередь"><svg class="ic"><use href="#i-grip" /></svg></button>
           <button id="pEq" class="icon" title="Эквалайзер"><svg class="ic"><use href="#i-eq" /></svg></button>
           <svg class="ic small"><use href="#i-volume" /></svg>

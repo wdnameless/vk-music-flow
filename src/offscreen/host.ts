@@ -13,6 +13,9 @@ const player = new Player({
   onState: (state) => {
     void chrome.runtime.sendMessage({ t: 'PLAYER_STATE', state }).catch(() => undefined);
   },
+  onLoudness: (key, rms, peak) => {
+    void chrome.runtime.sendMessage({ t: 'PLAYER_LOUDNESS', key, rms, peak }).catch(() => undefined);
+  },
   onEnded: (track) => {
     void chrome.runtime.sendMessage({ t: 'PLAYER_ENDED', track }).catch(() => undefined);
   },
@@ -96,6 +99,24 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, reply) => {
       player.setEqBands(c.gains);
       reply(player.state());
       return false;
+    }
+    case 'P_FX': {
+      player.setFx((m as Extract<PlayerCommand, { t: 'P_FX' }>).fx);
+      reply(player.state());
+      return false;
+    }
+    case 'P_GAIN': {
+      player.setNormGain((m as Extract<PlayerCommand, { t: 'P_GAIN' }>).gainDb);
+      reply(player.state());
+      return false;
+    }
+    case 'P_OUTPUT': {
+      void player.setOutputDevice((m as Extract<PlayerCommand, { t: 'P_OUTPUT' }>).deviceId).then(() => reply(player.state()));
+      return true;
+    }
+    case 'P_DEVICES': {
+      void player.refreshDevices().then(() => reply(player.state()));
+      return true;
     }
     case 'P_STATE':
       reply(player.state());

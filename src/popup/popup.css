@@ -365,12 +365,14 @@ body[data-host='panel'] .nav-item::before {
 
 .host-actions button {
   flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 7px 6px;
+  gap: 5px;
+  padding: 7px 4px;
   font-size: 11px;
+  white-space: nowrap;
 }
 
 .host-actions .ic {
@@ -1508,4 +1510,82 @@ button.icon.on {
   .p-right input[type='range'] {
     width: 64px;
   }
+}
+
+/* ---------------- Sound panel ---------------- */
+
+.fx-overlay {
+  position: absolute;
+  right: 20px;
+  bottom: calc(var(--player) + 14px);
+  width: 360px;
+  max-height: 68vh;
+  display: flex;
+  flex-direction: column;
+  background: rgb(13 13 14 / 0.9);
+  backdrop-filter: blur(22px) saturate(150%);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 14px 16px 16px;
+  z-index: 20;
+  box-shadow: 0 24px 60px rgb(0 0 0 / 0.6);
+  animation: panelIn var(--slow) var(--ease) both;
+}
+
+.fx-body {
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 0.14) transparent;
+}
+
+.fx-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+
+.fx-row + .meta {
+  margin-top: -4px;
+}
+
+.fx-body .field {
+  max-width: none;
+  margin-bottom: 12px;
+}
+
+/* ---------------- Level ring ---------------- */
+
+.p-cover-wrap {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+}
+
+.p-cover {
+  position: absolute;
+  inset: 0;
+}
+
+/* A ring that grows with the output level. --lvl is set from the player state,
+   so this is a pure CSS effect with no per-frame DOM work. */
+.p-level {
+  position: absolute;
+  inset: -3px;
+  border-radius: 10px;
+  pointer-events: none;
+  background: radial-gradient(
+    circle at 50% 50%,
+    transparent 58%,
+    rgb(255 255 255 / calc(var(--lvl, 0) * 0.55)) 74%,
+    transparent 88%
+  );
+  opacity: calc(0.25 + var(--lvl, 0) * 0.75);
+  transform: scale(calc(1 + var(--lvl, 0) * 0.09));
+  transition: opacity 0.12s linear, transform 0.12s linear;
 }

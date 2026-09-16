@@ -1,5 +1,7 @@
-import type { EqBand, PlayerState, PlayerTrack, RepeatMode } from '../types.js';
-import { EQ_BANDS } from '../types.js';
+import type { AudioFx, EqBand, PlayerState, PlayerTrack, RepeatMode } from '../types.js';
+import { DEFAULT_AUDIO_FX, EQ_BANDS } from '../types.js';
+import { AudioGraph } from './audio-graph.js';
+import { accumulate, createAccumulator, isMeasured, peakDb, rmsDb } from '../lib/loudness.js';
 import { advancePos, buildOrder, insertIntoOrder, moveInOrder, removeFromOrder } from './queue-order.js';
 
 /**
@@ -28,13 +30,25 @@ export interface PlayerEvents {
   onState(state: PlayerState): void;
   /** Called when a track ends so the host can scrobble and advance. */
   onEnded(track: PlayerTrack): void;
+  /**
+   * A settled loudness estimate for a track. Reported once per play, because
+   * the worker caches it and only needs it the first time.
+   */
+  onLoudness(key: string, rms: number, peak: number): void;
 }
 
 export class Player {
   private readonly audio: HTMLAudioElement;
+  /**
+   * The crossfade partner. A real overlap needs two streams at once; this one
+   * is silent except during the fade, when it carries the incoming track.
+   */
+  private readonly audio2: HTMLAudioElement;
+  /** Which of the two elements is currently audible. */
+  private activeSlot: 0 | 1 = 0;
   private readonly ctx: AudioContext;
   private readonly gain: GainNode;
-  private readonly bands: BiquadFilterNode[] = [];
+  private readonly graph: AudioGraph;
   /** The list as the user sees it. */
   private queue: PlayerTrack[] = [];
   /**
@@ -49,6 +63,19 @@ export class Player {
   private eqEnabled = false;
   private eqGains: number[] = EQ_BANDS.map(() => 0);
   private volume = 1;
+  private fx: AudioFx = { ...DEFAULT_AUDIO_FX };
+  /** Normalisation gain for the current track, in dB, supplied by the worker. */
+  private normGainDb = 0;
+  private outputDeviceId = '';
+  private outputDevices: { id: string; label: string }[] = [];
+  /** Seconds left of the crossfade into the current track, for the meter. */
+  private crossfadeTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Running loudness estimate for the track that is playing, so normalisation
+   * is applied on the next play without ever downloading the file to analyse it.
+   */
+  private loudness = createAccumulator();
+  private loudnessKey = '';
   private readonly events: PlayerEvents;
 
   constructor(events: PlayerEvents) {
@@ -57,39 +84,43 @@ export class Player {
     this.audio.preload = 'auto';
     // Keep playing when the element is not "visible" (it never is, offscreen).
     this.audio.crossOrigin = 'anonymous';
+    this.audio2 = new Audio();
+    this.audio2.preload = 'auto';
+    this.audio2.crossOrigin = 'anonymous';
 
     this.ctx = new AudioContext();
+    this.graph = new AudioGraph(this.ctx);
+    // The output level is part of the graph so it is applied after every
+    // effect: normalisation, eq and night mode all feed into it.
     this.gain = this.ctx.createGain();
     this.gain.gain.value = this.volume;
 
-    // Chain: source -> band filters -> gain -> output.
-    let node: AudioNode = this.gain;
-    for (const hz of EQ_BANDS) {
-      const f = this.ctx.createBiquadFilter();
-      f.type = 'peaking';
-      f.frequency.value = hz;
-      f.Q.value = 1;
-      f.gain.value = 0;
-      this.bands.push(f);
-      node.connect(f);
-      node = f;
-    }
-    node.connect(this.ctx.destination);
-
     try {
-      const src = this.ctx.createMediaElementSource(this.audio);
-      src.connect(this.gain);
+      // Each element is connected exactly once, at startup: connecting a media
+      // element to a source twice throws.
+      this.graph.connectSource(this.ctx.createMediaElementSource(this.audio), 0);
+      this.graph.connectSource(this.ctx.createMediaElementSource(this.audio2), 1);
+      this.graph.setFade(0, 1);
+      this.graph.setFade(1, 0);
     } catch {
       // Fall back to the element's own output if the graph cannot be built;
-      // playback still works, only the equalizer is unavailable.
+      // playback still works, only the effects are unavailable.
     }
 
-    this.audio.addEventListener('ended', () => this.handleEnded());
-    this.audio.addEventListener('error', () => this.emit());
-    this.audio.addEventListener('timeupdate', () => this.emit());
-    this.audio.addEventListener('loadedmetadata', () => this.emit());
-    this.audio.addEventListener('play', () => this.emit());
-    this.audio.addEventListener('pause', () => this.emit());
+    // Both elements report, but only the active one may drive the UI: the
+    // silent partner still fires play/pause/timeupdate during a crossfade.
+    for (const [el, slot] of [[this.audio, 0], [this.audio2, 1]] as const) {
+      el.addEventListener('ended', () => {
+        if (slot === this.activeSlot) this.handleEnded();
+      });
+      el.addEventListener('error', () => this.emit());
+      el.addEventListener('timeupdate', () => {
+        if (slot === this.activeSlot) this.emit();
+      });
+      el.addEventListener('loadedmetadata', () => this.emit());
+      el.addEventListener('play', () => this.emit());
+      el.addEventListener('pause', () => this.emit());
+    }
   }
 
   /** Resume the AudioContext (it starts suspended until a user gesture). */
@@ -109,8 +140,9 @@ export class Player {
     if (this.repeat === 'one') {
       // Repeat-one only applies to a natural end; `next()` must still advance,
       // otherwise the button would look broken.
-      this.audio.currentTime = 0;
-      void this.audio.play().catch(() => undefined);
+      const el = this.el();
+      el.currentTime = 0;
+      void el.play().catch(() => undefined);
       return;
     }
     void this.advance(1);
@@ -133,6 +165,10 @@ export class Player {
    * showing rather than clearing it, which is what a user expects to see.
    */
   private async advance(delta: number): Promise<void> {
+    if (this.crossfadeTimer) {
+      clearTimeout(this.crossfadeTimer);
+      this.crossfadeTimer = null;
+    }
     const next = advancePos(this.pos, this.order.length, delta, this.repeat === 'all');
     if (next === null) {
       this.emit();
@@ -149,18 +185,134 @@ export class Player {
     this.pos = cur >= 0 ? Math.max(0, this.order.indexOf(cur)) : -1;
   }
 
+  /** The element that is currently audible. */
+  private el(): HTMLAudioElement {
+    return this.activeSlot === 0 ? this.audio : this.audio2;
+  }
+
   private async playCurrent(): Promise<void> {
     const t = this.current();
     if (!t) return;
     await this.resumeContext();
-    this.audio.src = t.url;
-    this.audio.currentTime = 0;
-    try {
-      await this.audio.play();
-    } catch {
-      /* autoplay policy; the caller can retry after a gesture */
+    // A manual start always uses slot 0 at full level; only a crossfade leaves
+    // the two slots mid-ramp, and it sets them itself before calling this.
+    if (!this.crossfading) {
+      this.activeSlot = 0;
+      this.graph.setFade(0, 1);
+      this.graph.setFade(1, 0);
     }
+    this.crossfading = false;
+    // A fresh track starts a fresh measurement.
+    this.loudness = createAccumulator();
+    this.loudnessKey = t.key;
+    this.loudnessReported = false;
+    const el = this.el();
+    el.src = t.url;
+    el.currentTime = 0;
+    try {
+      await el.play();
+    } catch {
+      /* autoplay policy; the caller can retry with a gesture */
+    }
+    this.scheduleCrossfade();
+    this.startLoudnessSampling();
     this.emit();
+  }
+
+  /**
+   * Poll the analyser while a track plays.
+   *
+   * 20 Hz is chosen deliberately: fast enough that a track is measured in about
+   * ten seconds, and cheap enough that it is a rounding error next to decoding
+   * audio. `timeupdate` is not used because it fires four times a second, which
+   * would take over a minute per track.
+   */
+  private startLoudnessSampling(): void {
+    this.stopLoudnessSampling();
+    this.loudnessTimer = setInterval(() => this.sampleLoudness(), 50);
+  }
+
+  private stopLoudnessSampling(): void {
+    if (this.loudnessTimer !== null) {
+      clearInterval(this.loudnessTimer);
+      this.loudnessTimer = null;
+    }
+  }
+
+  private loudnessTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** True while the two elements are mid-overlap. */
+  private crossfading = false;
+
+  /**
+   * Arm the crossfade for the current track.
+   *
+   * The overlap has to start before the track ends, so a timer watches the
+   * remaining time: `timeupdate` fires only ~4 times a second and stops while
+   * the context is throttled, which is too coarse to land a 3-second fade.
+   */
+  private scheduleCrossfade(): void {
+    if (this.crossfadeTimer) clearTimeout(this.crossfadeTimer);
+    this.crossfadeTimer = null;
+    const fade = this.fx.crossfadeSec;
+    if (fade <= 0) return;
+    const el = this.el();
+    const dur = el.duration;
+    if (!Number.isFinite(dur) || dur <= fade + 1) return;
+    const delayMs = Math.max(0, (dur - el.currentTime - fade) * 1000);
+    this.crossfadeTimer = setTimeout(() => void this.beginCrossfade(fade), delayMs);
+  }
+
+  /**
+   * Start the next track early and overlap it with the current one.
+   *
+   * Both elements play through the graph at once, ramped by an equal-power
+   * curve, then the outgoing one is stopped. The next track's URL comes from the
+   * queue, which the worker keeps resolved ahead of playback.
+   */
+  private async beginCrossfade(seconds: number): Promise<void> {
+    this.crossfadeTimer = null;
+    const nextIdx = advancePos(this.pos, this.order.length, 1, this.repeat === 'all' || this.repeat === 'one');
+    if (nextIdx === null) return;
+    const nextTrack = this.queue[this.order[nextIdx] ?? -1];
+    if (!nextTrack) return;
+
+    const outgoing = this.activeSlot;
+    const incoming: 0 | 1 = outgoing === 0 ? 1 : 0;
+    const inEl = incoming === 0 ? this.audio : this.audio2;
+
+    inEl.src = nextTrack.url;
+    inEl.currentTime = 0;
+    this.graph.setFade(incoming, 0);
+    try {
+      await inEl.play();
+    } catch {
+      // The incoming stream could not start; fall back to a normal transition
+      // so playback is not lost.
+      this.pos = nextIdx;
+      await this.playCurrent();
+      return;
+    }
+
+    this.crossfading = true;
+    this.activeSlot = incoming;
+    this.pos = nextIdx;
+    this.graph.crossfade(outgoing, incoming, seconds);
+    this.events.onEnded(nextTrack);
+    this.emit();
+
+    // Stop the outgoing element once the ramp is done, freeing it for the next
+    // overlap. It must keep playing until then or the fade would cut out.
+    this.crossfadeTimer = setTimeout(() => {
+      this.crossfadeTimer = null;
+      const outEl = outgoing === 0 ? this.audio : this.audio2;
+      outEl.pause();
+      outEl.removeAttribute('src');
+      this.graph.setFade(outgoing, 0);
+      this.graph.setFade(incoming, 1);
+      this.scheduleCrossfade();
+      this.emit();
+    }, Math.max(50, seconds * 1000));
   }
 
   /** Replace the queue and start at `startIndex` of the list. */
@@ -168,8 +320,8 @@ export class Player {
     this.queue = tracks.slice();
     this.rebuildOrder(false);
     if (!this.queue.length) {
-      this.audio.pause();
-      this.audio.removeAttribute('src');
+      this.el().pause();
+      this.el().removeAttribute('src');
       this.emit();
       return;
     }
@@ -221,8 +373,8 @@ export class Player {
       // playback continues from there rather than jumping to the top.
       this.pos = Math.min(this.pos, this.order.length - 1);
       if (this.pos < 0) {
-        this.audio.pause();
-        this.audio.removeAttribute('src');
+        this.el().pause();
+        this.el().removeAttribute('src');
       }
     } else {
       const cur = this.order.indexOf(this.currentQueueIndex());
@@ -254,12 +406,16 @@ export class Player {
   async play(): Promise<void> {
     if (!this.current()) return;
     await this.resumeContext();
-    await this.audio.play().catch(() => undefined);
+    await this.el().play().catch(() => undefined);
+    this.startLoudnessSampling();
     this.emit();
   }
 
   pause(): void {
-    this.audio.pause();
+    this.el().pause();
+    // Sampling a paused track would fold silence into the average and drag the
+    // measured loudness down.
+    this.stopLoudnessSampling();
     this.emit();
   }
 
@@ -269,8 +425,8 @@ export class Player {
 
   async prev(): Promise<void> {
     // Match the usual convention: restart the track unless near its start.
-    if (this.audio.currentTime > 3 || this.pos <= 0) {
-      this.audio.currentTime = 0;
+    if (this.el().currentTime > 3 || this.pos <= 0) {
+      this.el().currentTime = 0;
       this.emit();
       return;
     }
@@ -279,8 +435,11 @@ export class Player {
 
   seek(seconds: number): void {
     if (!this.current()) return;
-    const d = this.audio.duration;
-    this.audio.currentTime = Number.isFinite(d) ? Math.max(0, Math.min(seconds, d)) : Math.max(0, seconds);
+    // Seeking invalidates the arming of the fade; recompute it afterwards.
+    this.scheduleCrossfade();
+    const el = this.el();
+    const d = el.duration;
+    el.currentTime = Number.isFinite(d) ? Math.max(0, Math.min(seconds, d)) : Math.max(0, seconds);
     this.emit();
   }
 
@@ -291,26 +450,69 @@ export class Player {
     this.gain.gain.cancelScheduledValues(now);
     this.gain.gain.setValueAtTime(this.gain.gain.value, now);
     this.gain.gain.linearRampToValueAtTime(this.volume, now + RAMP_S);
-    this.audio.volume = 1; // the graph owns loudness once connected
+    // The graph owns loudness once connected, on both elements.
+    this.audio.volume = 1;
+    this.audio2.volume = 1;
     this.emit();
   }
 
   setEqEnabled(on: boolean): void {
     this.eqEnabled = on;
-    this.applyEq();
+    this.graph.setEqEnabled(on);
     this.emit();
   }
 
   setEqBands(gains: number[]): void {
     this.eqGains = EQ_BANDS.map((_, i) => clampDb(gains[i] ?? 0));
-    this.applyEq();
+    this.graph.setEqBands(this.eqGains);
     this.emit();
   }
 
-  private applyEq(): void {
-    this.bands.forEach((f, i) => {
-      f.gain.value = this.eqEnabled ? (this.eqGains[i] ?? 0) : 0;
-    });
+  /** Apply a partial sound-processing change. */
+  setFx(patch: Partial<AudioFx>): void {
+    this.fx = { ...this.fx, ...patch };
+    this.graph.setFx(this.fx);
+    this.emit();
+  }
+
+  /**
+   * Set the normalisation gain for the track that is about to play.
+   *
+   * The worker measures (and caches) loudness; the player only applies it, so
+   * playback never waits on analysis.
+   */
+  setNormGain(db: number): void {
+    this.normGainDb = Number.isFinite(db) ? db : 0;
+    this.graph.setNormGain(this.normGainDb);
+    this.emit();
+  }
+
+  /** Refresh the list of audio output devices. */
+  async refreshDevices(): Promise<void> {
+    try {
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      this.outputDevices = devs
+        .filter((d) => d.kind === 'audiooutput')
+        // Labels are empty until the user grants audio permission; showing a
+        // numbered fallback beats showing nothing.
+        .map((d, i) => ({ id: d.deviceId, label: d.label || `Устройство ${i + 1}` }));
+    } catch {
+      this.outputDevices = [];
+    }
+    this.emit();
+  }
+
+  /** Route audio to a specific output device. */
+  async setOutputDevice(deviceId: string): Promise<void> {
+    const el = this.audio as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
+    if (typeof el.setSinkId !== 'function') return;
+    try {
+      await el.setSinkId(deviceId);
+      this.outputDeviceId = deviceId;
+    } catch {
+      /* the device may have been unplugged; keep the previous one */
+    }
+    this.emit();
   }
 
   /** Snapshot for the UI. */
@@ -324,22 +526,52 @@ export class Player {
       repeat: this.repeat,
       queue: this.queue,
       order: this.order,
-      playing: !this.audio.paused && !!cur,
-      currentTime: Number.isFinite(this.audio.currentTime) ? this.audio.currentTime : 0,
-      duration: Number.isFinite(this.audio.duration) ? this.audio.duration : 0,
+      normGainDb: this.graph.normalisationGainDb,
+      level: this.graph.level(),
+      outputDeviceId: this.outputDeviceId,
+      outputDevices: this.outputDevices,
+      playing: !this.el().paused && !!cur,
+      currentTime: Number.isFinite(this.el().currentTime) ? this.el().currentTime : 0,
+      duration: Number.isFinite(this.el().duration) ? this.el().duration : 0,
       volume: this.volume,
       eqEnabled: this.eqEnabled,
       eqBands: EQ_BANDS.map((hz, i) => ({ hz, gain: this.eqGains[i] ?? 0 })),
     };
   }
 
+  /**
+   * Fold the current output level into the running estimate and hand a settled
+   * measurement to the host, which caches it for the next play.
+   */
+  private sampleLoudness(): void {
+    const cur = this.current();
+    if (!cur) return;
+    if (this.loudnessKey !== cur.key) {
+      this.loudnessKey = cur.key;
+      this.loudness = createAccumulator();
+    }
+    accumulate(this.loudness, this.graph.level());
+    if (!this.loudnessReported && isMeasured(this.loudness)) {
+      this.loudnessReported = true;
+      const rms = rmsDb(this.loudness);
+      const peak = peakDb(this.loudness);
+      if (rms !== null && peak !== null) this.events.onLoudness(cur.key, rms, peak);
+    }
+  }
+
+  private loudnessReported = false;
+
   private emit(): void {
     this.events.onState(this.state());
   }
 
   destroy(): void {
+    this.stopLoudnessSampling();
+    if (this.crossfadeTimer) clearTimeout(this.crossfadeTimer);
     this.audio.pause();
     this.audio.removeAttribute('src');
+    this.audio2.pause();
+    this.audio2.removeAttribute('src');
     void this.ctx.close().catch(() => undefined);
   }
 }

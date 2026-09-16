@@ -18,7 +18,7 @@ import type {
   Track,
   VkAuthState,
 } from '../types.js';
-import { EQ_BANDS, PLATFORM_LABELS } from '../types.js';
+import { DEFAULT_AUDIO_FX, EQ_BANDS, PLATFORM_LABELS } from '../types.js';
 import { persistRootHandle, pickDirectory } from '../storage/fs.js';
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
@@ -642,6 +642,10 @@ function renderPlayer(): void {
   const eqOn = $in('eqOn');
   if (document.activeElement !== eqOn) eqOn.checked = s.eqEnabled;
   renderEqBands(s.eqBands);
+  // The level is a ring around the artwork: the loudest thing on screen should
+  // be the music itself. It scales a pseudo-element rather than the artwork.
+  const level = Math.min(1, Math.max(0, s.level ?? 0));
+  $('pLevel').style.setProperty('--lvl', level.toFixed(3));
   // Repaint the queue only while it is visible: a hidden panel costs nothing.
   if (!$('queuePanel').hidden && !dragFrom) renderQueue();
 }
@@ -729,6 +733,111 @@ $('pDislike').addEventListener('click', async () => {
   if (!t) return;
   await send({ t: 'TOGGLE_DISLIKE', owner: t.owner, id: t.id });
   $('pDislike').classList.toggle('liked');
+});
+
+/* ---------------- Sound panel ---------------- */
+
+/**
+ * Sound processing controls.
+ *
+ * Every change is sent as a partial patch, so the worker keeps one merged
+ * `AudioFx` and a control that is never touched keeps its stored value.
+ */
+async function pushFx(patch: Record<string, unknown>): Promise<void> {
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({
+    t: 'PLAY_FX',
+    fx: patch as never,
+  });
+  pState = r.state;
+  renderPlayer();
+}
+
+function renderFxPanel(): void {
+  // The panel reflects the stored settings, not the player's copy, so it is
+  // correct before anything has played.
+  void (async () => {
+    const st = await send<StateSnapshot | null>({ t: 'GET_STATE' });
+    const fx = { ...DEFAULT_AUDIO_FX, ...(st?.settings?.audioFx ?? {}) };
+    $in('fxNorm').checked = fx.normalize !== 'off';
+    $in('fxNight').checked = fx.nightMode;
+    $in('fxNightAmount').value = String(Math.round(fx.nightAmount * 100));
+    $('fxNightVal').textContent = String(Math.round(fx.nightAmount * 100));
+    $in('fxBass').value = String(fx.bassDb);
+    $('fxBassVal').textContent = String(fx.bassDb);
+    $in('fxPreamp').value = String(fx.preampDb);
+    $('fxPreampVal').textContent = String(fx.preampDb);
+    $in('fxCross').value = String(fx.crossfadeSec);
+    $('fxCrossVal').textContent = fx.crossfadeSec ? `${fx.crossfadeSec} с` : 'выкл';
+    await refreshDevices(st?.settings?.outputDeviceId ?? '');
+  })();
+}
+
+async function refreshDevices(selected: string): Promise<void> {
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'GET_DEVICES' });
+  pState = r.state ?? pState;
+  const list = pState?.outputDevices ?? [];
+  const sel = $sel('fxOutput');
+  // Device labels are empty until the page has audio permission, so a plain
+  // "Системный" entry plus whatever Chrome exposes is all that can be shown.
+  sel.innerHTML =
+    '<option value="">Системный (по умолчанию)</option>' +
+    list.map((d) => `<option value="${escapeHtml(d.id)}">${escapeHtml(d.label)}</option>`).join('');
+  sel.value = selected;
+}
+
+$('pFx').addEventListener('click', () => {
+  const panel = $('fxPanel');
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) {
+    $('queuePanel').hidden = true;
+    $('eqPanel').hidden = true;
+    renderFxPanel();
+  }
+});
+$('fxClose').addEventListener('click', () => ($('fxPanel').hidden = true));
+
+$('fxNorm').addEventListener('change', (e) =>
+  void pushFx({ normalize: (e.target as HTMLInputElement).checked ? 'track' : 'off' }),
+);
+$('fxNight').addEventListener('change', (e) =>
+  void pushFx({ nightMode: (e.target as HTMLInputElement).checked }),
+);
+$('fxNightAmount').addEventListener('input', (e) => {
+  const v = Number((e.target as HTMLInputElement).value);
+  $('fxNightVal').textContent = String(v);
+});
+$('fxNightAmount').addEventListener('change', (e) =>
+  void pushFx({ nightAmount: Number((e.target as HTMLInputElement).value) / 100 }),
+);
+$('fxBass').addEventListener('input', (e) => {
+  $('fxBassVal').textContent = String((e.target as HTMLInputElement).value);
+});
+$('fxBass').addEventListener('change', (e) =>
+  void pushFx({ bassDb: Number((e.target as HTMLInputElement).value) }),
+);
+$('fxPreamp').addEventListener('input', (e) => {
+  $('fxPreampVal').textContent = String((e.target as HTMLInputElement).value);
+});
+$('fxPreamp').addEventListener('change', (e) =>
+  void pushFx({ preampDb: Number((e.target as HTMLInputElement).value) }),
+);
+$('fxCross').addEventListener('input', (e) => {
+  const v = Number((e.target as HTMLInputElement).value);
+  $('fxCrossVal').textContent = v ? `${v} с` : 'выкл';
+});
+$('fxCross').addEventListener('change', (e) =>
+  void pushFx({ crossfadeSec: Number((e.target as HTMLInputElement).value) }),
+);
+$sel('fxOutput').addEventListener('change', async (e) => {
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({
+    t: 'PLAY_OUTPUT',
+    deviceId: (e.target as HTMLSelectElement).value,
+  });
+  pState = r.state;
+});
+$('fxReset').addEventListener('click', async () => {
+  await pushFx({ ...DEFAULT_AUDIO_FX });
+  renderFxPanel();
 });
 
 /* ---------------- Queue panel ---------------- */

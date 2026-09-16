@@ -11,6 +11,7 @@ import {
   writeToRoot,
 } from '../storage/fs.js';
 import {
+  DEFAULT_AUDIO_FX,
   DEFAULT_BLOCK_RULES,
   PLATFORM_LABELS,
   DEFAULT_PROXY_SETTINGS,
@@ -86,6 +87,7 @@ import {
   searchAudios,
 } from '../lib/vk-api.js';
 import { clearToken } from '../lib/vk-auth.js';
+import { normalisationGain } from '../offscreen/audio-graph.js';
 
 const SKEY = 'vmf_state_v1';
 const PKEY = 'vmf_proxy_v1';
@@ -395,6 +397,7 @@ type HandlerResult =
   | { ok: boolean; tracks?: Track[]; playlists?: unknown[]; sections?: CatalogSection[] }
   | { ok: boolean; streams: Record<string, StreamRef> }
   | { ok: boolean; presets: Record<string, number[]> }
+  | { ok: boolean }
   | { ok: boolean; queued: number; skipped: number; total?: number; reason?: string }
   | { ok: boolean; blocks: VkCatalogBlock[] }
   | { ok: boolean; rules: BlockRules; disliked?: boolean }
@@ -821,6 +824,29 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
     }
     case 'PLAY_JUMP': {
       const st = await sendToPlayer({ t: 'P_JUMP', index: m.index });
+      if (st) rememberPlayerState(st as PlayerState);
+      return { ok: true, state: playerSnapshot() };
+    }
+    // ---- Sound processing ----
+    case 'PLAY_FX': {
+      S.settings.audioFx = { ...DEFAULT_AUDIO_FX, ...(S.settings.audioFx ?? {}), ...m.fx };
+      persist();
+      const st = await sendToPlayer({ t: 'P_FX', fx: S.settings.audioFx });
+      if (st) rememberPlayerState(st as PlayerState);
+      // The next track's normalisation depends on the new settings, so the
+      // current track is re-measured rather than left at the old gain.
+      void applyNormalisation();
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_OUTPUT': {
+      S.settings.outputDeviceId = m.deviceId;
+      persist();
+      const st = await sendToPlayer({ t: 'P_OUTPUT', deviceId: m.deviceId });
+      if (st) rememberPlayerState(st as PlayerState);
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'GET_DEVICES': {
+      const st = await sendToPlayer({ t: 'P_DEVICES' });
       if (st) rememberPlayerState(st as PlayerState);
       return { ok: true, state: playerSnapshot() };
     }
@@ -1423,6 +1449,59 @@ async function saveBlob(bytes: Uint8Array, fname: string): Promise<void> {
   await waitDone(id);
 }
 
+/**
+ * Gain for the current track, pushed into the player.
+ *
+ * Loudness is measured while the track plays, from the analyser already in the
+ * audio graph (see `src/lib/loudness.ts`), so this only applies a value that has
+ * already been learned. A track that has not been measured yet plays unmodified
+ * and is corrected on its next play — a one-time cost per track.
+ *
+ * Kept as one function so every path that changes the track or the settings
+ * goes through the same calculation.
+ */
+async function applyNormalisation(): Promise<void> {
+  const st = playerSnapshot();
+  const fx = { ...DEFAULT_AUDIO_FX, ...(S.settings.audioFx ?? {}) };
+  if (!st?.track || fx.normalize === 'off') {
+    await sendToPlayer({ t: 'P_GAIN', gainDb: 0 });
+    return;
+  }
+  const entry = S.settings.loudness?.[st.track.key];
+  if (!entry) {
+    // Unknown yet: play as-is, and the measurement collected during playback
+    // will be applied the next time this track starts.
+    await sendToPlayer({ t: 'P_GAIN', gainDb: 0 });
+    return;
+  }
+  const db = normalisationGain(entry.rmsDb, entry.peakDb, fx.normalizeTargetDb);
+  const live = await sendToPlayer({ t: 'P_GAIN', gainDb: db });
+  if (live) rememberPlayerState(live as PlayerState);
+}
+
+/**
+ * Record what a finished stretch of playback measured.
+ *
+ * Only accepted once the estimate has settled, and only for the track that is
+ * currently playing, so a value from the previous track cannot be attributed to
+ * the next one during a transition.
+ */
+function recordLoudness(key: string, rms: number, peak: number): void {
+  const fx = { ...DEFAULT_AUDIO_FX, ...(S.settings.audioFx ?? {}) };
+  if (fx.normalize === 'off') return;
+  // Only reject an obviously silent window. Note that a peak of exactly 0 dBFS
+  // is normal and common — it is what a brick-walled master looks like — so the
+  // guard is on the RMS, not on the peak. Rejecting peak == 0 would have
+  // skipped normalisation for precisely the loudest tracks.
+  if (!Number.isFinite(rms) || rms <= -120) return;
+  const prev = S.settings.loudness?.[key];
+  // Keep the first stable measurement: re-measuring a quiet intro on a later
+  // play would drag the average around.
+  if (prev) return;
+  S.settings.loudness = { ...(S.settings.loudness ?? {}), [key]: { rmsDb: rms, peakDb: peak, measuredAt: Date.now() } };
+  persist();
+}
+
 /** Resolve a fresh stream URL for a track, or null when it cannot be played. */
 async function resolveForPlayback(owner: string, id: string, key: string): Promise<string | null> {
   const entry = S.audios[key];
@@ -1512,6 +1591,8 @@ chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
     if (state.track && state.track.key !== nowPlaying?.track.key) {
       nowPlaying = { track: state.track, startedAt: Date.now(), scrobbled: false };
       if (lastfmReady()) void lastfmNowPlaying(state.track, L);
+      // Normalisation follows the track, so it is recomputed on every change.
+      void applyNormalisation();
     }
     // Scrobble once the play qualifies, without waiting for the track to end
     // (Last.fm's rule is about elapsed play time, not completion). The play goes
@@ -1528,6 +1609,25 @@ chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
         duration: nowPlaying.track.duration,
         startedAt: nowPlaying.startedAt,
       });
+    }
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg?.t === 'PLAYER_LOUDNESS') {
+    // A measurement settled during playback; cache it so the next play of this
+    // track can be normalised.
+    const m2 = m as { key: string; rms: number; peak: number };
+    recordLoudness(m2.key, m2.rms, m2.peak);
+    // Apply it immediately when the measured track is the one still playing.
+    // Waiting for the next play would leave every track uncorrected on its
+    // first hearing, which for an album means the whole album is uncorrected.
+    const live = playerSnapshot();
+    if (live?.track?.key === m2.key) {
+      const fx = { ...DEFAULT_AUDIO_FX, ...(S.settings.audioFx ?? {}) };
+      if (fx.normalize !== 'off') {
+        const db = normalisationGain(m2.rms, m2.peak, fx.normalizeTargetDb);
+        void sendToPlayer({ t: 'P_GAIN', gainDb: db });
+      }
     }
     sendResponse({ ok: true });
     return false;
