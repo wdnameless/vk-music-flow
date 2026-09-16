@@ -1802,7 +1802,10 @@ chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
           const nativeId = t.key.includes(':') ? t.key.slice(t.key.indexOf(':') + 1) : t.key;
           const [owner, id] = nativeId.split('_');
           const url = await resolveForPlayback(owner ?? '', id ?? '', t.key);
-          if (url) restored.push({ ...t, url } as PlayerTrack);
+          // The album comes from the catalog: it is not stored in the saved
+          // queue, and gapless needs it to recognise a continuous album.
+          const album = S.audios[t.key]?.album ?? '';
+          if (url) restored.push({ ...t, url, album } as PlayerTrack);
         }
         if (restored.length) {
           await sendToPlayer({

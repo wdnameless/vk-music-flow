@@ -206,6 +206,14 @@ export interface PlayerTrack {
   url: string;
   duration: number | null;
   cover: string | null;
+  /**
+   * Album title, used for gapless playback.
+   *
+   * Carried on the track because gapless is decided at the boundary, and
+   * reaching back into the catalog at that moment would mean a message round
+   * trip in the middle of a transition.
+   */
+  album?: string;
 }
 
 /**
@@ -243,6 +251,16 @@ export interface AudioFx {
   normalizeTargetDb: number;
   /** Seconds of overlap between tracks; 0 disables crossfade. */
   crossfadeSec: number;
+  /**
+   * Play seamlessly when consecutive tracks are from the same album.
+   *
+   * An album that was mastered as one continuous piece (a live set, a mix, most
+   * electronic albums) has no silence at its track boundaries. Crossfading or
+   * pausing between them adds a seam the artist did not intend; gapless keeps
+   * them joined. It is deliberately limited to the same album, because between
+   * unrelated tracks the seam is correct.
+   */
+  gapless: boolean;
   /** Night mode: gentle compression so quiet passages stay audible. */
   nightMode: boolean;
   /** How hard night mode works, 0..1. */
@@ -257,6 +275,7 @@ export const DEFAULT_AUDIO_FX: AudioFx = {
   normalize: 'track',
   normalizeTargetDb: -14,
   crossfadeSec: 0,
+  gapless: false,
   nightMode: false,
   nightAmount: 0.5,
   bassDb: 0,
@@ -324,6 +343,10 @@ export interface PlayerState {
   levels: [number, number];
   /** True for a moment after a full-scale sample, for the clip indicator. */
   clipped: boolean;
+  /** How hard the limiter is working right now, in dB (0 = not at all). */
+  limiterDb: number;
+  /** Channel correlation, -1..1. Negative means it partly cancels in mono. */
+  correlation: number;
   /** Where audio is going, when a specific device is chosen. */
   outputDeviceId: string;
   outputDevices: { id: string; label: string }[];

@@ -227,9 +227,46 @@
           </div>
           <p id="proxyApplied" class="meta"></p>
           <ul id="proxyList" class="tracks"></ul>
+
+          <div class="field">
+            <span class="label">Вставить строку прокси</span>
+            <input id="proxyPaste" type="text" spellcheck="false"
+              placeholder="socks5://user:pass@1.2.3.4:1080" />
+          </div>
+          <p class="meta">Понимает `host:port`, `scheme://host:port` и строку с логином и паролем.</p>
+
+          <div class="proxy-form">
+            <div class="field">
+              <span class="label">Схема</span>
+              <select id="proxyScheme">
+                <option value="socks5">socks5</option>
+                <option value="socks4">socks4</option>
+                <option value="http">http</option>
+                <option value="https">https</option>
+              </select>
+            </div>
+            <div class="field">
+              <span class="label">Хост</span>
+              <input id="proxyHost" type="text" spellcheck="false" placeholder="1.2.3.4" />
+            </div>
+            <div class="field">
+              <span class="label">Порт</span>
+              <input id="proxyPort" type="number" min="1" max="65535" placeholder="1080" />
+            </div>
+            <div class="field">
+              <span class="label">Логин</span>
+              <input id="proxyUser" type="text" spellcheck="false" />
+            </div>
+            <div class="field">
+              <span class="label">Пароль</span>
+              <input id="proxyPass" type="password" />
+            </div>
+          </div>
+          <p id="proxyErr" class="meta bad" hidden></p>
           <div class="row">
-            <button id="btnProxyAdd">Добавить прокси</button>
-            <button id="btnProxyCheck">Проверить</button>
+            <button id="btnProxyAdd" class="btn-primary">Добавить</button>
+            <button id="btnProxyPaste" class="chip">Разобрать строку</button>
+            <button id="btnProxyCheck" class="chip">Проверить</button>
           </div>
 
           <h2 class="sect">Правила заголовков</h2>
@@ -313,6 +350,12 @@
             <span class="label">Кроссфейд — <b id="fxCrossVal">выкл</b></span>
             <input id="fxCross" type="range" min="0" max="12" step="1" value="0" />
           </div>
+
+          <label class="fx-row">
+            <span>Бесшовно внутри альбома</span>
+            <span class="switch"><input id="fxGapless" type="checkbox" /><span></span></span>
+          </label>
+          <p class="meta">Альбомы, сведённые как одно целое (живые записи, миксы, электроника), не имеют паузы между треками. Режим сшивает их без разрыва и отменяет кроссфейд внутри альбома.</p>
 
           <div class="field">
             <span class="label">Аудиовыход</span>

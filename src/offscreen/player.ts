@@ -72,6 +72,16 @@ const PRELOAD_AHEAD = 3;
  */
 const URL_REFRESH_MS = 5 * 60 * 1000;
 
+/**
+ * How early the gapless switch is made, in seconds.
+ *
+ * The incoming stream needs a moment to buffer, and starting it too early would
+ * overlap audible material. This is a buffer allowance, not a musical fade:
+ * nothing is ramped, so a slightly late switch is silent while an early one is
+ * heard.
+ */
+const GAPLESS_LEAD = 0.25;
+
 export interface PlayerEvents {
   onState(state: PlayerState): void;
   /** Called when a track ends so the host can scrobble and advance. */
@@ -209,7 +219,84 @@ export class Player {
       void el.play().catch(() => undefined);
       return;
     }
+    // A gapless album normally never reaches here: the next track is started
+    // early by the same timer that would otherwise arm a crossfade. This path is
+    // the fallback for when that did not happen (a single-track album, or a
+    // stream that reported no duration).
     void this.advance(1);
+  }
+
+  /**
+   * Arm gapless playback for the current track.
+   *
+   * The next track is started slightly before this one ends and the two are
+   * joined without a fade or a silence, because an album mastered as one
+   * continuous piece has no boundary to cover. The switch happens on a short
+   * timer rather than at `ended`, because `ended` fires after the element has
+   * already stopped — by then the gap has happened.
+   */
+  private scheduleGapless(): void {
+    if (this.gaplessTimer !== null) clearTimeout(this.gaplessTimer);
+    this.gaplessTimer = null;
+    if (!this.fx.gapless || !this.sameAlbumNext()) return;
+    const el = this.el();
+    const dur = el.duration;
+    if (!Number.isFinite(dur) || dur <= GAPLESS_LEAD + 0.2) return;
+    const delayMs = Math.max(0, (dur - el.currentTime - GAPLESS_LEAD) * 1000);
+    this.gaplessTimer = setTimeout(() => {
+      this.gaplessTimer = null;
+      void this.playGaplessNext();
+    }, delayMs);
+  }
+
+  private gaplessTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Start the next track and let the current one finish underneath it.
+   *
+   * A hard switch at the boundary is what makes it seamless: the second element
+   * begins on the same audio clock, at full level, while the first plays out the
+   * last few milliseconds. Nothing is ramped, so nothing is heard as a seam.
+   */
+  private async playGaplessNext(): Promise<void> {
+    const nextIdx = advancePos(this.pos, this.order.length, 1, this.repeat === 'all');
+    if (nextIdx === null) return;
+    const next = this.queue[this.order[nextIdx] ?? -1];
+    if (!next) return;
+
+    const outgoing = this.activeSlot;
+    const incoming: 0 | 1 = outgoing === 0 ? 1 : 0;
+    const inEl = incoming === 0 ? this.audio : this.audio2;
+    inEl.src = next.url;
+    inEl.currentTime = 0;
+    // Both stages at full level: a gapless join has no fade in it.
+    this.graph.setFade(outgoing, 1);
+    this.graph.setFade(incoming, 1);
+    try {
+      await inEl.play();
+    } catch {
+      await this.advance(1);
+      return;
+    }
+    this.activeSlot = incoming;
+    this.pos = nextIdx;
+    this.events.onEnded(next);
+    this.emit();
+
+    // The outgoing element is stopped only once it has actually ended, so its
+    // last samples are heard rather than cut.
+    const outEl = outgoing === 0 ? this.audio : this.audio2;
+    const stop = (): void => {
+      outEl.removeEventListener('ended', stop);
+      outEl.pause();
+      outEl.removeAttribute('src');
+      this.graph.setFade(outgoing, 0);
+    };
+    outEl.addEventListener('ended', stop);
+    // Safety net: a stream whose duration was wrong would otherwise leave the
+    // old element playing underneath forever.
+    setTimeout(stop, (GAPLESS_LEAD + 2) * 1000);
+    this.scheduleGapless();
   }
 
   /** Position of the current track within `queue`, i.e. `order[pos]`. */
@@ -232,6 +319,10 @@ export class Player {
     if (this.crossfadeTimer) {
       clearTimeout(this.crossfadeTimer);
       this.crossfadeTimer = null;
+    }
+    if (this.gaplessTimer !== null) {
+      clearTimeout(this.gaplessTimer);
+      this.gaplessTimer = null;
     }
     const next = advancePos(this.pos, this.order.length, delta, this.repeat === 'all');
     if (next === null) {
@@ -281,6 +372,9 @@ export class Player {
     } catch {
       /* autoplay policy; the caller can retry with a gesture */
     }
+    // Both timers are armed; each declines to act when its own mode is off, so
+    // the two can never fight over the boundary.
+    this.scheduleGapless();
     this.scheduleCrossfade();
     this.startLoudnessSampling();
     // Ask for the next few links straight away: resolving them is a network
@@ -420,6 +514,9 @@ export class Player {
   private scheduleCrossfade(): void {
     if (this.crossfadeTimer) clearTimeout(this.crossfadeTimer);
     this.crossfadeTimer = null;
+    // Gapless wins over crossfade: both act on the boundary between tracks, and
+    // running a fade into a track that is supposed to be joined would defeat it.
+    if (this.fx.gapless && this.sameAlbumNext()) return;
     const fade = this.fx.crossfadeSec;
     if (fade <= 0) return;
     const el = this.el();
@@ -679,6 +776,40 @@ export class Player {
     if (changed) this.emit();
   }
 
+  /**
+   * Whether the next track belongs to the same album as the current one.
+   *
+   * Album identity comes from the catalog entry, since the player only holds
+   * track metadata for display. A missing album on either side counts as "not
+   * the same", which keeps the seam between unrelated tracks.
+   */
+  private sameAlbumNext(): boolean {
+    const nextIdx = advancePos(this.pos, this.order.length, 1, this.repeat === 'all');
+    if (nextIdx === null) return false;
+    const cur = this.current();
+    const next = this.queue[this.order[nextIdx] ?? -1];
+    if (!cur || !next) return false;
+    const a = (this.albumOf(cur.key) ?? '').trim().toLowerCase();
+    const b = (this.albumOf(next.key) ?? '').trim().toLowerCase();
+    return !!a && a === b;
+  }
+
+  /** Album title for a key, as supplied by the worker with the queue. */
+  private albumOf(key: string): string | null {
+    const known = this.albums.get(key);
+    if (known !== undefined) return known;
+    const t = this.queue.find((q) => q.key === key);
+    return t?.album ?? null;
+  }
+
+  /** Album titles by track key, pushed by the worker. */
+  setAlbums(map: Record<string, string>): void {
+    this.albums = new Map(Object.entries(map));
+    this.scheduleCrossfade();
+  }
+
+  private albums = new Map<string, string>();
+
   /** Keys of the tracks coming up, in play order, that have no fresh URL yet. */
   upcomingKeys(count: number): string[] {
     const out: string[] = [];
@@ -737,6 +868,8 @@ export class Player {
       level: this.graph.level(),
       levels: this.graph.peakLevels(),
       clipped: this.graph.isClipping(),
+      limiterDb: this.graph.limiterReductionDb(),
+      correlation: this.graph.stereoCorrelation(),
       outputDeviceId: this.outputDeviceId,
       outputDevices: this.outputDevices,
       playing: !this.el().paused && !!cur,

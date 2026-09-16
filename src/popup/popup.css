@@ -1677,3 +1677,29 @@ button.icon.on {
   text-align: center;
   color: var(--danger);
 }
+
+/* ---------------- Proxy editor ----------------
+   An inline form, not prompt(): alert() and prompt() are blocked in extension
+   popups, so the previous "add proxy" button silently did nothing. */
+
+.proxy-form {
+  display: grid;
+  grid-template-columns: 110px 1fr 90px;
+  gap: 8px;
+}
+
+.proxy-form .field {
+  max-width: none;
+  margin-bottom: 8px;
+}
+
+.proxy-form #proxyUser,
+.proxy-form #proxyPass {
+  grid-column: span 1;
+}
+
+@media (max-width: 620px) {
+  .proxy-form {
+    grid-template-columns: 1fr;
+  }
+}

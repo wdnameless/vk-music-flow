@@ -240,3 +240,81 @@ export async function checkProxy(): Promise<ProxyCheckResult> {
     clearTimeout(timer);
   }
 }
+
+
+/** The proxy schemes Chromium accepts, in the order the UI offers them. */
+export const PROXY_SCHEMES = ['socks5', 'socks4', 'http', 'https'] as const;
+
+/**
+ * Parse a proxy from a single pasted line.
+ *
+ * Proxy lists are copied out of provider dashboards in every shape they happen
+ * to use, sometimes with a scheme, sometimes without, sometimes with credentials.
+ * Accepting the shapes that actually appear is the difference between a working
+ * import and a form the user has to retype by hand.
+ *
+ * Returns null when the line cannot be read as a proxy, so the caller can point
+ * at the real fields instead of guessing. A wrong value here would be pushed
+ * into chrome.proxy and take the browser's networking down with it.
+ */
+export function parseProxyLine(
+  raw: string,
+): Omit<ProxyEntry, 'id' | 'label' | 'enabled' | 'lastCheckTs' | 'lastCheckOk'> | null {
+  const text = raw.trim().replace(/\/+$/, '');
+  if (!text) return null;
+
+  let rest = text;
+  let username: string | undefined;
+  let password: string | undefined;
+
+  // Credentials come off FIRST, before the scheme is read: in
+  // `socks5://user:pass@host` the `@` is what separates them, and reading the
+  // scheme first would leave the credentials glued to the host.
+  const at = rest.lastIndexOf('@');
+  if (at !== -1) {
+    const creds = rest.slice(0, at);
+    rest = rest.slice(at + 1);
+    const credScheme = /^[a-z0-9]+:\/\//i.exec(creds);
+    const credBody = credScheme ? creds.slice(credScheme[0].length) : creds;
+    const sep = credBody.indexOf(':');
+    if (sep === -1) {
+      username = credBody || undefined;
+    } else {
+      username = credBody.slice(0, sep) || undefined;
+      password = credBody.slice(sep + 1) || undefined;
+    }
+    if (credScheme) rest = `${credScheme[0]}${rest}`;
+  }
+
+  let scheme = 'socks5';
+  const sch = /^([a-z0-9]+):\/\/(.+)$/i.exec(rest);
+  if (sch) {
+    const candidate = sch[1]!.toLowerCase();
+    if (!(PROXY_SCHEMES as readonly string[]).includes(candidate)) return null;
+    scheme = candidate;
+    rest = sch[2]!;
+  }
+
+  // `host:port`, with IPv6 in brackets. Anything else is not a proxy address.
+  const bracketed = /^\[([^\]]+)\](?::(\d+))?$/.exec(rest);
+  let host: string;
+  let port: number;
+  if (bracketed) {
+    host = bracketed[1]!;
+    port = bracketed[2] ? Number(bracketed[2]) : scheme.startsWith('socks') ? 1080 : 8080;
+  } else {
+    const hp = /^([A-Za-z0-9][A-Za-z0-9._-]*)(?::(\d+))?$/.exec(rest);
+    if (!hp) return null;
+    host = hp[1]!;
+    port = hp[2] ? Number(hp[2]) : scheme.startsWith('socks') ? 1080 : 8080;
+  }
+  if (!host || !Number.isFinite(port) || port <= 0 || port > 65535) return null;
+
+  return {
+    scheme: scheme as ProxyEntry['scheme'],
+    host,
+    port,
+    username,
+    password,
+  };
+}

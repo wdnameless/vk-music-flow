@@ -333,6 +333,29 @@ export class AudioGraph {
     return l >= 1 || r >= 1;
   }
 
+  /**
+   * How much the limiter is reducing right now, in dB (0 means not working).
+   *
+   * This is the honest measure of how much the player is having to rescue a
+   * recording: a well-mastered track sits at 0, a brick-walled one shows several
+   * dB continuously.
+   */
+  limiterReductionDb(): number {
+    return Math.max(0, this.limiter.reduction);
+  }
+
+  /**
+   * Channel correlation, -1..1.
+   *
+   * +1 is mono, 0 is uncorrelated, negative means the channels are partly in
+   * opposition — which collapses or cancels in a mono sum, so the track sounds
+   * broken on a phone speaker. That is a property of the recording, and worth
+   * telling the listener about rather than hiding.
+   */
+  stereoCorrelation(): number {
+    return this.analyser.correlation();
+  }
+
   /** Set the listening volume, 0..1. */
   setVolume(v: number, rampSeconds = 0.05): void {
     const value = Math.max(0, Math.min(1, v));
@@ -516,6 +539,43 @@ class StereoAnalyser {
     const z = l + r;
     if (!(z > 0)) return null;
     return BS1770_OFFSET + 10 * Math.log10(z);
+  }
+
+  /**
+   * Pearson correlation between the two channels, from their current windows.
+   *
+   * Computed on the raw time-domain signals: phase cancels in a sum regardless
+   * of level, so correlating the K-weighted copies would say the same thing with
+   * more arithmetic.
+   */
+  correlation(): number {
+    const a = this.analysers[0]!;
+    const b = this.analysers[1]!;
+    a.getFloatTimeDomainData(this.buf);
+    const left = this.buf.slice();
+    b.getFloatTimeDomainData(this.buf);
+    const right = this.buf;
+    let sl = 0;
+    let sr = 0;
+    let sll = 0;
+    let srr = 0;
+    let slr = 0;
+    const n = left.length;
+    for (let i = 0; i < n; i++) {
+      const l = left[i]!;
+      const r = right[i]!;
+      sl += l;
+      sr += r;
+      sll += l * l;
+      srr += r * r;
+      slr += l * r;
+    }
+    const cov = slr / n - (sl / n) * (sr / n);
+    const vl = sll / n - (sl / n) * (sl / n);
+    const vr = srr / n - (sr / n) * (sr / n);
+    const den = Math.sqrt(vl * vr);
+    // Silence has no correlation; reporting 1 (mono) would be a lie.
+    return den > 1e-9 ? Math.max(-1, Math.min(1, cov / den)) : 1;
   }
 
   /** Logarithmic frequency bands per channel, 0..1, for the spectrum display. */

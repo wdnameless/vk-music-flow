@@ -20,6 +20,7 @@ import type {
 } from '../types.js';
 import { DEFAULT_AUDIO_FX, EQ_BANDS, PLATFORM_LABELS } from '../types.js';
 import { persistRootHandle, pickDirectory } from '../storage/fs.js';
+import { parseProxyLine } from '../lib/proxy.js';
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 const $btn = (id: string) => document.getElementById(id) as HTMLButtonElement;
@@ -493,6 +494,7 @@ async function queueTracks(keys: string[], next: boolean): Promise<void> {
         url: st.url,
         duration: t.duration,
         cover: t.cover,
+        album: t.album,
       };
     })
     .filter((x): x is NonNullable<typeof x> => !!x);
@@ -548,6 +550,7 @@ async function playTracks(keys: string[], startKey?: string): Promise<void> {
             url: s.url,
             duration: t.duration,
             cover: t.cover,
+            album: t.album,
           }
         : null;
     })
@@ -779,6 +782,7 @@ function renderFxPanel(): void {
     const st = await send<StateSnapshot | null>({ t: 'GET_STATE' });
     const fx = { ...DEFAULT_AUDIO_FX, ...(st?.settings?.audioFx ?? {}) };
     $sel('fxNormMode').value = fx.normalize;
+    $in('fxGapless').checked = !!fx.gapless;
     $in('fxNight').checked = fx.nightMode;
     $in('fxNightAmount').value = String(Math.round(fx.nightAmount * 100));
     $('fxNightVal').textContent = String(Math.round(fx.nightAmount * 100));
@@ -857,6 +861,9 @@ $('fxCross').addEventListener('input', (e) => {
 $('fxCross').addEventListener('change', (e) =>
   void pushFx({ crossfadeSec: Number((e.target as HTMLInputElement).value) }),
 );
+$('fxGapless').addEventListener('change', (e) =>
+  void pushFx({ gapless: (e.target as HTMLInputElement).checked }),
+);
 $sel('fxOutput').addEventListener('change', async (e) => {
   const r = await send<{ ok: boolean; state: PlayerState | null }>({
     t: 'PLAY_OUTPUT',
@@ -911,6 +918,14 @@ function renderReadout(): void {
     parts.push(`DR ${(p.trackPeakDb - p.trackLufs).toFixed(1)} дБ`);
   }
   if (p.albumLufs !== null && p.albumLufs !== undefined) parts.push(`альбом ${p.albumLufs.toFixed(1)} LUFS`);
+  // The limiter figure is the honest answer to "how much is the player having to
+  // rescue this recording": a good master sits at 0.
+  if (p.limiterDb > 0.1) parts.push(`лимитер −${p.limiterDb.toFixed(1)} дБ`);
+  // Phase trouble is a property of the recording, and it is inaudible until the
+  // track is played on a single speaker.
+  if (p.correlation < 0.2) {
+    parts.push(p.correlation < 0 ? 'каналы в противофазе' : 'узкая стереопанорама');
+  }
   if (p.normGainDb) parts.push(`коррекция ${p.normGainDb > 0 ? '+' : ''}${p.normGainDb.toFixed(1)} дБ`);
   el.textContent = parts.length ? parts.join('  ·  ') : 'Трек ещё не измерен — слушаю…';
 }
@@ -1505,39 +1520,86 @@ $('proxyList').addEventListener('click', async (e) => {
   renderProxy();
 });
 
-$('btnProxyAdd').addEventListener('click', async () => {
-  const raw = prompt('Прокси (scheme://host:port), например socks5://1.2.3.4:1080');
-  if (!raw) return;
-  let parsed: URL;
-  try {
-    parsed = new URL(raw.includes('://') ? raw : 'http://' + raw);
-  } catch {
-    alert('Не похоже на адрес прокси.');
-    return;
+/**
+ * Build a proxy entry from the inline form and store it.
+ *
+ * The editor is inline because `alert()` and `prompt()` are blocked in extension
+ * popups: the previous button called `prompt()`, which returned null without
+ * complaint, so adding a proxy did nothing at all.
+ */
+function proxyError(message: string | null): void {
+  const el = $('proxyErr');
+  el.hidden = !message;
+  el.textContent = message ?? '';
+}
+
+/** Read the form into an entry, or report why it cannot be read. */
+function entryFromForm(): ProxyEntry | null {
+  const scheme = $sel('proxyScheme').value as ProxyEntry['scheme'];
+  const host = $in('proxyHost').value.trim();
+  const portRaw = $in('proxyPort').value.trim();
+  const port = portRaw ? Number(portRaw) : scheme.startsWith('socks') ? 1080 : 8080;
+  if (!host) {
+    proxyError('Укажи хост прокси.');
+    return null;
   }
-  const scheme = (parsed.protocol.replace(':', '') || 'http') as ProxyEntry['scheme'];
-  if (!['http', 'https', 'socks4', 'socks5'].includes(scheme)) {
-    alert('Поддерживаются http, https, socks4, socks5.');
-    return;
+  if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+    proxyError('Порт должен быть от 1 до 65535.');
+    return null;
   }
-  const user = prompt('Логин (оставь пустым, если не нужен)') ?? '';
-  const pass = user ? (prompt('Пароль') ?? '') : '';
-  const entry: ProxyEntry = {
+  proxyError(null);
+  return {
     id: crypto.randomUUID(),
-    label: parsed.hostname + ':' + parsed.port,
+    label: `${host}:${port}`,
     scheme,
-    host: parsed.hostname,
-    port: Number(parsed.port) || (scheme.startsWith('socks') ? 1080 : 8080),
-    username: user || undefined,
-    password: pass || undefined,
+    host,
+    port,
+    username: $in('proxyUser').value.trim() || undefined,
+    password: $in('proxyPass').value || undefined,
     enabled: true,
     lastCheckTs: null,
     lastCheckOk: null,
   };
+}
+
+/** Fill the form from a pasted line, so the user can check it before saving. */
+$('btnProxyPaste').addEventListener('click', () => {
+  const parsed = parseProxyLine($in('proxyPaste').value);
+  if (!parsed) {
+    proxyError('Не удалось разобрать строку. Пример: socks5://user:pass@1.2.3.4:1080');
+    return;
+  }
+  proxyError(null);
+  $sel('proxyScheme').value = parsed.scheme;
+  $in('proxyHost').value = parsed.host;
+  $in('proxyPort').value = String(parsed.port);
+  $in('proxyUser').value = parsed.username ?? '';
+  $in('proxyPass').value = parsed.password ?? '';
+});
+
+$('btnProxyAdd').addEventListener('click', async () => {
+  // A pasted line takes priority when it parses: it is the fast path.
+  const pasted = $in('proxyPaste').value.trim() ? parseProxyLine($in('proxyPaste').value) : null;
+  const entry = pasted
+    ? {
+        ...pasted,
+        id: crypto.randomUUID(),
+        label: `${pasted.host}:${pasted.port}`,
+        enabled: true,
+        lastCheckTs: null,
+        lastCheckOk: null,
+      }
+    : entryFromForm();
+  if (!entry) return;
   proxyState = await send<ProxyStateResult>({
     t: 'SET_PROXY_ENTRIES',
     entries: [...(proxyState?.settings.entries ?? []), entry],
   });
+  $in('proxyPaste').value = '';
+  $in('proxyHost').value = '';
+  $in('proxyPort').value = '';
+  $in('proxyUser').value = '';
+  $in('proxyPass').value = '';
   renderProxy();
   void checkActiveProxy();
 });
