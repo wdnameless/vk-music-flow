@@ -118,8 +118,14 @@ export class Player {
         if (slot === this.activeSlot) this.emit();
       });
       el.addEventListener('loadedmetadata', () => this.emit());
-      el.addEventListener('play', () => this.emit());
-      el.addEventListener('pause', () => this.emit());
+      el.addEventListener('play', () => {
+        if (slot === this.activeSlot) this.syncMediaSessionState(true);
+        this.emit();
+      });
+      el.addEventListener('pause', () => {
+        if (slot === this.activeSlot) this.syncMediaSessionState(false);
+        this.emit();
+      });
     }
   }
 
@@ -216,7 +222,52 @@ export class Player {
     }
     this.scheduleCrossfade();
     this.startLoudnessSampling();
+    // Published here rather than on a metadata event: the OS should show the
+    // track as soon as it starts, not once the browser has parsed its header.
+    this.publishMediaSession(t);
     this.emit();
+  }
+
+  /**
+   * Publish the current track to the OS.
+   *
+   * Without this the system has no idea what is playing: the media keys work
+   * because the manifest binds them, but the lock screen, the "now playing"
+   * panel and headset buttons are all driven by MediaSession instead.
+   */
+  private publishMediaSession(track: PlayerTrack): void {
+    const ms = navigator.mediaSession;
+    if (!ms) return;
+    try {
+      ms.metadata = new MediaMetadata({
+        title: track.title,
+        artist: track.artist,
+        album: '',
+        artwork: track.cover ? [{ src: track.cover, sizes: '512x512', type: 'image/jpeg' }] : [],
+      });
+      // Handlers are set once; re-setting them on every track would leak.
+      if (this.mediaHandlersSet) return;
+      this.mediaHandlersSet = true;
+      ms.setActionHandler('play', () => void this.play());
+      ms.setActionHandler('pause', () => this.pause());
+      ms.setActionHandler('nexttrack', () => void this.next());
+      ms.setActionHandler('previoustrack', () => void this.prev());
+      ms.setActionHandler('seekto', (d) => {
+        if (typeof d.seekTime === 'number') this.seek(d.seekTime);
+      });
+      ms.setActionHandler('seekforward', () => this.seek(this.el().currentTime + 10));
+      ms.setActionHandler('seekbackward', () => this.seek(Math.max(0, this.el().currentTime - 10)));
+    } catch {
+      /* some handlers are unsupported depending on the platform */
+    }
+  }
+
+  private mediaHandlersSet = false;
+
+  /** Reflect the transport state so the OS shows the right button. */
+  private syncMediaSessionState(playing: boolean): void {
+    const ms = navigator.mediaSession;
+    if (ms) ms.playbackState = playing ? 'playing' : 'paused';
   }
 
   /**
