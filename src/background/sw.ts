@@ -88,6 +88,7 @@ import {
 } from '../lib/vk-api.js';
 import { clearToken } from '../lib/vk-auth.js';
 import { normalisationGain } from '../offscreen/audio-graph.js';
+import { GATE_ABSOLUTE_LUFS } from '../lib/loudness.js';
 
 const SKEY = 'vmf_state_v1';
 const PKEY = 'vmf_proxy_v1';
@@ -397,6 +398,8 @@ type HandlerResult =
   | { ok: boolean; tracks?: Track[]; playlists?: unknown[]; sections?: CatalogSection[] }
   | { ok: boolean; streams: Record<string, StreamRef> }
   | { ok: boolean; presets: Record<string, number[]> }
+  | { ok: boolean; clipped: string[] }
+  | { ok: boolean }
   | { ok: boolean }
   | { ok: boolean; queued: number; skipped: number; total?: number; reason?: string }
   | { ok: boolean; blocks: VkCatalogBlock[] }
@@ -893,6 +896,14 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
       if (m.gains.length) s = await sendToPlayer({ t: 'P_EQ_BANDS', gains: m.gains });
       if (s) rememberPlayerState(s as PlayerState);
       return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_SPECTRUM': {
+      // Relay the request into the offscreen document, which owns the analyser.
+      await sendToPlayer({ t: 'P_SPECTRUM', on: m.on });
+      return { ok: true };
+    }
+    case 'GET_CLIPPED': {
+      return { ok: true, clipped: [...clipReported] };
     }
     case 'GET_PLAYER_STATE': {
       const live = await sendToPlayer({ t: 'P_STATE' });
@@ -1474,9 +1485,12 @@ async function applyNormalisation(): Promise<void> {
     await sendToPlayer({ t: 'P_GAIN', gainDb: 0 });
     return;
   }
-  const db = normalisationGain(entry.rmsDb, entry.peakDb, fx.normalizeTargetDb);
+  const db = normalisationGain(entry.lufs, entry.truePeakDb, fx.normalizeTargetDb);
   const live = await sendToPlayer({ t: 'P_GAIN', gainDb: db });
   if (live) rememberPlayerState(live as PlayerState);
+  // Echo the figures back so the UI can show what was measured for this track.
+  const echo = await sendToPlayer({ t: 'P_LOUDNESS', lufs: entry.lufs, peakDb: entry.truePeakDb });
+  if (echo) rememberPlayerState(echo as PlayerState);
 }
 
 /**
@@ -1486,19 +1500,20 @@ async function applyNormalisation(): Promise<void> {
  * currently playing, so a value from the previous track cannot be attributed to
  * the next one during a transition.
  */
-function recordLoudness(key: string, rms: number, peak: number): void {
-  const fx = { ...DEFAULT_AUDIO_FX, ...(S.settings.audioFx ?? {}) };
-  if (fx.normalize === 'off') return;
-  // Only reject an obviously silent window. Note that a peak of exactly 0 dBFS
-  // is normal and common — it is what a brick-walled master looks like — so the
-  // guard is on the RMS, not on the peak. Rejecting peak == 0 would have
-  // skipped normalisation for precisely the loudest tracks.
-  if (!Number.isFinite(rms) || rms <= -120) return;
+function recordLoudness(key: string, lufs: number, peakDb: number, drDb: number | null): void {
+  // Only reject a measurement that cannot be right. A true peak of exactly
+  // 0 dBFS is normal — it is what a fully limited master looks like — so the
+  // guard is on the loudness, not the peak. Rejecting peak == 0 would skip
+  // normalisation for precisely the loudest tracks.
+  if (!Number.isFinite(lufs) || lufs <= GATE_ABSOLUTE_LUFS) return;
   const prev = S.settings.loudness?.[key];
   // Keep the first stable measurement: re-measuring a quiet intro on a later
   // play would drag the average around.
   if (prev) return;
-  S.settings.loudness = { ...(S.settings.loudness ?? {}), [key]: { rmsDb: rms, peakDb: peak, measuredAt: Date.now() } };
+  S.settings.loudness = {
+    ...(S.settings.loudness ?? {}),
+    [key]: { lufs, truePeakDb: peakDb, drDb, measuredAt: Date.now() },
+  };
   persist();
 }
 
@@ -1551,6 +1566,9 @@ const boot = (): Promise<void> => (booted ??= load());
 // module scope (not inside boot()) because MV3 requires listeners to exist
 // synchronously on every worker start, even when it only wakes for an event.
 installProxyAuth(() => P);
+
+/** Tracks whose master was measured at full scale, for the UI to report. */
+const clipReported = new Set<string>();
 
 /** Track the offscreen document is currently playing, for scrobbling. */
 let nowPlaying: { track: PlayerTrack; startedAt: number; scrobbled: boolean } | null = null;
@@ -1616,8 +1634,8 @@ chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
   if (msg?.t === 'PLAYER_LOUDNESS') {
     // A measurement settled during playback; cache it so the next play of this
     // track can be normalised.
-    const m2 = m as { key: string; rms: number; peak: number };
-    recordLoudness(m2.key, m2.rms, m2.peak);
+    const m2 = m as { key: string; lufs: number; peakDb: number; drDb: number | null };
+    recordLoudness(m2.key, m2.lufs, m2.peakDb, m2.drDb);
     // Apply it immediately when the measured track is the one still playing.
     // Waiting for the next play would leave every track uncorrected on its
     // first hearing, which for an album means the whole album is uncorrected.
@@ -1625,10 +1643,20 @@ chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
     if (live?.track?.key === m2.key) {
       const fx = { ...DEFAULT_AUDIO_FX, ...(S.settings.audioFx ?? {}) };
       if (fx.normalize !== 'off') {
-        const db = normalisationGain(m2.rms, m2.peak, fx.normalizeTargetDb);
+        const db = normalisationGain(m2.lufs, m2.peakDb, fx.normalizeTargetDb);
         void sendToPlayer({ t: 'P_GAIN', gainDb: db });
       }
+      // Echo the figures so the panel can show them for this track.
+      void sendToPlayer({ t: 'P_LOUDNESS', lufs: m2.lufs, peakDb: m2.peakDb });
     }
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg?.t === 'PLAYER_CLIP') {
+    // The master itself is at full scale. Nothing the player can do about it —
+    // but the listener deserves to know it is the recording, not the player.
+    const m2 = m as { key: string };
+    clipReported.add(m2.key);
     sendResponse({ ok: true });
     return false;
   }

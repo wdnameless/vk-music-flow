@@ -13,8 +13,16 @@ const player = new Player({
   onState: (state) => {
     void chrome.runtime.sendMessage({ t: 'PLAYER_STATE', state }).catch(() => undefined);
   },
-  onLoudness: (key, rms, peak) => {
-    void chrome.runtime.sendMessage({ t: 'PLAYER_LOUDNESS', key, rms, peak }).catch(() => undefined);
+  onLoudness: (key, lufs, peakDb, drDb) => {
+    void chrome.runtime.sendMessage({ t: 'PLAYER_LOUDNESS', key, lufs, peakDb, drDb }).catch(() => undefined);
+  },
+  onSpectrum: (left, right) => {
+    // Fire-and-forget, and deliberately uncaught: if no popup is open the
+    // message has nowhere to go, which is expected rather than an error.
+    chrome.runtime.sendMessage({ t: 'SPECTRUM', left, right }).catch(() => undefined);
+  },
+  onClip: (key) => {
+    void chrome.runtime.sendMessage({ t: 'PLAYER_CLIP', key }).catch(() => undefined);
   },
   onEnded: (track) => {
     void chrome.runtime.sendMessage({ t: 'PLAYER_ENDED', track }).catch(() => undefined);
@@ -102,6 +110,18 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, reply) => {
     }
     case 'P_FX': {
       player.setFx((m as Extract<PlayerCommand, { t: 'P_FX' }>).fx);
+      reply(player.state());
+      return false;
+    }
+    case 'P_SPECTRUM': {
+      // Only stream frames while a UI is actually showing them.
+      player.setSpectrumWanted((m as Extract<PlayerCommand, { t: 'P_SPECTRUM' }>).on);
+      reply({ ok: true });
+      return false;
+    }
+    case 'P_LOUDNESS': {
+      const c = m as Extract<PlayerCommand, { t: 'P_LOUDNESS' }>;
+      player.setTrackLoudness(c.lufs, c.peakDb);
       reply(player.state());
       return false;
     }

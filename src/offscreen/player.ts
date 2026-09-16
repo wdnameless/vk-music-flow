@@ -1,7 +1,15 @@
 import type { AudioFx, EqBand, PlayerState, PlayerTrack, RepeatMode } from '../types.js';
 import { DEFAULT_AUDIO_FX, EQ_BANDS } from '../types.js';
-import { AudioGraph } from './audio-graph.js';
-import { accumulate, createAccumulator, isMeasured, peakDb, rmsDb } from '../lib/loudness.js';
+import { AudioGraph, gainToDb } from './audio-graph.js';
+import {
+  addBlock,
+  BLOCK_SECONDS,
+  createMeter,
+  dynamicRangeDb,
+  GATE_ABSOLUTE_LUFS,
+  integratedLufs,
+  type LoudnessMeter,
+} from '../lib/loudness.js';
 import { advancePos, buildOrder, insertIntoOrder, moveInOrder, removeFromOrder } from './queue-order.js';
 
 /**
@@ -25,6 +33,22 @@ const EQ_MIN_DB = -12;
 const EQ_MAX_DB = 12;
 /** Fade applied on play/pause/volume changes; avoids audible clicks. */
 const RAMP_S = 0.05;
+/**
+ * How much of a track to hear before trusting its loudness.
+ *
+ * BS.1770 gates out silence and quiet passages, so a measurement needs enough
+ * material for the relative gate to be meaningful. Eight seconds is past any
+ * intro and well inside the track.
+ */
+const MEASURE_SECONDS = 8;
+
+/**
+ * Frequency bands in the spectrum display.
+ *
+ * 48 is enough for a 360px panel to read as a curve rather than as bars, and
+ * cheap enough to send twenty times a second.
+ */
+const SPECTRUM_BANDS = 48;
 
 export interface PlayerEvents {
   onState(state: PlayerState): void;
@@ -34,7 +58,11 @@ export interface PlayerEvents {
    * A settled loudness estimate for a track. Reported once per play, because
    * the worker caches it and only needs it the first time.
    */
-  onLoudness(key: string, rms: number, peak: number): void;
+  onLoudness(key: string, lufs: number, peakDb: number, drDb: number | null): void;
+  /** A block reached full scale, i.e. the master itself is clipping. */
+  onClip(key: string): void;
+  /** One spectrum frame per channel; only sent while it is being displayed. */
+  onSpectrum(left: number[], right: number[]): void;
 }
 
 export class Player {
@@ -47,7 +75,6 @@ export class Player {
   /** Which of the two elements is currently audible. */
   private activeSlot: 0 | 1 = 0;
   private readonly ctx: AudioContext;
-  private readonly gain: GainNode;
   private readonly graph: AudioGraph;
   /** The list as the user sees it. */
   private queue: PlayerTrack[] = [];
@@ -67,15 +94,21 @@ export class Player {
   /** Normalisation gain for the current track, in dB, supplied by the worker. */
   private normGainDb = 0;
   private outputDeviceId = '';
+  /** Loudness of the current track, once it has been measured. */
+  private trackLufs: number | null = null;
+  private trackPeakDb: number | null = null;
   private outputDevices: { id: string; label: string }[] = [];
   /** Seconds left of the crossfade into the current track, for the meter. */
   private crossfadeTimer: ReturnType<typeof setTimeout> | null = null;
   /**
-   * Running loudness estimate for the track that is playing, so normalisation
-   * is applied on the next play without ever downloading the file to analyse it.
+   * BS.1770 loudness meter for the track that is playing, so the correction is
+   * learned from what is actually audible rather than by decoding the file.
    */
-  private loudness = createAccumulator();
+  private meter: LoudnessMeter = createMeter();
   private loudnessKey = '';
+  /** Time already folded into the meter, used to close 400 ms blocks. */
+  private meterClock = 0;
+  private lastSampleAt = 0;
   private readonly events: PlayerEvents;
 
   constructor(events: PlayerEvents) {
@@ -90,10 +123,9 @@ export class Player {
 
     this.ctx = new AudioContext();
     this.graph = new AudioGraph(this.ctx);
-    // The output level is part of the graph so it is applied after every
-    // effect: normalisation, eq and night mode all feed into it.
-    this.gain = this.ctx.createGain();
-    this.gain.gain.value = this.volume;
+    // The listening volume lives in the graph, after the measurement tap: the
+    // meters describe the recording, not how loudly it is being played.
+    this.graph.setVolume(this.volume, 0.01);
 
     try {
       // Each element is connected exactly once, at startup: connecting a media
@@ -209,9 +241,12 @@ export class Player {
     }
     this.crossfading = false;
     // A fresh track starts a fresh measurement.
-    this.loudness = createAccumulator();
+    this.meter = createMeter();
     this.loudnessKey = t.key;
     this.loudnessReported = false;
+    this.clipReported = false;
+    this.meterClock = 0;
+    this.lastSampleAt = this.ctx.currentTime;
     const el = this.el();
     el.src = t.url;
     el.currentTime = 0;
@@ -280,8 +315,32 @@ export class Player {
    */
   private startLoudnessSampling(): void {
     this.stopLoudnessSampling();
-    this.loudnessTimer = setInterval(() => this.sampleLoudness(), 50);
+    this.loudnessTimer = setInterval(() => {
+      this.sampleLoudness();
+      this.pushSpectrum();
+    }, 50);
   }
+
+  /**
+   * Send a spectrum frame to whoever is listening.
+   *
+   * The offscreen document owns the analyser and the popup only paints, but a
+   * broadcast is not free: pushing 20 frames a second to a popup that is not
+   * showing the panel would wake it for nothing. Frames are only sent while a
+   * consumer has asked for them.
+   */
+  private pushSpectrum(): void {
+    if (!this.spectrumWanted) return;
+    const frame = this.graph.spectrum(SPECTRUM_BANDS);
+    this.events.onSpectrum(frame.left, frame.right);
+  }
+
+  /** Enable or disable the spectrum push. */
+  setSpectrumWanted(on: boolean): void {
+    this.spectrumWanted = on;
+  }
+
+  private spectrumWanted = false;
 
   private stopLoudnessSampling(): void {
     if (this.loudnessTimer !== null) {
@@ -497,11 +556,10 @@ export class Player {
   /** Ramp instead of jumping, so volume changes do not click. */
   setVolume(v: number): void {
     this.volume = Math.max(0, Math.min(1, v));
-    const now = this.ctx.currentTime;
-    this.gain.gain.cancelScheduledValues(now);
-    this.gain.gain.setValueAtTime(this.gain.gain.value, now);
-    this.gain.gain.linearRampToValueAtTime(this.volume, now + RAMP_S);
-    // The graph owns loudness once connected, on both elements.
+    // The volume lives inside the graph, after the measurement tap, so the meter
+    // and the loudness estimate describe the recording rather than the listening
+    // level. The elements keep full scale; the graph owns loudness.
+    this.graph.setVolume(this.volume, RAMP_S);
     this.audio.volume = 1;
     this.audio2.volume = 1;
     this.emit();
@@ -535,6 +593,13 @@ export class Player {
   setNormGain(db: number): void {
     this.normGainDb = Number.isFinite(db) ? db : 0;
     this.graph.setNormGain(this.normGainDb);
+    this.emit();
+  }
+
+  /** Loudness figures for the current track, sent by the worker once measured. */
+  setTrackLoudness(lufs: number | null, peakDb: number | null): void {
+    this.trackLufs = lufs;
+    this.trackPeakDb = peakDb;
     this.emit();
   }
 
@@ -578,7 +643,11 @@ export class Player {
       queue: this.queue,
       order: this.order,
       normGainDb: this.graph.normalisationGainDb,
+      trackLufs: this.trackLufs,
+      trackPeakDb: this.trackPeakDb,
       level: this.graph.level(),
+      levels: this.graph.peakLevels(),
+      clipped: this.graph.isClipping(),
       outputDeviceId: this.outputDeviceId,
       outputDevices: this.outputDevices,
       playing: !this.el().paused && !!cur,
@@ -599,18 +668,51 @@ export class Player {
     if (!cur) return;
     if (this.loudnessKey !== cur.key) {
       this.loudnessKey = cur.key;
-      this.loudness = createAccumulator();
+      this.meter = createMeter();
+      this.meterClock = 0;
     }
-    accumulate(this.loudness, this.graph.level());
-    if (!this.loudnessReported && isMeasured(this.loudness)) {
-      this.loudnessReported = true;
-      const rms = rmsDb(this.loudness);
-      const peak = peakDb(this.loudness);
-      if (rms !== null && peak !== null) this.events.onLoudness(cur.key, rms, peak);
+
+    // Each poll contributes one interval to the current 400 ms block. Silence
+    // is still a block: the gates are defined over the block set, so a gap must
+    // be present to be rejected rather than simply missing.
+    const now = this.ctx.currentTime;
+    const dt = this.lastSampleAt ? Math.min(0.25, Math.max(0, now - this.lastSampleAt)) : 0;
+    this.lastSampleAt = now;
+    this.meterClock += dt;
+    if (this.meterClock < BLOCK_SECONDS) return;
+    this.meterClock = 0;
+
+    const lufs = this.graph.momentLufs();
+    const peaks = this.graph.truePeakLevels();
+    const peakDb = gainToDb(Math.max(peaks[0], peaks[1]));
+    addBlock(this.meter, lufs, peakDb, BLOCK_SECONDS);
+
+    // Report clipping once per track: a brick-walled master is at full scale for
+    // much of its length, and reporting every occurrence would flood the worker.
+    if (!this.clipReported && this.graph.isClipping()) {
+      this.clipReported = true;
+      this.events.onClip(cur.key);
+    }
+
+    // Report once enough of the track has been heard for the gates to mean
+    // something. Eight seconds is past any intro and well inside the track.
+    if (!this.loudnessReported && this.meter.seconds >= MEASURE_SECONDS) {
+      const integrated = integratedLufs(this.meter);
+      if (integrated !== null && integrated > GATE_ABSOLUTE_LUFS) {
+        this.loudnessReported = true;
+        this.events.onLoudness(
+          cur.key,
+          integrated,
+          this.meter.truePeakDb,
+          dynamicRangeDb(this.meter.truePeakDb, integrated),
+        );
+      }
     }
   }
 
   private loudnessReported = false;
+  /** Clipping is reported at most once per track, for the same reason. */
+  private clipReported = false;
 
   private emit(): void {
     this.events.onState(this.state());

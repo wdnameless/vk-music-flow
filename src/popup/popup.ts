@@ -646,6 +646,15 @@ function renderPlayer(): void {
   // be the music itself. It scales a pseudo-element rather than the artwork.
   const level = Math.min(1, Math.max(0, s.level ?? 0));
   $('pLevel').style.setProperty('--lvl', level.toFixed(3));
+  // Per-channel meters: a collapsed stereo image is otherwise invisible.
+  const lv = s.levels ?? [level, level];
+  $('pMeterL').style.setProperty('--v', Math.min(1, Math.max(0, lv[0])).toFixed(3));
+  $('pMeterR').style.setProperty('--v', Math.min(1, Math.max(0, lv[1])).toFixed(3));
+  $('pClip').hidden = !s.clipped;
+  if (!$('fxPanel').hidden) {
+    drawSpectrum();
+    renderReadout();
+  }
   // Repaint the queue only while it is visible: a hidden panel costs nothing.
   if (!$('queuePanel').hidden && !dragFrom) renderQueue();
 }
@@ -788,13 +797,21 @@ async function refreshDevices(selected: string): Promise<void> {
 $('pFx').addEventListener('click', () => {
   const panel = $('fxPanel');
   panel.hidden = !panel.hidden;
+  // Frames are only streamed while the panel is open: pushing twenty a second
+  // to a hidden canvas would wake the popup for nothing.
+  void send({ t: 'PLAY_SPECTRUM', on: !panel.hidden });
   if (!panel.hidden) {
     $('queuePanel').hidden = true;
     $('eqPanel').hidden = true;
     renderFxPanel();
   }
 });
-$('fxClose').addEventListener('click', () => ($('fxPanel').hidden = true));
+$('fxClose').addEventListener('click', () => {
+  $('fxPanel').hidden = true;
+  void send({ t: 'PLAY_SPECTRUM', on: false });
+});
+// A closed popup must not leave the stream running.
+window.addEventListener('pagehide', () => void send({ t: 'PLAY_SPECTRUM', on: false }));
 
 $('fxNorm').addEventListener('change', (e) =>
   void pushFx({ normalize: (e.target as HTMLInputElement).checked ? 'track' : 'off' }),
@@ -839,6 +856,51 @@ $('fxReset').addEventListener('click', async () => {
   await pushFx({ ...DEFAULT_AUDIO_FX });
   renderFxPanel();
 });
+
+/* ---------------- Spectrum ----------------
+   Drawn from frames the offscreen document pushes, so the analysis happens
+   where the audio is and the popup only paints. */
+
+let spectrumFrame: { left: number[]; right: number[] } | null = null;
+
+function drawSpectrum(): void {
+  const canvas = document.getElementById('fxCanvas') as HTMLCanvasElement | null;
+  if (!canvas || !spectrumFrame) return;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const { width: w, height: h } = canvas;
+  ctx.clearRect(0, 0, w, h);
+  const bands = spectrumFrame.left.length;
+  const barW = w / bands;
+  for (let i = 0; i < bands; i++) {
+    const l = spectrumFrame.left[i] ?? 0;
+    const r = spectrumFrame.right[i] ?? 0;
+    // Left grows up from the middle, right grows down: the stereo picture is
+    // readable at a glance, which a stacked pair of bars is not.
+    const half = h / 2;
+    ctx.fillStyle = `rgba(244,244,245,${0.35 + l * 0.65})`;
+    ctx.fillRect(i * barW, half - l * half * 0.94, Math.max(1, barW - 1), l * half * 0.94);
+    ctx.fillStyle = `rgba(244,244,245,${0.22 + r * 0.5})`;
+    ctx.fillRect(i * barW, half, Math.max(1, barW - 1), r * half * 0.94);
+  }
+  // Centre line: the reference the two halves are read against.
+  ctx.fillStyle = 'rgba(255,255,255,0.10)';
+  ctx.fillRect(0, h / 2 - 0.5, w, 1);
+}
+
+function renderReadout(): void {
+  const el = $('fxReadout');
+  const p = pState;
+  if (!p) return;
+  const parts: string[] = [];
+  if (p.trackLufs !== null && p.trackLufs !== undefined) parts.push(`${p.trackLufs.toFixed(1)} LUFS`);
+  if (p.trackPeakDb !== null && p.trackPeakDb !== undefined) parts.push(`пик ${p.trackPeakDb.toFixed(1)} дБ`);
+  if (p.trackLufs !== null && p.trackPeakDb !== null && p.trackLufs !== undefined && p.trackPeakDb !== undefined) {
+    parts.push(`DR ${(p.trackPeakDb - p.trackLufs).toFixed(1)} дБ`);
+  }
+  if (p.normGainDb) parts.push(`коррекция ${p.normGainDb > 0 ? '+' : ''}${p.normGainDb.toFixed(1)} дБ`);
+  el.textContent = parts.length ? parts.join('  ·  ') : 'Трек ещё не измерен — слушаю…';
+}
 
 /* ---------------- Queue panel ---------------- */
 
@@ -893,6 +955,10 @@ $('pQueue').addEventListener('click', () => {
   panel.hidden = !panel.hidden;
   if (!panel.hidden) {
     $('eqPanel').hidden = true;
+    if (!$('fxPanel').hidden) {
+      $('fxPanel').hidden = true;
+      void send({ t: 'PLAY_SPECTRUM', on: false });
+    }
     renderQueue();
   }
 });
@@ -974,7 +1040,13 @@ $('qItems').addEventListener('drop', async (e) => {
 $('pEq').addEventListener('click', () => {
   const panel = $('eqPanel');
   panel.hidden = !panel.hidden;
-  if (!panel.hidden) $('queuePanel').hidden = true;
+  if (!panel.hidden) {
+    $('queuePanel').hidden = true;
+    if (!$('fxPanel').hidden) {
+      $('fxPanel').hidden = true;
+      void send({ t: 'PLAY_SPECTRUM', on: false });
+    }
+  }
 });
 
 $('eqOn').addEventListener('change', async (e) => {
@@ -1171,6 +1243,15 @@ async function openView(name: string): Promise<void> {
  * Keys are ignored while typing and while a range slider is focused, otherwise
  * a space in the search box or an arrow on the seek bar would jump tracks.
  */
+chrome.runtime.onMessage.addListener((m: unknown) => {
+  const msg = m as { t?: string; left?: number[]; right?: number[] };
+  if (msg?.t === 'SPECTRUM' && msg.left && msg.right) {
+    spectrumFrame = { left: msg.left, right: msg.right };
+    if (!$('fxPanel').hidden) drawSpectrum();
+  }
+  return false;
+});
+
 document.addEventListener('keydown', async (e) => {
   const el = document.activeElement as HTMLElement | null;
   const tag = el?.tagName;

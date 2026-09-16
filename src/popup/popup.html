@@ -275,6 +275,13 @@
         </div>
 
         <div class="fx-body">
+          <!-- Spectrum: the one visual the ear cannot verify for itself. -->
+          <div class="fx-spectrum">
+            <canvas id="fxCanvas" width="640" height="160"></canvas>
+            <div class="fx-spec-labels mono"><span>60</span><span>250</span><span>1k</span><span>4k</span><span>12k</span></div>
+          </div>
+          <div id="fxReadout" class="fx-readout mono"></div>
+
           <label class="fx-row">
             <span>Выравнивать громкость</span>
             <span class="switch"><input id="fxNorm" type="checkbox" /><span></span></span>
@@ -355,6 +362,11 @@
             <div id="pCover" class="p-cover"></div>
             <!-- Level ring: the loudest thing on screen is the music itself. -->
             <div id="pLevel" class="p-level"></div>
+            <div class="p-meters">
+              <span class="p-meter"><i id="pMeterL"></i></span>
+              <span class="p-meter"><i id="pMeterR"></i></span>
+            </div>
+            <span id="pClip" class="p-clip" title="Мастер записан с перегрузкой" hidden>CLIP</span>
           </div>
           <div class="p-meta">
             <span id="pTitle" class="p-title">Ничего не играет</span>

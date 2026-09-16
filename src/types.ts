@@ -260,12 +260,20 @@ export const DEFAULT_AUDIO_FX: AudioFx = {
   preampDb: 0,
 };
 
-/** Measured loudness of one track, cached so it is measured only once. */
+/**
+ * Measured loudness of one track, cached so it is measured only once.
+ *
+ * Values are BS.1770: `lufs` is gated integrated loudness, `truePeakDb` the
+ * over-sampled peak. The field names say which unit, because mixing the two up
+ * is the classic way to get a normaliser that is 6 dB out.
+ */
 export interface LoudnessEntry {
-  /** Integrated RMS in dBFS. */
-  rmsDb: number;
-  /** True peak in dBFS, used to stop the gain from clipping. */
-  peakDb: number;
+  /** Gated integrated loudness, in LUFS. */
+  lufs: number;
+  /** True peak in dBFS. */
+  truePeakDb: number;
+  /** Crest factor (peak minus loudness) in dB; a rough "DR" figure. */
+  drDb: number | null;
   /** When it was measured, so a future format change can invalidate the cache. */
   measuredAt: number;
 }
@@ -288,8 +296,16 @@ export interface PlayerState {
   repeat: RepeatMode;
   /** Effective normalisation gain for the current track, in dB. */
   normGainDb: number;
+  /** Measured loudness of the current track, in LUFS, once known. */
+  trackLufs: number | null;
+  /** Measured true peak of the current track, in dBFS. */
+  trackPeakDb: number | null;
   /** Output level for the meter, 0..1. */
   level: number;
+  /** Per-channel levels, 0..1, for a stereo meter. */
+  levels: [number, number];
+  /** True for a moment after a full-scale sample, for the clip indicator. */
+  clipped: boolean;
   /** Where audio is going, when a specific device is chosen. */
   outputDeviceId: string;
   outputDevices: { id: string; label: string }[];
@@ -735,6 +751,10 @@ export type RuntimeMessage =
   | { t: 'PLAY_FX'; fx: Partial<AudioFx> }
   | { t: 'PLAY_OUTPUT'; deviceId: string }
   | { t: 'GET_DEVICES' }
+  /** Tracks whose master was measured clipping at full scale. */
+  | { t: 'GET_CLIPPED' }
+  /** Ask the player to start or stop pushing spectrum frames. */
+  | { t: 'PLAY_SPECTRUM'; on: boolean }
   | { t: 'GET_PLAYER_STATE' }
   | { t: 'EQ_SET'; enabled: boolean; gains: number[] }
   /**
@@ -789,8 +809,17 @@ export type PlayerCommand =
   | { t: 'P_GAIN'; gainDb: number }
   | { t: 'P_OUTPUT'; deviceId: string }
   | { t: 'P_DEVICES' }
+  /** Echo the measured loudness back so the UI can show it. */
+  | { t: 'P_LOUDNESS'; lufs: number | null; peakDb: number | null }
+  /** Start or stop streaming spectrum frames to the UI. */
+  | { t: 'P_SPECTRUM'; on: boolean }
   /** The offscreen player reports a settled loudness measurement. */
-  | { t: 'PLAYER_LOUDNESS'; key: string; rms: number; peak: number }
+  /** The offscreen player reports a settled BS.1770 measurement. */
+  | { t: 'PLAYER_LOUDNESS'; key: string; lufs: number; peakDb: number; drDb: number | null }
+  /** The offscreen player reports a sample at or over full scale. */
+  | { t: 'PLAYER_CLIP'; key: string }
+  /** One spectrum frame per channel, pushed while the panel is open. */
+  | { t: 'PLAYER_SPECTRUM'; on: boolean }
   | { t: 'P_PLAY' }
   | { t: 'P_PAUSE' }
   | { t: 'P_NEXT' }

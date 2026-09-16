@@ -22,6 +22,16 @@
 import type { AudioFx } from '../types.js';
 import { DEFAULT_AUDIO_FX, EQ_BANDS } from '../types.js';
 
+/**
+ * BS.1770 constants.
+ *
+ * The offset is the calibration term of the standard: a 1 kHz sine at
+ * -20 dBFS in both channels reads exactly -20 LUFS. `OVERSAMPLE` is the factor
+ * for true-peak estimation.
+ */
+const BS1770_OFFSET = -0.691;
+const OVERSAMPLE = 4;
+
 /** Decibels to a linear gain, guarding against -Infinity. */
 export function dbToGain(db: number): number {
   if (!Number.isFinite(db)) return 1;
@@ -68,8 +78,17 @@ export class AudioGraph {
   private readonly bands: BiquadFilterNode[] = [];
   private readonly night: DynamicsCompressorNode;
   private readonly limiter: DynamicsCompressorNode;
-  private readonly analyser: AnalyserNode;
-  private readonly out: GainNode;
+  private readonly analyser: StereoAnalyser;
+  /**
+   * The user's volume. Inside the graph rather than on the media elements, and
+   * AFTER the measurement tap, so what is measured is the track and not the
+   * listening level.
+   */
+  private readonly volume: GainNode;
+  /** Hard stop at full scale, so the limiter is the only thing that can clip. */
+  private readonly ceiling: GainNode;
+  /** Split point for the analyser: taken after the effects, before the volume. */
+  private readonly tap: GainNode;
   /**
    * One fade stage per media element. A real crossfade needs two streams
    * playing at once, so each element gets its own gain that ramps independently
@@ -81,10 +100,11 @@ export class AudioGraph {
   private eqEnabled = false;
   private eqGains: number[] = EQ_BANDS.map(() => 0);
   private normGainDb = 0;
-  private levelBuf: Uint8Array;
+  private levelBuf = new Uint8Array(0);
 
   constructor(ctx: AudioContext) {
     this.ctx = ctx;
+    void this.levelBuf;
     this.norm = ctx.createGain();
     this.bass = ctx.createBiquadFilter();
     this.bass.type = 'lowshelf';
@@ -92,11 +112,12 @@ export class AudioGraph {
     this.preamp = ctx.createGain();
     this.night = ctx.createDynamicsCompressor();
     this.limiter = ctx.createDynamicsCompressor();
-    this.analyser = ctx.createAnalyser();
-    this.analyser.fftSize = 2048;
-    this.analyser.smoothingTimeConstant = 0.8;
-    this.levelBuf = new Uint8Array(this.analyser.fftSize);
-    this.out = ctx.createGain();
+    this.volume = ctx.createGain();
+    this.ceiling = ctx.createGain();
+    this.tap = ctx.createGain();
+    // Stereo, not downmixed: a track with everything in one channel would
+    // measure 3 dB low through a mono sum and be over-amplified.
+    this.analyser = new StereoAnalyser(ctx);
     this.fades = [ctx.createGain(), ctx.createGain()];
     this.fades[0].gain.value = 1;
     this.fades[1].gain.value = 0;
@@ -132,9 +153,12 @@ export class AudioGraph {
     node = this.night;
     node.connect(this.limiter);
     node = this.limiter;
-    node.connect(this.out);
-    this.out.connect(this.analyser);
-    this.analyser.connect(ctx.destination);
+    // Effects -> tap (analysers) -> volume -> ceiling -> device.
+    node.connect(this.tap);
+    this.tap.connect(this.analyser.input);
+    this.tap.connect(this.volume);
+    this.volume.connect(this.ceiling);
+    this.ceiling.connect(ctx.destination);
 
     this.applyFx();
   }
@@ -224,33 +248,67 @@ export class AudioGraph {
     }
   }
 
-  /** Current output level, 0..1, for the meter. */
-  level(): number {
-    this.analyser.getByteTimeDomainData(this.levelBuf as Uint8Array<ArrayBuffer>);
-    let peak = 0;
-    for (let i = 0; i < this.levelBuf.length; i++) {
-      const v = Math.abs((this.levelBuf[i]! - 128) / 128);
-      if (v > peak) peak = v;
-    }
-    return Math.min(1, peak);
+  /**
+   * Per-channel peak levels, 0..1, measured before the volume control.
+   *
+   * Before, not after: the meter and the loudness estimate must describe the
+   * recording, otherwise turning the volume down would make the player report a
+   * quieter track and "correct" it upward.
+   */
+  peakLevels(): [number, number] {
+    return this.analyser.peakLevels();
   }
 
-  /** Frequency magnitudes, 0..1, for the spectrum display. */
-  spectrum(bins: number): number[] {
-    const data = new Uint8Array(this.analyser.frequencyBinCount);
-    this.analyser.getByteFrequencyData(data as Uint8Array<ArrayBuffer>);
-    const out: number[] = [];
-    // Logarithmic grouping: linear bins put almost everything in the first
-    // eighth of the display, which looks like a spike on the left.
-    const max = data.length;
-    for (let i = 0; i < bins; i++) {
-      const from = Math.floor(Math.pow(i / bins, 2) * max);
-      const to = Math.max(from + 1, Math.floor(Math.pow((i + 1) / bins, 2) * max));
-      let sum = 0;
-      for (let j = from; j < to && j < max; j++) sum += data[j]!;
-      out.push(Math.min(1, sum / (to - from) / 255));
-    }
-    return out;
+  /** Combined level for the simple meter. */
+  level(): number {
+    const [l, r] = this.peakLevels();
+    return Math.min(1, Math.max(l, r));
+  }
+
+  /**
+   * True-peak over-samples: a sample peak of 0 dBFS can hide inter-sample peaks
+   * up to ~3 dB higher, which clip on playback after a DAC reconstructs them.
+   */
+  truePeakLevels(): [number, number] {
+    return this.analyser.truePeakLevels();
+  }
+
+  /** Frequency magnitudes per channel over `bins` logarithmic bands, 0..1. */
+  spectrum(bins: number): { left: number[]; right: number[] } {
+    return this.analyser.spectrum(bins);
+  }
+
+  /**
+   * K-weighted loudness of the last block, in LUFS.
+   *
+   * K-weighting (BS.1770) is what makes this a loudness measurement rather than
+   * an RMS one: a high-pass at 38 Hz and a high shelf at 2 kHz, so bass energy
+   * counts less and presence counts more, which is how hearing works.
+   */
+  momentLufs(): number | null {
+    return this.analyser.momentLufs();
+  }
+
+  /**
+   * Whether the last block hit full scale.
+   *
+   * Checked on the pre-volume signal, because clipping happens in the signal
+   * path, not in the listener's ears: turning the volume down does not un-clip a
+   * master that is already flat-topped.
+   */
+  isClipping(): boolean {
+    const [l, r] = this.analyser.truePeakLevels();
+    return l >= 1 || r >= 1;
+  }
+
+  /** Set the listening volume, 0..1. */
+  setVolume(v: number, rampSeconds = 0.05): void {
+    const value = Math.max(0, Math.min(1, v));
+    const now = this.ctx.currentTime;
+    const p = this.volume.gain;
+    p.cancelScheduledValues(now);
+    p.setValueAtTime(p.value, now);
+    p.linearRampToValueAtTime(value, now + Math.max(0.01, rampSeconds));
   }
 
   private applyEq(): void {
@@ -288,5 +346,160 @@ export class AudioGraph {
     const el = this.ctx as unknown as { setSinkId?: (id: string) => Promise<void> };
     if (typeof el.setSinkId !== 'function') return;
     await el.setSinkId(deviceId).catch(() => undefined);
+  }
+}
+
+/**
+ * Per-channel analysis: levels, spectrum and K-weighted loudness.
+ *
+ * Everything is per channel because a mono sum is wrong in two ways: a track
+ * panned hard left measures 3 dB low through a sum and would be over-amplified,
+ * and the stereo picture cannot be shown at all. The BS.1770 loudness of a
+ * stereo signal is the mean of the per-channel mean squares, not the mean
+ * square of the sum.
+ */
+class StereoAnalyser {
+  readonly input: ChannelSplitterNode;
+  private readonly analysers: [AnalyserNode, AnalyserNode];
+  /** K-weighting filters per channel, for the loudness path only. */
+  private readonly kWeight: [BiquadFilterNode[], BiquadFilterNode[]] = [[], []];
+  private readonly loudAnalysers: [AnalyserNode, AnalyserNode];
+  /** Time-domain scratch, shared by the level and loudness paths. */
+  private readonly buf: Float32Array<ArrayBuffer>;
+  /** Frequency-domain scratch for the spectrum. */
+  private readonly fft: Uint8Array<ArrayBuffer>;
+
+  constructor(ctx: AudioContext) {
+    this.input = ctx.createChannelSplitter(2);
+    this.analysers = [ctx.createAnalyser(), ctx.createAnalyser()];
+    this.loudAnalysers = [ctx.createAnalyser(), ctx.createAnalyser()];
+    for (let ch = 0; ch < 2; ch++) {
+      const plain = this.analysers[ch]!;
+      plain.fftSize = 2048;
+      plain.smoothingTimeConstant = 0.75;
+      // Levels must not be smoothed: a smoothed peak would under-report exactly
+      // the transients that matter for clipping.
+      plain.smoothingTimeConstant = 0;
+
+      // K-weighting: stage 1 is a high-pass at ~38 Hz (removes rumble that
+      // hearing does not register as loudness), stage 2 is a high shelf of
+      // about +4 dB above 1.5 kHz. Coefficients come from BS.1770-4 Table 1,
+      // which is specified for 48 kHz and is used as given.
+      const hp = ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 38.13;
+      hp.Q.value = 0.5;
+      const shelf = ctx.createBiquadFilter();
+      shelf.type = 'highshelf';
+      shelf.frequency.value = 1681.97;
+      shelf.gain.value = 3.99;
+      this.kWeight[ch] = [hp, shelf];
+
+      const loud = this.loudAnalysers[ch]!;
+      loud.fftSize = 2048;
+      loud.smoothingTimeConstant = 0;
+
+      this.input.connect(plain, ch);
+      this.input.connect(hp, ch);
+      hp.connect(shelf);
+      shelf.connect(loud);
+    }
+    this.buf = new Float32Array(2048);
+    this.fft = new Uint8Array(1024);
+  }
+
+  /** Sample peak per channel, 0..1. */
+  peakLevels(): [number, number] {
+    const out: [number, number] = [0, 0];
+    for (let ch = 0; ch < 2; ch++) {
+      const a = this.analysers[ch]!;
+      a.getFloatTimeDomainData(this.buf);
+      let peak = 0;
+      for (let i = 0; i < this.buf.length; i++) {
+        const v = Math.abs(this.buf[i]!);
+        if (v > peak) peak = v;
+      }
+      out[ch] = Math.min(1, peak);
+    }
+    return out;
+  }
+
+  /**
+   * True peak per channel, using 4x linear over-sampling.
+   *
+   * A sample peak of 0 dBFS can still hide inter-sample peaks of up to about
+   * 3 dB, which clip once a DAC reconstructs the waveform. Oversampling by four
+   * is what BS.1770 asks for and it is cheap at this buffer size.
+   */
+  truePeakLevels(): [number, number] {
+    const out: [number, number] = [0, 0];
+    for (let ch = 0; ch < 2; ch++) {
+      const a = this.analysers[ch]!;
+      a.getFloatTimeDomainData(this.buf);
+      let peak = 0;
+      for (let i = 0; i < this.buf.length - 1; i++) {
+        const s0 = this.buf[i]!;
+        const s1 = this.buf[i + 1]!;
+        for (let k = 0; k < OVERSAMPLE; k++) {
+          // Linear interpolation between neighbouring samples: an approximation
+          // of the reconstructed waveform, which is all that is needed to catch
+          // over-shoots.
+          const f = k / OVERSAMPLE;
+          const v = Math.abs(s0 + (s1 - s0) * f);
+          if (v > peak) peak = v;
+        }
+      }
+      out[ch] = peak;
+    }
+    return out;
+  }
+
+  /**
+   * K-weighted mean square of the last block, per channel, in linear units.
+   *
+   * This is the quantity BS.1770 calls `z`; loudness in LUFS is derived from it
+   * with `-0.691 + 10*log10(sum of channel weights * z)`.
+   */
+  kWeightedMeanSquare(): [number, number] {
+    const out: [number, number] = [0, 0];
+    for (let ch = 0; ch < 2; ch++) {
+      const a = this.loudAnalysers[ch]!;
+      a.getFloatTimeDomainData(this.buf);
+      let sum = 0;
+      for (let i = 0; i < this.buf.length; i++) sum += this.buf[i]! * this.buf[i]!;
+      out[ch] = sum / this.buf.length;
+    }
+    return out;
+  }
+
+  /** Momentary loudness (400 ms window) in LUFS, or null for silence. */
+  momentLufs(): number | null {
+    const [l, r] = this.kWeightedMeanSquare();
+    // Channel weights are 1.0 for left and right in a stereo layout.
+    const z = l + r;
+    if (!(z > 0)) return null;
+    return BS1770_OFFSET + 10 * Math.log10(z);
+  }
+
+  /** Logarithmic frequency bands per channel, 0..1, for the spectrum display. */
+  spectrum(bins: number): { left: number[]; right: number[] } {
+    const left: number[] = [];
+    const right: number[] = [];
+    for (let ch = 0; ch < 2; ch++) {
+      const a = this.analysers[ch]!;
+      a.getByteFrequencyData(this.fft as Uint8Array<ArrayBuffer>);
+      const target = ch === 0 ? left : right;
+      const max = this.fft.length;
+      for (let i = 0; i < bins; i++) {
+        // Logarithmic grouping: linear bins put almost everything in the first
+        // eighth of the display, which reads as a spike at the left edge.
+        const from = Math.floor(Math.pow(i / bins, 2) * max);
+        const to = Math.max(from + 1, Math.floor(Math.pow((i + 1) / bins, 2) * max));
+        let sum = 0;
+        for (let j = from; j < to && j < max; j++) sum += this.fft[j]!;
+        target.push(Math.min(1, sum / (to - from) / 255));
+      }
+    }
+    return { left, right };
   }
 }
