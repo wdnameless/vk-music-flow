@@ -174,6 +174,10 @@ function trackRow(t: Track, opts: { tick?: boolean; index?: number } = {}): stri
   const isTicked = ticked.has(t.key);
   // The play affordance sits on the artwork, so the row keeps one hover target.
   const play = `<span class="t-play" data-play="${escapeHtml(t.key)}" role="button" aria-label="Играть"><svg class="ic"><use href="#i-play"/></svg></span>`;
+  // Queue actions live on the row so a track can be queued without playing it.
+  const queueActions =
+    `<button class="mini" data-next="${escapeHtml(t.key)}" title="Играть следующим"><svg class="ic"><use href="#i-next"/></svg></button>` +
+    `<button class="mini" data-enqueue="${escapeHtml(t.key)}" title="В очередь"><svg class="ic"><use href="#i-download"/></svg></button>`;
   return (
     `<li data-key="${escapeHtml(t.key)}" class="track${t.restricted ? ' muted' : ''}" style="--i:${opts.index ?? 0}">` +
     (opts.tick !== false
@@ -186,7 +190,7 @@ function trackRow(t: Track, opts: { tick?: boolean; index?: number } = {}): stri
     `</span>` +
     `<div class="t-body"><b>${escapeHtml(t.title || '—')}</b><span>${escapeHtml(t.artist)}</span></div>` +
     `<span class="t-dur">${fmtDur(t.duration)}</span>` +
-    (t.restricted ? '<span class="bad">недоступен</span>' : '') +
+    (t.restricted ? '<span class="bad">недоступен</span>' : queueActions) +
     '</li>'
   );
 }
@@ -228,7 +232,7 @@ $('selClear').addEventListener('click', () => {
 });
 $('selPlay').addEventListener('click', () => {
   const keys = listTracks.filter((t) => ticked.has(t.key) && !t.restricted).map((t) => t.key);
-  if (keys.length) void playTracks(keys);
+  if (keys.length) void playTracks(keys, keys[0]);
 });
 $('selDownload').addEventListener('click', async () => {
   showView('downloads');
@@ -249,7 +253,20 @@ function wireTrackList(target: string): void {
       return;
     }
     const playKey = el.dataset.play;
-    if (playKey) await playTracks([playKey]);
+    if (playKey) {
+      await playTracks([playKey], playKey);
+      return;
+    }
+    const nextKey = el.dataset.next;
+    if (nextKey) {
+      await queueTracks([nextKey], true);
+      return;
+    }
+    const enqKey = el.dataset.enqueue;
+    if (enqKey) {
+      await queueTracks([enqKey], false);
+      return;
+    }
     // Shift-click a playlist card opens it; a plain click on the card body does
     // the same, which is the only affordance that reads as "this is a folder".
     if (el.closest('.pl') && !el.closest('button')) {
@@ -396,9 +413,64 @@ async function refresh(): Promise<void> {
 /* ---------------- Playback ---------------- */
 
 /** Resolve fresh URLs (VK links expire) then hand the list to the player. */
-async function playTracks(keys: string[]): Promise<void> {
+/**
+ * Add tracks to the playing queue without interrupting the current track.
+ *
+ * `next` inserts right after the cursor; otherwise they land at the end. Each
+ * track needs a fresh URL, so it is resolved here rather than stored.
+ */
+async function queueTracks(keys: string[], next: boolean): Promise<void> {
   const wanted = new Set(keys);
   const picked = listTracks.filter((t) => wanted.has(t.key) && !t.restricted);
+  if (!picked.length) return;
+  const r = await send<{ ok: boolean; streams: Record<string, { url: string }> }>({
+    t: 'P_RESOLVE',
+    keys: picked.map((t) => t.key),
+  });
+  const tracks = picked
+    .map((t) => {
+      const st = r.streams[t.key];
+      if (!st) return null;
+      return {
+        key: t.key,
+        id: t.nativeId.split('_')[1] ?? t.nativeId,
+        owner: t.nativeId.split('_')[0] ?? '0',
+        artist: t.artist,
+        title: t.title,
+        url: st.url,
+        duration: t.duration,
+        cover: t.cover,
+      };
+    })
+    .filter((x): x is NonNullable<typeof x> => !!x);
+  if (!tracks.length) return;
+  const res = await send<{ ok: boolean; state: PlayerState | null }>({
+    t: 'PLAY_INSERT',
+    tracks,
+    next,
+  });
+  pState = res.state;
+  renderPlayer();
+  if (!$('queuePanel').hidden) renderQueue();
+  $('dlNote').textContent = next
+    ? `Играет следующим: ${tracks.length}.`
+    : `В очередь добавлено: ${tracks.length}.`;
+}
+
+/**
+ * Play the given tracks, in list order.
+ *
+ * `startKey` is the row the user clicked: the queue is built from that row
+ * onwards, so pressing play on track 20 of a list plays the rest of the list
+ * rather than a single track.
+ */
+async function playTracks(keys: string[], startKey?: string): Promise<void> {
+  const wanted = new Set(keys);
+  let picked = listTracks.filter((t) => wanted.has(t.key) && !t.restricted);
+  if (startKey && picked.length === 1) {
+    const at = listTracks.findIndex((t) => t.key === startKey);
+    if (at >= 0) picked = listTracks.slice(at).filter((t) => !t.restricted);
+  }
   if (!picked.length) {
     $('dlNote').textContent = 'Эти треки недоступны для воспроизведения.';
     return;
@@ -433,11 +505,12 @@ async function playTracks(keys: string[]): Promise<void> {
   }
   const res = await send<{ ok: boolean; state: PlayerState | null }>({
     t: 'PLAY_LIST',
-    key: tracks[0]!.key,
+    key: startKey ?? tracks[0]!.key,
     tracks,
   });
   pState = res.state;
   renderPlayer();
+  if (!$('queuePanel').hidden) renderQueue();
 }
 
 let pState: PlayerState | null = null;
@@ -527,6 +600,8 @@ function renderPlayer(): void {
   const eqOn = $in('eqOn');
   if (document.activeElement !== eqOn) eqOn.checked = s.eqEnabled;
   renderEqBands(s.eqBands);
+  // Repaint the queue only while it is visible: a hidden panel costs nothing.
+  if (!$('queuePanel').hidden && !dragFrom) renderQueue();
 }
 
 async function refreshPlayer(): Promise<void> {
@@ -614,11 +689,141 @@ $('pDislike').addEventListener('click', async () => {
   $('pDislike').classList.toggle('liked');
 });
 
+/* ---------------- Queue panel ---------------- */
+
+/**
+ * The queue panel renders the play order, not the raw list, so what the user
+ * sees is exactly what will play next.
+ *
+ * Dragging reorders the underlying list (`P_MOVE`) rather than the order array,
+ * and the player translates that through the shuffle: a drag stays meaningful
+ * even while shuffled.
+ */
+let dragFrom: number | null = null;
+
+function renderQueue(): void {
+  const st = pState;
+  const list = $('qItems');
+  const empty = $('qEmpty');
+  if (!st || !st.queue?.length) {
+    list.innerHTML = '';
+    empty.hidden = false;
+    $btn('qShuffle').classList.remove('on');
+    return;
+  }
+  empty.hidden = true;
+  $btn('qShuffle').classList.toggle('on', !!st.shuffle);
+  const repeat = st.repeat ?? 'off';
+  const rbtn = $btn('qRepeat');
+  rbtn.classList.toggle('on', repeat !== 'off');
+  $('qRepeatOne').hidden = repeat !== 'one';
+  rbtn.title = repeat === 'off' ? 'Повтор выключен' : repeat === 'all' ? 'Повтор всей очереди' : 'Повтор одного трека';
+
+  const currentQueueIndex = st.order?.[st.index] ?? -1;
+  // Render in play order; each row knows both its order slot and its list slot.
+  list.innerHTML = (st.order ?? []).map((qi, slot) => {
+    const t = st.queue[qi];
+    if (!t) return '';
+    const cur = qi === currentQueueIndex;
+    return (
+      `<li class="q-item${cur ? ' cur' : ''}" draggable="true" data-slot="${slot}" data-qi="${qi}" style="--i:${slot}">` +
+      `<span class="q-grip"><svg class="ic"><use href="#i-grip"/></svg></span>` +
+      `<span class="q-cover"${t.cover ? ` style="background-image:url('${escapeHtml(t.cover)}')"` : ''}></span>` +
+      `<span class="t-body"><b>${escapeHtml(t.title || '—')}</b><span>${escapeHtml(t.artist)}</span></span>` +
+      `<span class="t-dur">${fmtDur(t.duration)}</span>` +
+      `<button class="mini q-remove" data-remove="${qi}" title="Убрать"><svg class="ic"><use href="#i-cross"/></svg></button>` +
+      '</li>'
+    );
+  }).join('');
+}
+
+$('pQueue').addEventListener('click', () => {
+  const panel = $('queuePanel');
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) {
+    $('eqPanel').hidden = true;
+    renderQueue();
+  }
+});
+$('qClose').addEventListener('click', () => ($('queuePanel').hidden = true));
+
+$('qShuffle').addEventListener('click', async () => {
+  const on = !pState?.shuffle;
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'PLAY_SHUFFLE', on });
+  pState = r.state;
+  renderQueue();
+});
+$('qRepeat').addEventListener('click', async () => {
+  const cur = pState?.repeat ?? 'off';
+  const mode = cur === 'off' ? 'all' : cur === 'all' ? 'one' : 'off';
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'PLAY_REPEAT', mode });
+  pState = r.state;
+  renderQueue();
+});
+
+$('qItems').addEventListener('click', async (e) => {
+  const el = e.target as HTMLElement;
+  const rm = el.closest('[data-remove]') as HTMLElement | null;
+  if (rm) {
+    const r = await send<{ ok: boolean; state: PlayerState | null }>({
+      t: 'PLAY_REMOVE',
+      index: Number(rm.dataset.remove),
+    });
+    pState = r.state;
+    renderQueue();
+    renderPlayer();
+    return;
+  }
+  const row = el.closest('.q-item') as HTMLElement | null;
+  if (!row) return;
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({
+    t: 'PLAY_JUMP',
+    index: Number(row.dataset.slot),
+  });
+  pState = r.state;
+  renderQueue();
+  renderPlayer();
+});
+
+// Drag to reorder. The drag carries the LIST index, because that is what the
+// player moves; the drop target's list index is read from the same data.
+$('qItems').addEventListener('dragstart', (e) => {
+  const row = (e.target as HTMLElement).closest('.q-item') as HTMLElement | null;
+  if (!row) return;
+  dragFrom = Number(row.dataset.slot);
+  row.classList.add('dragging');
+  e.dataTransfer?.setData('text/plain', String(dragFrom));
+});
+$('qItems').addEventListener('dragend', () => {
+  dragFrom = null;
+  $('qItems').querySelectorAll('.q-item').forEach((r) => r.classList.remove('dragging', 'drop-above'));
+});
+$('qItems').addEventListener('dragover', (e) => {
+  const row = (e.target as HTMLElement).closest('.q-item') as HTMLElement | null;
+  if (!row || dragFrom === null) return;
+  e.preventDefault();
+  $('qItems').querySelectorAll('.q-item').forEach((r) => r.classList.remove('drop-above'));
+  row.classList.add('drop-above');
+});
+$('qItems').addEventListener('drop', async (e) => {
+  const row = (e.target as HTMLElement).closest('.q-item') as HTMLElement | null;
+  if (!row || dragFrom === null) return;
+  e.preventDefault();
+  const to = Number(row.dataset.slot);
+  const from = dragFrom;
+  dragFrom = null;
+  if (from === to) return;
+  const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'PLAY_MOVE', from, to });
+  pState = r.state;
+  renderQueue();
+});
+
 /* ---------------- Equalizer overlay ---------------- */
 
 $('pEq').addEventListener('click', () => {
   const panel = $('eqPanel');
   panel.hidden = !panel.hidden;
+  if (!panel.hidden) $('queuePanel').hidden = true;
 });
 
 $('eqOn').addEventListener('change', async (e) => {
@@ -797,7 +1002,7 @@ async function loadHome(): Promise<void> {
   $('homeHero').addEventListener('click', (e) => {
     const hero = (e.target as HTMLElement).closest('[data-play]') as HTMLElement | null;
     const key = hero?.dataset.play;
-    if (key) void playTracks([key]);
+    if (key) void playTracks([key], key);
   });
 }
 
@@ -806,6 +1011,59 @@ async function openView(name: string): Promise<void> {
   if (name === 'home') await loadHome();
   if (name === 'explore') await loadList('sections', undefined, 'exploreTracks');
 }
+
+/* ---------------- Keyboard ---------------- */
+
+/**
+ * Transport shortcuts, active while the popup has focus.
+ *
+ * Keys are ignored while typing and while a range slider is focused, otherwise
+ * a space in the search box or an arrow on the seek bar would jump tracks.
+ */
+document.addEventListener('keydown', async (e) => {
+  const el = document.activeElement as HTMLElement | null;
+  const tag = el?.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || el?.isContentEditable) {
+    // Only the seek/volume sliders swallow arrows; text fields keep their keys.
+    if (!(tag === 'INPUT' && (el as HTMLInputElement).type === 'range')) return;
+  }
+  const isRange = tag === 'INPUT' && (el as HTMLInputElement).type === 'range';
+  switch (e.key) {
+    case ' ':
+      if (isRange) return;
+      e.preventDefault();
+      $btn('pToggle').click();
+      break;
+    case 'ArrowRight':
+      e.preventDefault();
+      if (e.shiftKey) $btn('pNext').click();
+      else await send({ t: 'PLAY_SEEK', seconds: (pState?.currentTime ?? 0) + 10 });
+      break;
+    case 'ArrowLeft':
+      e.preventDefault();
+      if (e.shiftKey) $btn('pPrev').click();
+      else await send({ t: 'PLAY_SEEK', seconds: Math.max(0, (pState?.currentTime ?? 0) - 10) });
+      break;
+    case 's':
+    case 'S':
+    case 'ы':
+      $btn('qShuffle').click();
+      break;
+    case 'r':
+    case 'R':
+    case 'к':
+      $btn('qRepeat').click();
+      break;
+    case 'q':
+    case 'Q':
+    case 'й':
+      $btn('pQueue').click();
+      break;
+    default:
+      return;
+  }
+  void refreshPlayer();
+});
 
 /* ---------------- Init ---------------- */
 

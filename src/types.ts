@@ -221,8 +221,12 @@ export interface EqBand {
 }
 
 /** Player snapshot pushed to the UI. */
+/** How the queue advances when a track ends. */
+export type RepeatMode = 'off' | 'all' | 'one';
+
 export interface PlayerState {
   track: PlayerTrack | null;
+  /** Position within the play order, i.e. a cursor into `order`. */
   index: number;
   total: number;
   playing: boolean;
@@ -231,6 +235,15 @@ export interface PlayerState {
   volume: number;
   eqEnabled: boolean;
   eqBands: EqBand[];
+  /* Queue controls. The list and the play order are separate: shuffling
+     permutes `order`, not `queue`, so turning shuffle off restores the user's
+     own order and dragging stays meaningful while shuffled. */
+  shuffle: boolean;
+  repeat: RepeatMode;
+  /** The queue in the user's order. */
+  queue: PlayerTrack[];
+  /** Play order as indices into `queue`. */
+  order: number[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -527,6 +540,14 @@ export interface Settings {
   playerVolume?: number;
   playerEqEnabled?: boolean;
   playerEqGains?: number[];
+  /**
+   * The play queue and its controls, without stream URLs (those expire). A
+   * recreated offscreen document re-resolves each entry before restoring it.
+   */
+  playerQueue?: { key: string; id: string; owner: string; artist: string; title: string; duration: number | null; cover: string | null }[];
+  playerQueueIndex?: number;
+  playerShuffle?: boolean;
+  playerRepeat?: RepeatMode;
   // Phase 1 queue tuning (anti-ban / resilience):
   maxAttempts: number;
   baseBackoffMs: number;
@@ -641,6 +662,13 @@ export type RuntimeMessage =
   | { t: 'PLAY_PREV' }
   | { t: 'PLAY_SEEK'; seconds: number }
   | { t: 'PLAY_VOLUME'; volume: number }
+  /* Queue control. */
+  | { t: 'PLAY_SHUFFLE'; on: boolean }
+  | { t: 'PLAY_REPEAT'; mode: RepeatMode }
+  | { t: 'PLAY_INSERT'; tracks: PlayerTrack[]; next?: boolean }
+  | { t: 'PLAY_REMOVE'; index: number }
+  | { t: 'PLAY_MOVE'; from: number; to: number }
+  | { t: 'PLAY_JUMP'; index: number }
   | { t: 'GET_PLAYER_STATE' }
   | { t: 'EQ_SET'; enabled: boolean; gains: number[] }
   /**
@@ -679,6 +707,16 @@ export type RuntimeMessage =
 /** Commands the worker relays into the offscreen document. */
 export type PlayerCommand =
   | { t: 'P_PLAY_QUEUE'; tracks: PlayerTrack[]; startIndex?: number }
+  | { t: 'P_SHUFFLE'; on: boolean }
+  | { t: 'P_REPEAT'; mode: RepeatMode }
+  /** Insert after the current track, or append to the end. */
+  | { t: 'P_INSERT'; tracks: PlayerTrack[]; next?: boolean }
+  /** Remove one entry from the queue by its position in `queue`. */
+  | { t: 'P_REMOVE'; index: number }
+  /** Reorder playback: move slot `from` to slot `to` in the play order. */
+  | { t: 'P_MOVE'; from: number; to: number }
+  /** Jump to a position in the play order. */
+  | { t: 'P_JUMP'; index: number }
   | { t: 'P_PLAY' }
   | { t: 'P_PAUSE' }
   | { t: 'P_NEXT' }

@@ -1,5 +1,6 @@
-import type { EqBand, PlayerState, PlayerTrack } from '../types.js';
+import type { EqBand, PlayerState, PlayerTrack, RepeatMode } from '../types.js';
 import { EQ_BANDS } from '../types.js';
+import { advancePos, buildOrder, insertIntoOrder, moveInOrder, removeFromOrder } from './queue-order.js';
 
 /**
  * Audio player running inside the offscreen document.
@@ -34,8 +35,17 @@ export class Player {
   private readonly ctx: AudioContext;
   private readonly gain: GainNode;
   private readonly bands: BiquadFilterNode[] = [];
+  /** The list as the user sees it. */
   private queue: PlayerTrack[] = [];
-  private index = -1;
+  /**
+   * Play order: indices into `queue`. Kept separately from the list so shuffle
+   * is reversible and dragging still means something while shuffled.
+   */
+  private order: number[] = [];
+  /** Cursor into `order`, not into `queue`. */
+  private pos = -1;
+  private shuffle = false;
+  private repeat: RepeatMode = 'off';
   private eqEnabled = false;
   private eqGains: number[] = EQ_BANDS.map(() => 0);
   private volume = 1;
@@ -96,16 +106,47 @@ export class Player {
   private handleEnded(): void {
     const cur = this.current();
     if (cur) this.events.onEnded(cur);
-    if (this.index + 1 < this.queue.length) {
-      this.index++;
-      void this.playCurrent();
-    } else {
-      this.emit();
+    if (this.repeat === 'one') {
+      // Repeat-one only applies to a natural end; `next()` must still advance,
+      // otherwise the button would look broken.
+      this.audio.currentTime = 0;
+      void this.audio.play().catch(() => undefined);
+      return;
     }
+    void this.advance(1);
+  }
+
+  /** Position of the current track within `queue`, i.e. `order[pos]`. */
+  private currentQueueIndex(): number {
+    return this.pos >= 0 && this.pos < this.order.length ? (this.order[this.pos] ?? -1) : -1;
   }
 
   private current(): PlayerTrack | null {
-    return this.index >= 0 && this.index < this.queue.length ? (this.queue[this.index] ?? null) : null;
+    const qi = this.currentQueueIndex();
+    return qi >= 0 ? (this.queue[qi] ?? null) : null;
+  }
+
+  /**
+   * Move `delta` steps along the play order, honouring repeat.
+   *
+   * `all` wraps around; `off` stops at the edge and leaves the last track
+   * showing rather than clearing it, which is what a user expects to see.
+   */
+  private async advance(delta: number): Promise<void> {
+    const next = advancePos(this.pos, this.order.length, delta, this.repeat === 'all');
+    if (next === null) {
+      this.emit();
+      return;
+    }
+    this.pos = next;
+    await this.playCurrent();
+  }
+
+  /** Rebuild `order` for the current shuffle setting, keeping `pos` valid. */
+  private rebuildOrder(keepCurrent: boolean): void {
+    const cur = keepCurrent ? this.currentQueueIndex() : -1;
+    this.order = buildOrder(this.queue.length, this.shuffle, cur);
+    this.pos = cur >= 0 ? Math.max(0, this.order.indexOf(cur)) : -1;
   }
 
   private async playCurrent(): Promise<void> {
@@ -122,16 +163,91 @@ export class Player {
     this.emit();
   }
 
-  /** Replace the queue and start at `startIndex`. */
+  /** Replace the queue and start at `startIndex` of the list. */
   async setQueue(tracks: PlayerTrack[], startIndex = 0): Promise<void> {
     this.queue = tracks.slice();
-    this.index = Math.max(0, Math.min(startIndex, this.queue.length - 1));
+    this.rebuildOrder(false);
     if (!this.queue.length) {
       this.audio.pause();
       this.audio.removeAttribute('src');
       this.emit();
       return;
     }
+    const start = Math.max(0, Math.min(startIndex, this.queue.length - 1));
+    // `order.indexOf` finds the cursor even when shuffled.
+    this.pos = Math.max(0, this.order.indexOf(start));
+    await this.playCurrent();
+  }
+
+  /** Turn shuffle on or off, keeping the current track playing. */
+  setShuffle(on: boolean): void {
+    if (this.shuffle === on) return;
+    this.shuffle = on;
+    this.rebuildOrder(true);
+    this.emit();
+  }
+
+  setRepeat(mode: RepeatMode): void {
+    this.repeat = mode;
+    this.emit();
+  }
+
+  /**
+   * Add tracks after the current one, or at the end.
+   *
+   * "Play next" inserts into `order` right after the cursor, so it takes effect
+   * immediately even with shuffle on and without disturbing the rest of the
+   * queue.
+   */
+  insert(tracks: PlayerTrack[], next = false): void {
+    if (!tracks.length) return;
+    const base = this.queue.length;
+    this.queue.push(...tracks);
+    const wasEmpty = !this.order.length;
+    this.order = insertIntoOrder(this.order, base, tracks.length, this.pos, next);
+    // The first insert becomes the queue itself, so the cursor moves to it.
+    if (wasEmpty) this.pos = 0;
+    this.emit();
+  }
+
+  /** Remove one entry; the track that is playing keeps playing. */
+  remove(index: number): void {
+    if (index < 0 || index >= this.queue.length) return;
+    const wasCurrent = index === this.currentQueueIndex();
+    this.queue.splice(index, 1);
+    this.order = removeFromOrder(this.order, index);
+    if (wasCurrent) {
+      // The removed entry held the cursor; the next track occupies its slot, so
+      // playback continues from there rather than jumping to the top.
+      this.pos = Math.min(this.pos, this.order.length - 1);
+      if (this.pos < 0) {
+        this.audio.pause();
+        this.audio.removeAttribute('src');
+      }
+    } else {
+      const cur = this.order.indexOf(this.currentQueueIndex());
+      this.pos = cur >= 0 ? cur : Math.min(this.pos, this.order.length - 1);
+    }
+    this.emit();
+  }
+
+  /**
+   * Reorder the play sequence. `from`/`to` are slots in the play order, which
+   * is what the queue panel shows; the underlying list is left alone.
+   */
+  move(from: number, to: number): void {
+    const cur = this.currentQueueIndex();
+    this.order = moveInOrder(this.order, from, to);
+    // The cursor follows the track that was playing, wherever it ended up.
+    const at = cur >= 0 ? this.order.indexOf(cur) : -1;
+    if (at >= 0) this.pos = at;
+    this.emit();
+  }
+
+  /** Jump to a position in the play order. */
+  async jump(index: number): Promise<void> {
+    if (index < 0 || index >= this.order.length) return;
+    this.pos = index;
     await this.playCurrent();
   }
 
@@ -148,21 +264,17 @@ export class Player {
   }
 
   async next(): Promise<void> {
-    if (this.index + 1 < this.queue.length) {
-      this.index++;
-      await this.playCurrent();
-    }
+    await this.advance(1);
   }
 
   async prev(): Promise<void> {
     // Match the usual convention: restart the track unless near its start.
-    if (this.audio.currentTime > 3 || this.index === 0) {
+    if (this.audio.currentTime > 3 || this.pos <= 0) {
       this.audio.currentTime = 0;
       this.emit();
       return;
     }
-    this.index--;
-    await this.playCurrent();
+    await this.advance(-1);
   }
 
   seek(seconds: number): void {
@@ -206,8 +318,12 @@ export class Player {
     const cur = this.current();
     return {
       track: cur,
-      index: this.index,
+      index: this.pos,
       total: this.queue.length,
+      shuffle: this.shuffle,
+      repeat: this.repeat,
+      queue: this.queue,
+      order: this.order,
       playing: !this.audio.paused && !!cur,
       currentTime: Number.isFinite(this.audio.currentTime) ? this.audio.currentTime : 0,
       duration: Number.isFinite(this.audio.duration) ? this.audio.duration : 0,

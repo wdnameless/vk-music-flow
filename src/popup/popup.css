@@ -571,6 +571,12 @@ button.mini .ic {
   opacity: 1;
 }
 
+/* The queue actions come before the duration in the visual hierarchy, so they
+   sit tight against each other rather than spreading the row. */
+.tracks > li .mini + .mini {
+  margin-left: -4px;
+}
+
 button.mini:hover:not(:disabled) {
   color: var(--text);
   background: var(--veil-2);
@@ -615,14 +621,23 @@ button.mini:hover:not(:disabled) {
   }
 }
 
-/* Honour the OS setting: no entrance motion, no hover lift. */
+/* Honour the OS setting. `animation: none` alone is NOT enough: these keyframes
+   start at opacity 0 and run with fill-mode `both`, so removing the animation
+   would leave the element stuck invisible. The end state has to be asserted. */
 @media (prefers-reduced-motion: reduce) {
   .tracks > li,
   .notes > li,
   .view.active,
   .sel-tray,
-  .eq-overlay {
+  .eq-overlay,
+  .q-overlay,
+  .q-item,
+  .feat-art,
+  .pl,
+  .stat {
     animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
   }
 
   * {
@@ -1071,6 +1086,141 @@ button.icon.liked {
 .sel-actions button {
   border-radius: 100px;
   padding: 6px 14px;
+}
+
+/* ---------------- Queue panel ---------------- */
+
+.q-overlay {
+  position: absolute;
+  right: 20px;
+  bottom: calc(var(--player) + 14px);
+  width: 380px;
+  max-height: 62vh;
+  display: flex;
+  flex-direction: column;
+  background: rgb(13 13 14 / 0.88);
+  backdrop-filter: blur(22px) saturate(150%);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 14px 8px 8px 14px;
+  z-index: 20;
+  box-shadow: 0 24px 60px rgb(0 0 0 / 0.6);
+  animation: panelIn var(--slow) var(--ease) both;
+}
+
+.q-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 6px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: -0.008em;
+}
+
+.q-head-actions {
+  display: flex;
+  gap: 2px;
+}
+
+button.icon.on {
+  color: var(--text);
+  background: var(--veil-2);
+}
+
+.q-one {
+  position: absolute;
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 700;
+  right: 3px;
+  bottom: 2px;
+}
+
+#qRepeat {
+  position: relative;
+}
+
+.q-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 0 0;
+  /* A scrollable child of a max-height column collapses to zero height unless
+     it is allowed to grow and to shrink past its content. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 0.14) transparent;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.q-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  /* Rows keep their intrinsic height; only the list scrolls. */
+  flex: 0 0 auto;
+  padding: 6px 6px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background var(--fast) var(--ease), opacity var(--fast) var(--ease);
+  animation: rowIn var(--slow) var(--ease) both;
+  animation-delay: calc(min(var(--i, 0), 12) * 22ms);
+}
+
+.q-item:hover {
+  background: var(--veil);
+}
+
+/* The playing row is marked by ink, not colour. */
+.q-item.cur .t-body b {
+  color: #fff;
+}
+
+.q-item.cur::before {
+  content: '';
+  position: absolute;
+  margin-left: -10px;
+  width: 2px;
+  height: 14px;
+  border-radius: 2px;
+  background: #fff;
+}
+
+.q-item.dragging {
+  opacity: 0.4;
+}
+
+.q-item.drop-above {
+  box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.5);
+}
+
+.q-grip {
+  color: var(--dim);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity var(--fast) var(--ease);
+}
+
+.q-item:hover .q-grip {
+  opacity: 1;
+}
+
+.q-grip .ic {
+  width: 13px;
+  height: 13px;
+}
+
+.q-cover {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  background: var(--raised) center/cover no-repeat;
+  flex: 0 0 auto;
 }
 
 /* ---------------- Equalizer ---------------- */

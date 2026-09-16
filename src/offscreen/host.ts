@@ -34,6 +34,39 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, reply) => {
       player.pause();
       reply(player.state());
       return false;
+    // ---- Queue control ----
+    case 'P_SHUFFLE': {
+      player.setShuffle((m as Extract<PlayerCommand, { t: 'P_SHUFFLE' }>).on);
+      reply(player.state());
+      return false;
+    }
+    case 'P_REPEAT': {
+      player.setRepeat((m as Extract<PlayerCommand, { t: 'P_REPEAT' }>).mode);
+      reply(player.state());
+      return false;
+    }
+    case 'P_INSERT': {
+      const c = m as Extract<PlayerCommand, { t: 'P_INSERT' }>;
+      player.insert(c.tracks, c.next ?? false);
+      reply(player.state());
+      return false;
+    }
+    case 'P_REMOVE': {
+      player.remove((m as Extract<PlayerCommand, { t: 'P_REMOVE' }>).index);
+      reply(player.state());
+      return false;
+    }
+    case 'P_MOVE': {
+      const c = m as Extract<PlayerCommand, { t: 'P_MOVE' }>;
+      player.move(c.from, c.to);
+      reply(player.state());
+      return false;
+    }
+    case 'P_JUMP': {
+      const c = m as Extract<PlayerCommand, { t: 'P_JUMP' }>;
+      void player.jump(c.index).then(() => reply(player.state()));
+      return true;
+    }
     case 'P_NEXT':
       void player.next().then(() => reply(player.state()));
       return true;

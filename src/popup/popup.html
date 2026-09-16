@@ -27,6 +27,9 @@
         <g id="i-eq"><path d="M6 19V9M12 19V5M18 19v-6"/><circle cx="6" cy="7" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="3" r="1.6" fill="currentColor" stroke="none"/><circle cx="18" cy="11" r="1.6" fill="currentColor" stroke="none"/></g>
         <g id="i-volume"><path d="M5 9.5h3L12 6v12l-4-3.5H5z"/><path d="M15.5 9.5a3.5 3.5 0 0 1 0 5"/><path d="M18 7a7 7 0 0 1 0 10"/></g>
         <g id="i-check"><path d="m5 12.5 4.5 4.5L19 7"/></g>
+        <g id="i-shuffle"><path d="M4 6h3.5l8 12H20M4 18h3.5l2.2-3.3M14 6h6M17.5 3.5 20 6l-2.5 2.5M17.5 15.5 20 18l-2.5 2.5"/></g>
+        <g id="i-repeat"><path d="M5 9a5 5 0 0 1 5-5h9M17 2.5 19.5 5 17 7.5M19 15a5 5 0 0 1-5 5H5M7 21.5 4.5 19 7 16.5"/></g>
+        <g id="i-grip"><path d="M9 6h.01M9 12h.01M9 18h.01M15 6h.01M15 12h.01M15 18h.01"/></g>
       </defs>
     </svg>
 
@@ -254,6 +257,21 @@
         </section>
       </main>
 
+      <div id="queuePanel" class="q-overlay" hidden>
+        <div class="q-head">
+          <span>Очередь</span>
+          <div class="q-head-actions">
+            <button id="qShuffle" class="icon" title="Перемешать"
+              ><svg class="ic"><use href="#i-shuffle"/></svg></button>
+            <button id="qRepeat" class="icon" title="Повтор"
+              ><svg class="ic"><use href="#i-repeat"/></svg><span id="qRepeatOne" class="q-one" hidden>1</span></button>
+            <button id="qClose" class="icon" title="Закрыть"><svg class="ic"><use href="#i-cross"/></svg></button>
+          </div>
+        </div>
+        <div id="qEmpty" class="meta" hidden>Очередь пуста. Включи трек — и он появится здесь.</div>
+        <ul id="qItems" class="q-list"></ul>
+      </div>
+
       <div id="eqPanel" class="eq-overlay" hidden>
         <div class="eq-head">
           <span>Эквалайзер</span>
@@ -301,6 +319,7 @@
         <div class="p-right">
           <button id="pLike" class="icon" title="Нравится"><svg class="ic"><use href="#i-heart" /></svg></button>
           <button id="pDislike" class="icon" title="Не нравится"><svg class="ic"><use href="#i-cross" /></svg></button>
+          <button id="pQueue" class="icon" title="Очередь"><svg class="ic"><use href="#i-grip" /></svg></button>
           <button id="pEq" class="icon" title="Эквалайзер"><svg class="ic"><use href="#i-eq" /></svg></button>
           <svg class="ic small"><use href="#i-volume" /></svg>
           <input id="pVolume" type="range" min="0" max="100" value="100" />

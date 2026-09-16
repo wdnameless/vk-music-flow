@@ -774,11 +774,55 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
       // playlist, search) gets the same behaviour without repeating the check.
       const allowed = filterPlayable(m.tracks, R);
       const skipped = m.tracks.length - allowed.length;
+      // `key` names the row the user pressed play on. Starting there is what
+      // makes "play track 20" play the rest of the list, and it must be resolved
+      // against the FILTERED list, or an earlier blocked track would shift it.
+      let startIndex = m.startIndex ?? 0;
+      if (m.key) {
+        const at = allowed.findIndex((t) => t.key === m.key);
+        if (at >= 0) startIndex = at;
+      }
       const started = allowed.length
-        ? await sendToPlayer({ t: 'P_PLAY_QUEUE', tracks: allowed, startIndex: m.startIndex ?? 0 })
+        ? await sendToPlayer({ t: 'P_PLAY_QUEUE', tracks: allowed, startIndex })
         : null;
       if (started) rememberPlayerState(started as PlayerState);
       return { ok: started !== null, state: playerSnapshot(), skipped };
+    }
+    // ---- Queue control (popup -> offscreen) ----
+    case 'PLAY_SHUFFLE': {
+      const st = await sendToPlayer({ t: 'P_SHUFFLE', on: m.on });
+      if (st) rememberPlayerState(st as PlayerState);
+      persistPlayerQueue();
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_REPEAT': {
+      const st = await sendToPlayer({ t: 'P_REPEAT', mode: m.mode });
+      if (st) rememberPlayerState(st as PlayerState);
+      persistPlayerQueue();
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_INSERT': {
+      const st = await sendToPlayer({ t: 'P_INSERT', tracks: m.tracks, next: m.next });
+      if (st) rememberPlayerState(st as PlayerState);
+      persistPlayerQueue();
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_REMOVE': {
+      const st = await sendToPlayer({ t: 'P_REMOVE', index: m.index });
+      if (st) rememberPlayerState(st as PlayerState);
+      persistPlayerQueue();
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_MOVE': {
+      const st = await sendToPlayer({ t: 'P_MOVE', from: m.from, to: m.to });
+      if (st) rememberPlayerState(st as PlayerState);
+      persistPlayerQueue();
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_JUMP': {
+      const st = await sendToPlayer({ t: 'P_JUMP', index: m.index });
+      if (st) rememberPlayerState(st as PlayerState);
+      return { ok: true, state: playerSnapshot() };
     }
     case 'PLAY_TOGGLE': {
       // The offscreen document owns the authoritative playing flag; ask before
@@ -1379,6 +1423,48 @@ async function saveBlob(bytes: Uint8Array, fname: string): Promise<void> {
   await waitDone(id);
 }
 
+/** Resolve a fresh stream URL for a track, or null when it cannot be played. */
+async function resolveForPlayback(owner: string, id: string, key: string): Promise<string | null> {
+  const entry = S.audios[key];
+  try {
+    const outcome = await resolveTrackUrls({
+      key,
+      id,
+      owner,
+      artist: entry?.artist ?? '',
+      title: entry?.title ?? '',
+      album: entry?.album ?? '',
+      year: null,
+      duration: entry?.duration ?? null,
+      urls: entry?.urls ?? [],
+      covers: entry?.covers ?? [],
+      access_key: entry?.access_key,
+      restricted: entry?.restricted,
+    });
+    return outcome.urls[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The play queue, mirrored into settings so it survives the offscreen document
+ * being torn down (it is recreated whenever playback goes idle).
+ *
+ * Only identity and position are stored: the stream URLs are deliberately not
+ * persisted, because VK's links expire. A track restored from here needs a
+ * fresh resolve before it can play.
+ */
+function persistPlayerQueue(): void {
+  const st = playerSnapshot();
+  if (!st) return;
+  S.settings.playerQueue = st.queue.map((t) => ({ key: t.key, id: t.id, owner: t.owner, artist: t.artist, title: t.title, duration: t.duration, cover: t.cover }));
+  S.settings.playerQueueIndex = st.index;
+  S.settings.playerShuffle = st.shuffle;
+  S.settings.playerRepeat = st.repeat;
+  persist();
+}
+
 /** Reuse the one cold-start hydration for all four boot triggers below. */
 const boot = (): Promise<void> => (booted ??= load());
 
@@ -1460,6 +1546,29 @@ chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
         await sendToPlayer({ t: 'P_EQ_ENABLED', enabled: true });
         const gains = S.settings.playerEqGains;
         if (gains?.length) await sendToPlayer({ t: 'P_EQ_BANDS', gains });
+      }
+      // Restore the queue itself. The tracks are re-resolved first: the stored
+      // URLs would be expired, so only identity is persisted.
+      const saved = S.settings.playerQueue;
+      if (saved?.length) {
+        const restored: PlayerTrack[] = [];
+        for (const t of saved) {
+          const nativeId = t.key.includes(':') ? t.key.slice(t.key.indexOf(':') + 1) : t.key;
+          const [owner, id] = nativeId.split('_');
+          const url = await resolveForPlayback(owner ?? '', id ?? '', t.key);
+          if (url) restored.push({ ...t, url } as PlayerTrack);
+        }
+        if (restored.length) {
+          await sendToPlayer({
+            t: 'P_PLAY_QUEUE',
+            tracks: restored,
+            startIndex: Math.max(0, Math.min(S.settings.playerQueueIndex ?? 0, restored.length - 1)),
+          });
+          if (S.settings.playerShuffle) await sendToPlayer({ t: 'P_SHUFFLE', on: true });
+          if (S.settings.playerRepeat && S.settings.playerRepeat !== 'off') {
+            await sendToPlayer({ t: 'P_REPEAT', mode: S.settings.playerRepeat });
+          }
+        }
       }
     })();
     sendResponse({ ok: true });
