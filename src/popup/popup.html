@@ -313,9 +313,15 @@
 
         <div class="fx-body">
           <!-- Spectrum: the one visual the ear cannot verify for itself. -->
+          <!-- Two views of the same frames: bars for level, waterfall for the
+               shape of the recording over time. -->
           <div class="fx-spectrum">
-            <canvas id="fxCanvas" width="640" height="160"></canvas>
-            <div class="fx-spec-labels mono"><span>60</span><span>250</span><span>1k</span><span>4k</span><span>12k</span></div>
+            <canvas id="fxCanvas" width="640" height="176"></canvas>
+            <div class="fx-spec-labels mono"><span id="fxSpecL">60</span><span>250</span><span>1k</span><span>4k</span><span id="fxSpecR">16k</span></div>
+          </div>
+          <div class="row fx-spec-modes">
+            <button id="fxModeBars" class="chip active">Спектр</button>
+            <button id="fxModeFall" class="chip">Водопад</button>
           </div>
           <div id="fxReadout" class="fx-readout mono"></div>
 

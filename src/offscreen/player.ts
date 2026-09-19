@@ -49,10 +49,11 @@ const MEASURE_SECONDS = 8;
 /**
  * Frequency bands in the spectrum display.
  *
- * 48 is enough for a 360px panel to read as a curve rather than as bars, and
- * cheap enough to send twenty times a second.
+ * 64 resolves the bass region usefully, which is where a spectrogram earns its
+ * keep: a lossy encoder's cutoff and a clipped master both show up there first.
+ * The frames are cheap to send — 64 bytes per channel, twenty times a second.
  */
-const SPECTRUM_BANDS = 48;
+const SPECTRUM_BANDS = 64;
 
 /**
  * How many upcoming tracks to keep resolved.

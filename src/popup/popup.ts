@@ -881,12 +881,27 @@ $('fxReset').addEventListener('click', async () => {
    where the audio is and the popup only paints. */
 
 let spectrumFrame: { left: number[]; right: number[] } | null = null;
+/** Which of the two views the canvas is showing. */
+let spectrumMode: 'bars' | 'waterfall' = 'bars';
+/**
+ * Map a band index onto a canvas row, logarithmically.
+ *
+ * A linear axis would spend three quarters of the height on the top two octaves
+ * and squash the bass into a few pixels, which is the opposite of useful: an
+ * encoder's low-pass and a clipped kick drum both live down there.
+ */
+function bandToRow(band: number, bands: number, height: number): number {
+  const lowHz = 30;
+  const highHz = 16000;
+  const f = lowHz * Math.pow(highHz / lowHz, band / (bands - 1));
+  const t = Math.log(f / lowHz) / Math.log(highHz / lowHz);
+  // Row 0 is the top of the canvas, which reads as the highest frequency.
+  return Math.round((1 - t) * (height - 1));
+}
 
-function drawSpectrum(): void {
-  const canvas = document.getElementById('fxCanvas') as HTMLCanvasElement | null;
-  if (!canvas || !spectrumFrame) return;
+function drawBars(canvas: HTMLCanvasElement): void {
   const ctx = canvas.getContext('2d');
-  if (!ctx) return;
+  if (!ctx || !spectrumFrame) return;
   const { width: w, height: h } = canvas;
   ctx.clearRect(0, 0, w, h);
   const bands = spectrumFrame.left.length;
@@ -902,9 +917,77 @@ function drawSpectrum(): void {
     ctx.fillStyle = `rgba(244,244,245,${0.22 + r * 0.5})`;
     ctx.fillRect(i * barW, half, Math.max(1, barW - 1), r * half * 0.94);
   }
-  // Centre line: the reference the two halves are read against.
   ctx.fillStyle = 'rgba(255,255,255,0.10)';
   ctx.fillRect(0, h / 2 - 0.5, w, 1);
+}
+
+/**
+ * Scrolling spectrogram: time across, frequency up, brightness by level.
+ *
+ * The previous frame is copied one pixel to the left and the newest column is
+ * drawn at the right edge, so the canvas itself is the history. Keeping an array
+ * of frames and redrawing all of them every tick would be far more work for the
+ * same picture.
+ */
+/** The waterfall's pixel buffer, kept between frames so it can be scrolled. */
+let waterfallBuf: Uint8ClampedArray<ArrayBuffer> | null = null;
+/** Set once a column is drawn, so switching into the mode starts clean. */
+let waterfallPrimed = false;
+
+function drawWaterfall(canvas: HTMLCanvasElement): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx || !spectrumFrame) return;
+  const w = canvas.width;
+  const h = canvas.height;
+  const bands = spectrumFrame.left.length;
+
+  if (!waterfallBuf || waterfallBuf.length !== w * h * 4) {
+    waterfallBuf = new Uint8ClampedArray(w * h * 4);
+    waterfallPrimed = false;
+  }
+  if (!waterfallPrimed) {
+    waterfallBuf.fill(0);
+    waterfallPrimed = true;
+  } else {
+    // Scroll by one pixel with a native move rather than redrawing the history:
+    // a canvas drawn onto itself does not shift reliably, and rebuilding 450 KB
+    // of pixels every frame to do the same thing is far more work.
+    waterfallBuf.copyWithin(0, 4);
+  }
+
+  // Mono sum: a spectrogram is about the recording's frequency content, and two
+  // interleaved waterfalls would halve the resolution of each.
+  const x = w - 1;
+  for (let b = 0; b < bands; b++) {
+    const v = Math.min(1, ((spectrumFrame.left[b] ?? 0) + (spectrumFrame.right[b] ?? 0)) / 2);
+    // A gentle gamma: linear alpha makes everything but the loudest content
+    // invisible, and the quiet detail is what a spectrogram is read for.
+    const alpha = Math.round(Math.pow(v, 0.6) * 255);
+    // Each band owns every row up to the next boundary. Mapping a band to a
+    // single row would leave the canvas striped rather than filled.
+    const from = bandToRow(b, bands, h);
+    const to = b < bands - 1 ? bandToRow(b + 1, bands, h) : h - 1;
+    const top = Math.min(from, to);
+    const bottom = Math.max(from, to);
+    for (let y = top; y <= bottom; y++) {
+      const i = (y * w + x) * 4;
+      waterfallBuf[i] = 244;
+      waterfallBuf[i + 1] = 244;
+      waterfallBuf[i + 2] = 245;
+      waterfallBuf[i + 3] = alpha;
+    }
+  }
+  ctx.putImageData(new ImageData(waterfallBuf, w, h), 0, 0);
+}
+
+function drawSpectrum(): void {
+  const canvas = document.getElementById('fxCanvas') as HTMLCanvasElement | null;
+  if (!canvas || !spectrumFrame) return;
+  if (spectrumMode === 'waterfall') drawWaterfall(canvas);
+  else {
+    canvas.dataset.mode = 'bars';
+    drawBars(canvas);
+  }
 }
 
 function renderReadout(): void {
@@ -929,6 +1012,22 @@ function renderReadout(): void {
   if (p.normGainDb) parts.push(`коррекция ${p.normGainDb > 0 ? '+' : ''}${p.normGainDb.toFixed(1)} дБ`);
   el.textContent = parts.length ? parts.join('  ·  ') : 'Трек ещё не измерен — слушаю…';
 }
+
+$('fxModeBars').addEventListener('click', () => {
+  spectrumMode = 'bars';
+  waterfallPrimed = false;
+  $('fxModeBars').classList.add('active');
+  $('fxModeFall').classList.remove('active');
+  const c = document.getElementById('fxCanvas') as HTMLCanvasElement | null;
+  if (c) c.dataset.mode = 'bars';
+  drawSpectrum();
+});
+$('fxModeFall').addEventListener('click', () => {
+  spectrumMode = 'waterfall';
+  $('fxModeFall').classList.add('active');
+  $('fxModeBars').classList.remove('active');
+  drawSpectrum();
+});
 
 /* ---------------- Queue panel ---------------- */
 

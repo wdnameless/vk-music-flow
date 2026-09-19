@@ -1618,7 +1618,19 @@ button.icon.on {
 .fx-spectrum canvas {
   display: block;
   width: 100%;
-  height: 80px;
+  height: 96px;
+  /* The waterfall writes every pixel itself, so smoothing would blur the one
+     pixel per frame it depends on. */
+  image-rendering: pixelated;
+}
+
+.fx-spec-modes {
+  margin: -6px 0 10px;
+}
+
+.fx-spec-modes button {
+  font-size: 11px;
+  padding: 4px 11px;
 }
 
 .fx-spec-labels {
