@@ -178,7 +178,7 @@ export async function readApplied(): Promise<ProxyAppliedState> {
 /* ------------------------------------------------------------------ */
 
 type AuthDetails = { isProxy: boolean; host: string; port: number; challenger?: { host?: string } };
-type AuthCallback = (creds?: { username: string; password: string }) => void;
+type AuthCallback = (result?: { authCredentials?: { username: string; password: string }; cancel?: boolean }) => void;
 
 /**
  * Answer proxy auth challenges from the configured entries.
@@ -204,7 +204,10 @@ export function installProxyAuth(getSettings: () => ProxySettings): () => void {
       s.entries.find((e) => e.enabled && e.host === details.host && e.port === details.port) ??
       pickActiveEntry(s);
     if (!entry?.username) return cb();
-    cb({ username: entry.username, password: entry.password ?? '' });
+    // The credentials must be nested under `authCredentials`: handing the
+    // browser a bare `{username, password}` makes it reject the response with
+    // "webRequestInternal.eventHandled", and every proxied request then fails.
+    cb({ authCredentials: { username: entry.username, password: entry.password ?? '' } });
   };
   api.addListener(handler, { urls: ['<all_urls>'] }, ['asyncBlocking']);
   return () => api.removeListener(handler);

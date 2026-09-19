@@ -1,15 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'vitest';
 
-import {
-  buildPacScript,
-  normalizeProxySettings,
-  pacProxyToken,
-  pickActiveEntry,
-} from '../src/lib/proxy.js';
+import { buildPacScript, installProxyAuth, normalizeProxySettings, pacProxyToken, pickActiveEntry } from '../src/lib/proxy.js';
+import { toDnrRules } from '../src/lib/dnr.js';
 import { DEFAULT_PROXY_SETTINGS, VK_PROXY_HOSTS, type ProxyEntry, type ProxySettings } from '../src/types.js';
 
-// Wave 1 unit tests: pure proxy config logic (no chrome.* involved).
+// Wave 1 unit tests: proxy config logic, plus the contracts it hands to chrome.*.
 
 const entry = (over: Partial<ProxyEntry> = {}): ProxyEntry => ({
   id: 'p1',
@@ -157,5 +153,74 @@ describe('proxy: нормализация сохранённых настрое�
     assert.equal(normalizeProxySettings({ entries: [{ host: 'h', port: 0 }] }).entries.length, 0);
     assert.equal(normalizeProxySettings({ entries: [{ host: 'h', port: 70000 }] }).entries.length, 0);
     assert.equal(normalizeProxySettings({ entries: [{ host: 'h', port: 65535 }] }).entries.length, 1);
+  });
+});
+
+
+describe('proxy: ответ на запрос авторизации', () => {
+  /** Capture the listener the module registers with chrome.webRequest. */
+  const capture = (getSettings: () => ProxySettings) => {
+    type Handler = (d: unknown, cb: (r?: unknown) => void) => void;
+    let handler: Handler | null = null;
+    const original = (globalThis as { chrome?: unknown }).chrome;
+    (globalThis as { chrome?: unknown }).chrome = {
+      webRequest: {
+        onAuthRequired: {
+          addListener: (h: Handler) => {
+            handler = h;
+          },
+          removeListener: () => undefined,
+        },
+      },
+    };
+    installProxyAuth(getSettings);
+    (globalThis as { chrome?: unknown }).chrome = original;
+    assert.ok(handler, 'обработчик должен регистрироваться');
+    return handler as Handler;
+  };
+
+  const asked = (handler: (d: unknown, cb: (r?: unknown) => void) => void, details: unknown) => {
+    let seen: unknown;
+    handler(details, (r) => {
+      seen = r;
+    });
+    return seen;
+  };
+
+  it('отдаёт пароль вложенным в authCredentials', () => {
+    // Chrome rejects the whole response unless the pair sits under
+    // authCredentials, and every proxied request then fails with no clue why.
+    const handler = capture(() => settings({ entries: [entry({ username: 'u', password: 'p' })] }));
+    assert.deepEqual(asked(handler, { isProxy: true, host: '10.0.0.1', port: 1080 }), {
+      authCredentials: { username: 'u', password: 'p' },
+    });
+  });
+
+  it('молчит, когда челлендж не от прокси', () => {
+    const handler = capture(() => settings({ entries: [entry({ username: 'u', password: 'p' })] }));
+    assert.equal(asked(handler, { isProxy: false, host: '10.0.0.1', port: 1080 }), undefined);
+  });
+
+  it('молчит, когда у записи нет логина', () => {
+    const handler = capture(() => settings({ entries: [entry()] }));
+    assert.equal(asked(handler, { isProxy: true, host: '10.0.0.1', port: 1080 }), undefined);
+  });
+});
+
+describe('dnr: перенос ссылок vk.com на vk.ru', () => {
+  it('сохраняет поддомен при редиректе', () => {
+    type Rule = { id: number; action: { redirect?: { regexSubstitution?: string } }; condition: { regexFilter?: string } };
+    const rule = (toDnrRules('someextensionid') as Rule[]).find((r) => r.id === 7);
+    assert.ok(rule, 'правило 7 должно устанавливаться');
+    const re = new RegExp(rule.condition.regexFilter!);
+    // Chrome writes backreferences as \1; String.replace wants $1.
+    const sub = rule.action.redirect!.regexSubstitution!.replace(/\\(\d)/g, '$$$1');
+    const rewrite = (u: string) => u.replace(re, sub);
+    // The API client lives on api.vk.ru, so collapsing the subdomain turns every
+    // API call into a request to the wrong host.
+    assert.equal(rewrite('https://api.vk.com/method/users.get?v=5.199'), 'https://api.vk.ru/method/users.get?v=5.199');
+    assert.equal(rewrite('https://login.vk.com/?act=login'), 'https://login.vk.ru/?act=login');
+    assert.equal(rewrite('https://vk.com/feed'), 'https://vk.ru/feed');
+    assert.equal(rewrite('https://notvk.com/x'), 'https://notvk.com/x');
   });
 });

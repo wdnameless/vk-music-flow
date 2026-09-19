@@ -50,8 +50,12 @@ export function headerRules(): HeaderRule[] {
     },
     // 5: drop framing guards so extension pages may embed VK documents.
     { id: 5, urlFilter: '*', headers: [], ownOriginOnly: true },
-    // 7: VK moved to .ru; keep legacy links working.
-    { id: 7, urlFilter: 'vk.com', headers: [], ownOriginOnly: true },
+    // 7: VK moved to .ru; keep legacy links working. The redirect has to carry
+    // the subdomain across (`api.vk.com` -> `api.vk.ru`), which a host transform
+    // cannot do — it replaces the whole hostname and collapses every subdomain
+    // onto the bare domain, so `api.vk.com/x` became `vk.ru/x`. Only the rule
+    // ids and filters live here; the rewrite itself is built in `toDnrRules`.
+    { id: 7, urlFilter: '^https://([a-z0-9-]+\\.)?vk\\.com(/.*)?$', headers: [], ownOriginOnly: true },
   ];
 }
 
@@ -63,8 +67,8 @@ export function toDnrRules(host = selfHost()): unknown[] {
       rules.push({
         id: r.id,
         priority: 1,
-        action: { type: 'redirect', redirect: { transform: { host: 'vk.ru' } } },
-        condition: { urlFilter: r.urlFilter, initiatorDomains: [host] },
+        action: { type: 'redirect', redirect: { regexSubstitution: 'https://\\1vk.ru\\2' } },
+        condition: { regexFilter: r.urlFilter, initiatorDomains: [host] },
       });
       continue;
     }
