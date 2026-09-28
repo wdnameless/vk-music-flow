@@ -1,0 +1,24 @@
+worktree D:/WORK/VK MUSIC FLOW
+HEAD 75567901a8b94507704d365a78523b1477762e81
+branch refs/heads/feat/gap-plan-merge
+
+worktree D:/WORK/VK MUSIC FLOW/.worktrees/s1
+HEAD 8f1ac111487c313fef0c45a3aa17633c4699bf75
+branch refs/heads/feat/s1-ui-honesty
+
+worktree D:/WORK/VK MUSIC FLOW/.worktrees/s2
+HEAD 826f9ddf8efd45317869cdc478c41c53fdfaa826
+branch refs/heads/feat/s2-queue
+
+worktree D:/WORK/VK MUSIC FLOW/.worktrees/s3
+HEAD 8acf46ce6e7468a7f177fb529aa9018edefe9fb8
+detached
+
+worktree D:/WORK/VK MUSIC FLOW/.worktrees/s4
+HEAD 5d3919a1516fdb72156855ede01fe026e25dff44
+branch refs/heads/feat/s4-player
+
+worktree D:/WORK/VK MUSIC FLOW/.worktrees/s5
+HEAD 1842362c591e47d4e89dde9c4cfb02a03d734679
+detached
+
