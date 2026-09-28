@@ -629,7 +629,8 @@ export class Player {
   /** Remove one entry; the track that is playing keeps playing. */
   remove(index: number): void {
     if (index < 0 || index >= this.queue.length) return;
-    const wasCurrent = index === this.currentQueueIndex();
+    const cur = this.currentQueueIndex();
+    const wasCurrent = index === cur;
     this.queue.splice(index, 1);
     this.order = removeFromOrder(this.order, index);
     if (wasCurrent) {
@@ -641,8 +642,9 @@ export class Player {
         this.el().removeAttribute('src');
       }
     } else {
-      const cur = this.order.indexOf(this.currentQueueIndex());
-      this.pos = cur >= 0 ? cur : Math.min(this.pos, this.order.length - 1);
+      const target = cur > index ? cur - 1 : cur;
+      const at = this.order.indexOf(target);
+      this.pos = at >= 0 ? at : Math.min(this.pos, this.order.length - 1);
     }
     this.emit();
   }
