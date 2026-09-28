@@ -27,6 +27,8 @@ export interface ScrobbleOutcome {
   accepted?: number;
   ignored?: number;
   error?: string;
+  code?: number;
+  rest?: ScrobbleQueueItem[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -272,8 +274,9 @@ export async function scrobbleBatch(
   items: ScrobbleQueueItem[],
   creds: Pick<LastfmAuth, 'apiKey' | 'secret' | 'sessionKey'>,
 ): Promise<ScrobbleOutcome> {
-  if (!items.length) return { ok: true, accepted: 0, ignored: 0 };
+  if (!items.length) return { ok: true, accepted: 0, ignored: 0, rest: [] };
   const batch = items.slice(0, 50);
+  const rest = items.slice(50);
   const params: Record<string, string> = {};
   batch.forEach((it, i) => {
     params[`artist[${i}]`] = it.artist;
@@ -284,15 +287,48 @@ export async function scrobbleBatch(
   const r = await lastfmCall<{
     scrobbles?: { '@attr'?: { accepted?: number; ignored?: number } };
   }>('track.scrobble', params, creds);
-  if (!r.ok) return { ok: false, error: r.error };
+  if (!r.ok) return { ok: false, error: r.error, code: r.code, rest: [...items] };
   const attr = r.data?.scrobbles?.['@attr'];
-  return { ok: true, accepted: Number(attr?.accepted ?? batch.length), ignored: Number(attr?.ignored ?? 0) };
+  return {
+    ok: true,
+    accepted: Number(attr?.accepted ?? batch.length),
+    ignored: Number(attr?.ignored ?? 0),
+    rest,
+  };
+}
+
+/**
+ * Flush scrobbles from an in-memory queue in batches of up to 50.
+ * Requeues any unprocessed remainder (rest) back into the queue array.
+ */
+export async function flushScrobbles(
+  queue: ScrobbleQueueItem[],
+  creds: Pick<LastfmAuth, 'apiKey' | 'secret' | 'sessionKey'>,
+): Promise<{ ok: boolean; sent: number; pending: number; error?: string; code?: number }> {
+  let sent = 0;
+  while (queue.length > 0) {
+    const r = await scrobbleBatch(queue, creds);
+    if (!r.ok) {
+      if (r.rest) {
+        queue.splice(0, queue.length, ...r.rest);
+      }
+      return { ok: false, sent, pending: queue.length, error: r.error, code: r.code };
+    }
+    const processed = queue.length - (r.rest?.length ?? 0);
+    sent += r.accepted ?? processed;
+    const rest = r.rest ?? [];
+    queue.splice(0, queue.length, ...rest);
+    if (processed <= 0 || !rest.length) {
+      break;
+    }
+  }
+  return { ok: true, sent, pending: queue.length };
 }
 
 /** True when a Last.fm failure means the stored session key is dead. */
 export function isSessionInvalid(code: number | undefined): boolean {
-  // 9 = invalid session key, 11 = service offline for the session, 16 = temporary error.
-  return code === 9 || code === 16;
+  // 9 = invalid session key. Code 11 (service offline) and 16 (temporary error) are transient.
+  return code === 9;
 }
 
 /** Sanitize stored Last.fm credentials. */

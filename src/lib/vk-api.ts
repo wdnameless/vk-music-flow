@@ -26,11 +26,22 @@ import { VK_API_VERSION, clearToken, getToken } from './vk-auth.js';
 
 const API_BASE = 'https://api.vk.ru/method';
 const REQUEST_TIMEOUT_MS = 20000;
+export type VkRecoverable = 5 | 14 | 17;
 /** VK: 5 = auth failed / invalid token. */
-const ERR_AUTH = 5;
+const ERR_AUTH: VkRecoverable = 5;
+const ERR_CAPTCHA: VkRecoverable = 14;
+const ERR_VALIDATION: VkRecoverable = 17;
 const ERR_TOO_MANY = 6;
 const ERR_FLOOD = 9;
 const MAX_RETRIES = 3;
+
+export interface VkCallResponse<T> extends VkApiResponse<T> {
+  needsCaptcha?: boolean;
+  needsValidation?: boolean;
+  captchaSid?: string;
+  captchaImg?: string;
+  redirectUri?: string;
+}
 
 /** Hosts the API talks to; used to keep API traffic on the selected proxy. */
 export const VK_API_HOSTS: readonly string[] = ['api.vk.ru', 'web.api.vk.ru'];
@@ -54,7 +65,7 @@ export async function vkCall<T>(
   method: string,
   params: Record<string, string | number | undefined> = {},
   opts: { token?: VkToken | null; retries?: number } = {},
-): Promise<VkApiResponse<T>> {
+): Promise<VkCallResponse<T>> {
   let token = opts.token ?? (await getToken());
   if (!token) {
     return {
@@ -62,10 +73,14 @@ export async function vkCall<T>(
       data: null,
       error: { error_msg: 'not signed in to VK' },
       authFailure: true,
+      needsCaptcha: false,
+      needsValidation: false,
     };
   }
 
-  const max = opts.retries ?? MAX_RETRIES;
+  let remintCount = 0;
+  let max = opts.retries ?? MAX_RETRIES;
+
   for (let attempt = 0; attempt <= max; attempt++) {
     const body = new URLSearchParams({ access_token: token.access_token, v: VK_API_VERSION });
     for (const [k, v] of Object.entries(params)) {
@@ -88,7 +103,14 @@ export async function vkCall<T>(
           await sleep(500 * (attempt + 1));
           continue;
         }
-        return { ok: false, data: null, error: { error_msg: `HTTP ${r.status}` }, authFailure: false };
+        return {
+          ok: false,
+          data: null,
+          error: { error_msg: `HTTP ${r.status}` },
+          authFailure: false,
+          needsCaptcha: false,
+          needsValidation: false,
+        };
       }
       json = (await r.json()) as { response?: T; error?: Record<string, unknown> };
     } catch (e) {
@@ -97,7 +119,14 @@ export async function vkCall<T>(
         await sleep(500 * (attempt + 1));
         continue;
       }
-      return { ok: false, data: null, error: { error_msg: /abort/i.test(msg) ? 'timeout' : msg }, authFailure: false };
+      return {
+        ok: false,
+        data: null,
+        error: { error_msg: /abort/i.test(msg) ? 'timeout' : msg },
+        authFailure: false,
+        needsCaptcha: false,
+        needsValidation: false,
+      };
     } finally {
       clearTimeout(timer);
     }
@@ -105,8 +134,10 @@ export async function vkCall<T>(
     if (json.error) {
       const code = errorCode(json.error);
       if (code === ERR_AUTH) {
-        // Mint once more, then give up — otherwise a bad session loops forever.
-        if (attempt === 0) {
+        // Mint once more on any attempt, then give up — otherwise a bad session loops forever.
+        if (remintCount < 1) {
+          remintCount++;
+          max++;
           await clearToken();
           const fresh = await getToken(true);
           if (fresh) {
@@ -114,17 +145,68 @@ export async function vkCall<T>(
             continue;
           }
         }
-        return { ok: false, data: null, error: json.error, authFailure: true };
+        return {
+          ok: false,
+          data: null,
+          error: json.error,
+          authFailure: true,
+          needsCaptcha: false,
+          needsValidation: false,
+        };
+      }
+      if (code === ERR_CAPTCHA) {
+        return {
+          ok: false,
+          data: null,
+          error: json.error,
+          authFailure: false,
+          needsCaptcha: true,
+          needsValidation: false,
+          captchaSid: json.error.captcha_sid != null ? String(json.error.captcha_sid) : undefined,
+          captchaImg: json.error.captcha_img != null ? String(json.error.captcha_img) : undefined,
+        };
+      }
+      if (code === ERR_VALIDATION) {
+        return {
+          ok: false,
+          data: null,
+          error: json.error,
+          authFailure: false,
+          needsCaptcha: false,
+          needsValidation: true,
+          redirectUri: json.error.redirect_uri != null ? String(json.error.redirect_uri) : undefined,
+        };
       }
       if ((code === ERR_TOO_MANY || code === ERR_FLOOD) && attempt < max) {
         await sleep(1000 * (attempt + 1));
         continue;
       }
-      return { ok: false, data: null, error: json.error, authFailure: false };
+      return {
+        ok: false,
+        data: null,
+        error: json.error,
+        authFailure: false,
+        needsCaptcha: false,
+        needsValidation: false,
+      };
     }
-    return { ok: true, data: (json.response ?? null) as T, error: null, authFailure: false };
+    return {
+      ok: true,
+      data: (json.response ?? null) as T,
+      error: null,
+      authFailure: false,
+      needsCaptcha: false,
+      needsValidation: false,
+    };
   }
-  return { ok: false, data: null, error: { error_msg: 'retries exhausted' }, authFailure: false };
+  return {
+    ok: false,
+    data: null,
+    error: { error_msg: 'retries exhausted' },
+    authFailure: false,
+    needsCaptcha: false,
+    needsValidation: false,
+  };
 }
 
 /* ------------------------------------------------------------------ */

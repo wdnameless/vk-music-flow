@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'vitest';
 
-import { apiSignature, md5Hex, shouldScrobble } from '../src/lib/lastfm.js';
+import {
+  apiSignature,
+  flushScrobbles,
+  isSessionInvalid,
+  md5Hex,
+  scrobbleBatch,
+  shouldScrobble,
+} from '../src/lib/lastfm.js';
+import type { ScrobbleQueueItem } from '../src/types.js';
 
 // Last.fm client: MD5 (mandated by the signature scheme, absent from WebCrypto),
 // signature construction, and the scrobble threshold.
@@ -75,5 +83,91 @@ describe('lastfm: правило скробблинга', () => {
   it('без известной длительности достаточно 30 секунд', () => {
     assert.equal(shouldScrobble(30, null, true), true);
     assert.equal(shouldScrobble(29, null, true), false);
+  });
+});
+
+describe('lastfm: проверка инвалидности сессии (isSessionInvalid)', () => {
+  it('только код 9 считается мёртвой сессией, 11 и 16 — временные (R18)', () => {
+    assert.equal(isSessionInvalid(9), true, 'код 9 — инвалидная сессия');
+    assert.equal(isSessionInvalid(16), false, 'код 16 — временная ошибка, сессия жива');
+    assert.equal(isSessionInvalid(11), false, 'код 11 — сервис офлайн, сессия жива');
+    assert.equal(isSessionInvalid(undefined), false);
+    assert.equal(isSessionInvalid(4), false);
+  });
+});
+
+describe('lastfm: пакетный скробблинг и очередь (scrobbleBatch & flushScrobbles)', () => {
+  const creds = { apiKey: 'key', secret: 'sec', sessionKey: 'sk' };
+  const item = (i: number): ScrobbleQueueItem => ({
+    artist: 'Artist',
+    title: `Track ${i}`,
+    duration: 180,
+    startedAt: 1700000000000 + i * 1000,
+  });
+
+  it('scrobbleBatch возвращает необработанный хвост rest > 50 (R17)', async () => {
+    const items = Array.from({ length: 65 }, (_, i) => item(i));
+    const originalFetch = globalThis.fetch;
+    try {
+      let bodyText = '';
+      globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+        void input;
+        bodyText = String(init?.body ?? '');
+        return new Response(JSON.stringify({ scrobbles: { '@attr': { accepted: 50, ignored: 0 } } }), { status: 200 });
+      }) as typeof fetch;
+      const res = await scrobbleBatch(items, creds);
+      assert.equal(res.ok, true);
+      assert.equal(res.accepted, 50);
+      assert.ok(Array.isArray(res.rest), 'rest должен быть массивом');
+      assert.equal(res.rest?.length, 15, 'остаток должен содержать 15 треков');
+      assert.equal(res.rest?.[0]?.title, 'Track 50');
+      // body has artist[49] but not artist[50]
+      const p = new URLSearchParams(bodyText);
+      assert.ok(p.has('artist[49]'));
+      assert.equal(p.has('artist[50]'), false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('scrobbleBatch возвращает полный rest при ошибке отправки', async () => {
+    const items = Array.from({ length: 10 }, (_, i) => item(i));
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () =>
+        new Response(JSON.stringify({ error: 16, message: 'There was a temporary error' }), { status: 200 });
+      const res = await scrobbleBatch(items, creds);
+      assert.equal(res.ok, false);
+      assert.equal(res.code, 16);
+      assert.equal(res.rest?.length, 10);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('flushScrobbles отправляет все пачки и складывает rest обратно в очередь (R17)', async () => {
+    const queue = Array.from({ length: 120 }, (_, i) => item(i));
+    const originalFetch = globalThis.fetch;
+    let callCount = 0;
+    try {
+      globalThis.fetch = (async () => {
+        callCount++;
+        if (callCount <= 2) {
+          // First 2 batches (50 + 50) succeed
+          return new Response(JSON.stringify({ scrobbles: { '@attr': { accepted: 50, ignored: 0 } } }), { status: 200 });
+        }
+        // Third batch fails
+        return new Response(JSON.stringify({ error: 16, message: 'Temporary failure' }), { status: 200 });
+      }) as typeof fetch;
+
+      const res = await flushScrobbles(queue, creds);
+      assert.equal(res.ok, false);
+      assert.equal(res.sent, 100);
+      assert.equal(res.pending, 20);
+      assert.equal(queue.length, 20, 'в очереди должно остаться ровно 20 неотправленных элементов');
+      assert.equal(queue[0]?.title, 'Track 100');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

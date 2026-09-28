@@ -122,6 +122,77 @@ describe('vk-api: обёртка вызовов', () => {
     // one attempt + at most one re-mint attempt, never an infinite refresh loop
     assert.ok(calls <= 3, `ожидалось не более 3 запросов, было ${calls}`);
   });
+  it('код 5 на повторной попытке после сбоя сети перевыпускает токен (R11)', async () => {
+    installChrome({ store: {} });
+    let calls = 0;
+    let mintCalled = false;
+    vi.stubGlobal('fetch', async (url: string) => {
+      calls++;
+      if (String(url).includes('web_token') || String(url).includes('auth')) {
+        mintCalled = true;
+        return new Response(JSON.stringify({ type: 'okay', data: { access_token: 'fresh_tok', user_id: 42, expires: 9999999999 } }), { status: 200 });
+      }
+      if (calls === 1) {
+        // Attempt 0: network transport failure
+        return new Response('Gateway error', { status: 502 });
+      }
+      if (calls === 2) {
+        // Attempt 1: expired token code 5
+        return new Response(JSON.stringify({ error: { error_code: 5, error_msg: 'User authorization failed' } }), {
+          status: 200,
+        });
+      }
+      // Attempt 2: success with fresh token
+      return new Response(JSON.stringify({ response: { count: 1, items: [] } }), { status: 200 });
+    });
+    const r = await vkCall('audio.get', {}, { token, retries: 3 });
+    assert.equal(r.ok, true);
+    assert.equal(r.authFailure, false);
+    assert.equal(mintCalled, true, 'токен должен быть перевыпущен даже после транспортной ошибки');
+  });
+
+  it('код 14 возвращает явный флаг needsCaptcha (R12)', async () => {
+    installChrome({ store: {} });
+    vi.stubGlobal('fetch', async () =>
+      new Response(
+        JSON.stringify({
+          error: {
+            error_code: 14,
+            error_msg: 'Captcha needed',
+            captcha_sid: '98765',
+            captcha_img: 'https://api.vk.ru/captcha.php?sid=98765',
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+    const r = await vkCall('audio.get', {}, { token });
+    assert.equal(r.ok, false);
+    assert.equal(r.needsCaptcha, true);
+    assert.equal(r.captchaSid, '98765');
+    assert.equal(r.authFailure, false);
+  });
+
+  it('код 17 возвращает явный флаг needsValidation (R12)', async () => {
+    installChrome({ store: {} });
+    vi.stubGlobal('fetch', async () =>
+      new Response(
+        JSON.stringify({
+          error: {
+            error_code: 17,
+            error_msg: 'Validation required',
+            redirect_uri: 'https://m.vk.ru/login?act=security_check',
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+    const r = await vkCall('audio.get', {}, { token });
+    assert.equal(r.ok, false);
+    assert.equal(r.needsValidation, true);
+    assert.equal(r.redirectUri, 'https://m.vk.ru/login?act=security_check');
+    assert.equal(r.authFailure, false);
+  });
 
   it('без сессии не идёт в VK API (минтинг токена — отдельный запрос)', async () => {
     installChrome({ store: {} });
