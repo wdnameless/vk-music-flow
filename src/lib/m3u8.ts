@@ -20,11 +20,11 @@ export interface M3U8ParseResult {
   init: string | null;
 }
 
-const parseIv = (raw: string): Uint8Array | null => {
+export const parseIv = (raw: string): Uint8Array | null => {
   const hex = raw.replace(/^0[xX]/, '');
-  if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length % 2 !== 0) return null;
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length !== 32) return null;
+  const out = new Uint8Array(16);
+  for (let i = 0; i < 16; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   return out;
 };
 
@@ -33,10 +33,14 @@ const parseKeyLine = (line: string, abs: (u: string) => string): M3U8Key => {
   const uriRaw = /URI="([^"]+)"/.exec(line)?.[1];
   const ivRaw = /IV=([^,\s]+)/.exec(line)?.[1];
   if (method !== 'AES-128') return { method: method as M3U8KeyMethod, uri: null, iv: null };
+  const iv = ivRaw ? parseIv(ivRaw) : null;
+  if (ivRaw && !iv) {
+    throw new Error('Некорректный IV для AES-128: ожидается 16 байт (32 hex-символа)');
+  }
   return {
     method: 'AES-128',
     uri: uriRaw ? abs(uriRaw) : null,
-    iv: ivRaw ? parseIv(ivRaw) : null,
+    iv,
   };
 };
 

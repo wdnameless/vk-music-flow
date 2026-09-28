@@ -282,8 +282,9 @@ export class Player {
     this.activeSlot = incoming;
     this.pos = nextIdx;
     this.events.onEnded(next);
+    this.publishMediaSession(next);
+    this.syncMediaSessionState(!inEl.paused);
     this.emit();
-
     // The outgoing element is stopped only once it has actually ended, so its
     // last samples are heard rather than cut.
     const outEl = outgoing === 0 ? this.audio : this.audio2;
@@ -316,7 +317,7 @@ export class Player {
    * `all` wraps around; `off` stops at the edge and leaves the last track
    * showing rather than clearing it, which is what a user expects to see.
    */
-  private async advance(delta: number): Promise<void> {
+  private clearTimers(): void {
     if (this.crossfadeTimer) {
       clearTimeout(this.crossfadeTimer);
       this.crossfadeTimer = null;
@@ -325,8 +326,13 @@ export class Player {
       clearTimeout(this.gaplessTimer);
       this.gaplessTimer = null;
     }
+  }
+
+  private async advance(delta: number): Promise<void> {
+    this.clearTimers();
     const next = advancePos(this.pos, this.order.length, delta, this.repeat === 'all');
     if (next === null) {
+      this.syncMediaSessionState(false);
       this.emit();
       return;
     }
@@ -363,6 +369,7 @@ export class Player {
     this.loudnessKey = t.key;
     this.loudnessReported = false;
     this.clipReported = false;
+    this.block = null;
     this.meterClock = 0;
     this.lastSampleAt = this.ctx.currentTime;
     const el = this.el();
@@ -385,6 +392,7 @@ export class Player {
     // Published here rather than on a metadata event: the OS should show the
     // track as soon as it starts, not once the browser has parsed its header.
     this.publishMediaSession(t);
+    this.syncMediaSessionState(!el.paused);
     this.emit();
   }
 
@@ -563,6 +571,8 @@ export class Player {
     this.pos = nextIdx;
     this.graph.crossfade(outgoing, incoming, seconds);
     this.events.onEnded(nextTrack);
+    this.publishMediaSession(nextTrack);
+    this.syncMediaSessionState(!inEl.paused);
     this.emit();
 
     // Stop the outgoing element once the ramp is done, freeing it for the next
@@ -842,11 +852,18 @@ export class Player {
 
   /** Route audio to a specific output device. */
   async setOutputDevice(deviceId: string): Promise<void> {
-    const el = this.audio as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
-    if (typeof el.setSinkId !== 'function') return;
     try {
-      await el.setSinkId(deviceId);
-      this.outputDeviceId = deviceId;
+      const ctx = this.ctx as unknown as { setSinkId?: (id: string) => Promise<void> };
+      if (typeof ctx.setSinkId === 'function') {
+        await ctx.setSinkId(deviceId);
+        this.outputDeviceId = deviceId;
+      } else {
+        const a1 = this.audio as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
+        const a2 = this.audio2 as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
+        if (typeof a1.setSinkId === 'function') await a1.setSinkId(deviceId);
+        if (typeof a2.setSinkId === 'function') await a2.setSinkId(deviceId);
+        this.outputDeviceId = deviceId;
+      }
     } catch {
       /* the device may have been unplugged; keep the previous one */
     }
@@ -890,12 +907,7 @@ export class Player {
    */
   private sampleLoudness(): void {
     const cur = this.current();
-    if (!cur) return;
-    if (this.loudnessKey !== cur.key) {
-      this.loudnessKey = cur.key;
-      this.meter = createMeter();
-      this.meterClock = 0;
-    }
+    if (!cur || cur.key !== this.loudnessKey) return;
 
     // Every analyser read is folded into the current 400 ms block, so the block
     // is the mean square over a contiguous window rather than one snapshot.
@@ -954,7 +966,7 @@ export class Player {
   destroy(): void {
     this.stopLoudnessSampling();
     this.stopUrlRefresh();
-    if (this.crossfadeTimer) clearTimeout(this.crossfadeTimer);
+    this.clearTimers();
     this.audio.pause();
     this.audio.removeAttribute('src');
     this.audio2.pause();

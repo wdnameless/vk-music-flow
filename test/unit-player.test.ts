@@ -46,6 +46,58 @@ describe('player: эквалайзер', () => {
   });
 });
 
+describe('T4.5 R32: parseIv и валидация 16 байт', () => {
+  it('parseIv возвращает 16 байт для корректного 32-hex IV', async () => {
+    const { parseIv } = await import('../src/lib/m3u8.js');
+    const iv = parseIv('0x000102030405060708090a0b0c0d0e0f');
+    assert.ok(iv);
+    assert.equal(iv.length, 16);
+    assert.equal(iv[0], 0x00);
+    assert.equal(iv[15], 0x0f);
+  });
+
+  it('parseIv возвращает null при длине != 16 байт (32 hex)', async () => {
+    const { parseIv, parseM3U8 } = await import('../src/lib/m3u8.js');
+    assert.equal(parseIv('0x1234'), null);
+    assert.equal(parseIv('12345678'), null);
+    assert.throws(
+      () =>
+        parseM3U8(
+          '#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="k",IV=0x1234\n#EXTINF:5,\ns.ts\n',
+          'https://cdn.example/a/',
+        ),
+      /Некорректный IV для AES-128: ожидается 16 байт/,
+    );
+  });
+});
+
+
+describe('T4.5 R33: apicPayload распознаёт WebP', () => {
+  it('WebP с RIFF....WEBP получает mime image/webp', async () => {
+    const { apicPayload } = await import('../src/lib/id3.js');
+    // RIFF (4 bytes) + len (4 bytes) + WEBP (4 bytes) + payload
+    const webpBytes = new Uint8Array([
+      0x52, 0x49, 0x46, 0x46,
+      0x20, 0x00, 0x00, 0x00,
+      0x57, 0x45, 0x42, 0x50,
+      ...new Array(100).fill(0),
+    ]);
+    const payload = apicPayload(webpBytes);
+    const str = new TextDecoder('latin1').decode(payload);
+    assert.ok(str.includes('image/webp'), 'должен содержать image/webp');
+  });
+
+  it('PNG и JPEG сохраняют свои MIME', async () => {
+    const { apicPayload } = await import('../src/lib/id3.js');
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, ...new Array(50).fill(0)]);
+    const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, ...new Array(50).fill(0)]);
+    const pngPayload = new TextDecoder('latin1').decode(apicPayload(png));
+    const jpegPayload = new TextDecoder('latin1').decode(apicPayload(jpeg));
+    assert.ok(pngPayload.includes('image/png'));
+    assert.ok(jpegPayload.includes('image/jpeg'));
+  });
+});
+
 describe('player: удаление треков и подсветка при шафле (T2.1)', () => {
   class MockAudio {
     preload = '';
