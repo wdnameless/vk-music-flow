@@ -138,12 +138,14 @@ Chrome (всегда справа). Кнопки — внизу сайдбара
 
 ## Как это работает
 
-VK закрыл методы `audio.*` официального API для сторонних приложений, поэтому расширение работает через веб-интерфейс:
+Расширение комбинирует работу через VK API (с Origin-спуфингом через Declarative Net Request) и веб-интерфейс (хук сети и DOM-сборщик):
 
-- **Хук fetch/XHR** (MAIN world) — перехватывает ответы плеера и извлекает объекты аудио: ссылки, исполнитель, название, альбом, обложки, тексты
-- **DOM-fallback** — читает современные строки плеера (`[data-testid=MusicTrackRow]` → `MusicTrackRow_Info` с парой «название, исполнитель», внутри `[data-audio-id]`)
-- **Автоскролл** — прокручивает плейлист, пока не кончатся новые треки
-- **Service worker** — очередь загрузок (параллелизм + паузы между запросами), сборка и расшифровка HLS, инъекция ID3v2.4 тегов, запись через File System Access или `chrome.downloads`
+- **VK API через DNR** — авторизация, каталог, плейлисты, поиск, рекомендации и получение актуальных ссылок на треки (`audio.get`, `audio.getById`) без открытой вкладки
+- **Хук fetch/XHR** (MAIN world) — перехватывает ответы веб-плеера на страницах vk.com / vk.ru и извлекает метаданные: исполнитель, название, альбом, обложки, тексты песен, пропуская бинарные аудиопотоки
+- **DOM-fallback** — читает современные строки плеера (`[data-testid=MusicTrackRow]` по именованным селекторам названия и исполнителя, игнорируя бейджи и кнопки)
+- **Автоскролл** — прокручивает страницу плейлиста, пока не соберёт все треки
+- **Service worker** — очередь воспроизведения и персистентность, конвейер загрузок с параллелизмом и retry, сборка и расшифровка HLS (AES-128-CBC), запись ID3v2.4 тегов, сохранение через File System Access или `chrome.downloads`
+- **Offscreen document** — Web Audio плеер, нормализация громкости (−14 LUFS), эквалайзер, визуализация спектра и MediaSession
 
 ## Ограничения
 
@@ -151,7 +153,7 @@ VK закрыл методы `audio.*` официального API для ст�
 - **HLS-форматы**: VK отдаёт треки как HLS. Сегменты бывают ADTS (`.aac`, без ID3 — контейнер не поддерживает тег), MPEG-TS (`.ts`, тег пишется) и прямая ссылка (`.mp3` с тегами). Шифрованные плейлисты `#EXT-X-KEY:METHOD=AES-128` расшифровываются (AES-128-CBC, IV = номер сегмента).
 - **Тексты песен** вшиваются, только если они были подгружены во время скана/просмотра.
 - **Обложки** берутся из `thumb.photo_*` ответа плеера — они есть не у каждого трека.
-- **Ссылку на трек даёт только сетевой хук**, DOM её не содержит. Строки, найденные лишь через DOM, в очередь не ставятся: при нажатии «Скачать выбранное» попап сообщит, сколько треков пропущено. Чтобы получить ссылки, проскролль/проиграй плейлист, дав плееру запросить треки, и запусти скан снова.
+- **Ссылки на треки**: при наличии `access_key` загрузчик запрашивает свежий stream URL через API непосредственно перед скачиванием, а при его отсутствии использует захваченный сетевым хуком URL.
 - Ссылки VK имеют ограниченный срок жизни — скачивай вскоре после сканирования.
 - При больших плейлистах не закрывай вкладку во время сканирования.
 
@@ -162,52 +164,94 @@ VK закрыл методы `audio.*` официального API для ст�
 
 ## Платформы
 
-Всё платформо-зависимое скрыто за одним интерфейсом
-(`src/platforms/provider.ts`), поэтому попап и плеер не знают про VK:
+Всё платформо-зависимое скрыто за единым интерфейсом (`src/platforms/provider.ts`):
 
 ```
 src/platforms/
 ├── provider.ts   # контракт: Track, PlaylistRef, StreamRef, MusicProvider
-├── vk.ts         # реализация для ВК (единственная сегодня)
-└── registry.ts   # реестр + список платформ для выбора источника
+├── vk.ts         # реализация для ВК (единственная рабочая платформа)
+└── registry.ts   # реестр платформ
 ```
 
-`Track.key` глобально уникален (`<платформа>:<id>`), так что очередь и
-сохранённое состояние не зависят от формата идентификаторов одного сервиса, а
-`StreamRef` описывает поток, а не просто URL: Spotify отдаёт звук через свой SDK,
-а YouTube — отдельные дорожки со сроком жизни. Добавить платформу = реализовать
-интерфейс и один раз вызвать `register()`.
+- **ВКонтакте** (`vk.ts`) — полностью реализована и активна.
+- **Spotify** и **YouTube** — запланированы на будущее («позже»). В манифесте для них намеренно не запрашиваются host-permissions. В интерфейсе они честно помечены как неактивные до реализации соответствующих SDK и парсеров.
 
 ## Структура
 
 ```
-manifest.json             # MV3 манифест (подключается сборщиком)
+manifest.json              # MV3 манифест
 src/
-├── types.ts              # общие контракты: Track, AudioMeta, QueueItem, Settings, сообщения
-├── platforms/            # абстракция платформ (см. выше)
-├── background/sw.ts      # каталог, очередь, HLS-сборка, теги, загрузки
-├── content/hook-main.ts  # хук сети (MAIN world)
-├── content/collector.ts  # мост + автоскролл-сканер
-├── lib/id3.ts            # запись ID3v2.4
-├── lib/m3u8.ts           # парсер HLS-манифестов
-├── lib/util.ts           # sanitize, sniffExt, concat
-└── popup/                # UI расширения (TypeScript)
+├── types.ts               # общие контракты: Track, AudioMeta, QueueItem, Settings, сообщения
+├── background/
+│   └── sw.ts              # Service worker: каталог, очередь, загрузки, HLS, теги, persistence
+├── content/
+│   ├── collector.ts       # сборщик DOM по именованным селекторам + автоскролл
+│   └── hook-main.ts       # перехват fetch/XHR в MAIN world с пропуском бинарных тел
+├── lib/
+│   ├── backoff.ts         # вычисление задержек retry с экспоненциальным backoff и jitter
+│   ├── dnr.ts             # Declarative Net Request правила для Origin-спуфинга
+│   ├── id3.ts             # сборка и запись ID3v2.4 тегов (включая WebP/JPEG обложки)
+│   ├── integrations.ts    # фильтрация исполнителей и интеграции
+│   ├── journal.ts         # кодек и сериализация журнала загрузок
+│   ├── lastfm.ts          # Last.fm API, OAuth, batch-скробблинг и оффлайн-очередь
+│   ├── loudness.ts        # расчёт и нормализация громкости (-14 LUFS)
+│   ├── m3u8.ts            # парсер HLS плейлистов и IV
+│   ├── player-bridge.ts   # мост взаимодействия SW и offscreen плеера
+│   ├── proxy.ts           # менеджер прокси, PAC скрипты, 407 аутентификация
+│   ├── resolve.ts         # резолв stream URL через API и кэш
+│   ├── util.ts            # утилиты: sanitize, sniffExt, concatBytes
+│   ├── vk-api.ts          # клиент VK API (методы audio.*, retry, капча, валидация)
+│   ├── vk-auth.ts         # веб-токены и авторизация VK
+│   └── vk-track.ts        # нормализация треков VK в AudioMeta
+├── offscreen/
+│   ├── audio-graph.ts     # Web Audio API граф: эквалайзер, GainNode, AnalyserNode
+│   ├── host.ts            # жизненный цикл offscreen документа
+│   ├── offscreen.html     # страница offscreen плеера
+│   ├── player.ts          # аудиоплеер, кроссфейд, выбор устройства, mediaSession
+│   └── queue-order.ts     # модель порядка воспроизведения (shuffle, repeat, slots)
+├── platforms/
+│   ├── provider.ts        # контракты провайдеров (Track, StreamRef, MusicProvider)
+│   ├── registry.ts        # реестр поддерживаемых платформ
+│   └── vk.ts              # провайдер ВКонтакте
+├── popup/
+│   ├── popup.css          # стили нуарного монохромного интерфейса
+│   ├── popup.html         # разметка окна плеера
+│   └── popup.ts           # логика UI, вкладки, списки, плеер, водопад
+└── storage/
+    ├── fs.ts              # запись на диск через File System Access API
+    └── idb.ts             # персистентность в IndexedDB
 test/
-├── unit.test.ts          # тесты lib/* (Vitest)
-├── sw-harness.test.ts    # конвейер загрузок с моками chrome.* (Vitest)
-├── browser.test.ts       # hook/collector в реальном Chromium (Playwright)
-└── mock/                 # HTML-фикстуры для браузерных проверок
+├── browser.test.ts        # e2e тесты hook и collector в реальном Chromium
+├── mock-fs.ts             # моки IndexedDB и FileSystemHandle
+├── sw-harness.test.ts     # тесты конвейера загрузок с моками chrome.*
+├── sw-queue.test.ts       # тесты очереди SW
+├── unit-collector.test.ts # регрессионные тесты сборщика и перехватчика (T5.1)
+├── unit-integrations.test.ts # тесты интеграций и фильтров
+├── unit-lastfm.test.ts    # тесты Last.fm клиента и скробблера
+├── unit-loudness.test.ts  # тесты алгоритма громкости
+├── unit-phase1.test.ts    # тесты фазы 1 (journal, backoff, fs)
+├── unit-player.test.ts    # тесты эквалайзера и плеера
+├── unit-proxy-parse.test.ts # тесты парсинга настроек прокси
+├── unit-proxy.test.ts     # тесты сетевого прокси
+├── unit-queue-order.test.ts # тесты порядка очереди и шафла
+├── unit-resolve.test.ts   # тесты резолвера ссылок
+├── unit-vk.test.ts        # тесты VK API и нормализации треков
+├── unit.test.ts           # базовые юнит-тесты утилит и ID3
+└── mock/
+    ├── collector.html     # фикстура для тестов DOM сборщика
+    └── hook.html          # фикстура для сетевого хука
 ```
 
 ## Разработка
 
 ```
-npm run dev        # Vite + crxjs (HMR для распакованного dist/)
-npm run build      # сборка расширяемого dist/
-npm run typecheck  # tsc --noEmit (strict)
-npm run lint       # ESLint (flat config)
-npm run format     # Prettier
-npm test           # Vitest: unit + sw-конвейер + браузерные проверки
+npm run dev          # Vite + crxjs (HMR для распакованного dist/)
+npm run build        # сборка расширяемого dist/
+npm run typecheck    # tsc --noEmit (strict)
+npm run lint         # ESLint (flat config)
+npm run format       # Prettier (форматирование)
+npm run format:check # Prettier (проверка форматирования в CI)
+npm test             # Vitest: unit + sw-конвейер + браузерные проверки
 ```
 
 Для браузерных тестов используется локальный Chromium (переменная `VMF_CHROMIUM_EXE`

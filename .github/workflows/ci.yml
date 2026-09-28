@@ -43,6 +43,9 @@ jobs:
           echo "VMF_CHROMIUM_EXE=$CHROME" >> "$GITHUB_ENV"
           echo "provisioned chromium: $CHROME"
 
+      - name: Format check
+        run: npm run format:check
+
       - name: Typecheck
         run: npm run typecheck
 

@@ -13,7 +13,180 @@ declare global {
   }
 }
 
+export interface DomAudioRaw {
+  id?: unknown;
+  artist?: unknown;
+  title?: unknown;
+  urls?: unknown;
+  url?: unknown;
+  duration?: unknown;
+  cover_url?: unknown;
+  access_key?: unknown;
+  content_restricted?: unknown;
+  restricted?: unknown;
+}
+
+export function domNormalize(d: DomAudioRaw): AudioMeta | null {
+  const idRaw = String(d.id ?? '');
+  const m = idRaw.match(/^(-?\d+)_(\d+)/);
+  const artist = String(d.artist || '').trim();
+  const title = String(d.title || '').trim();
+  if (!m || !artist || !title) return null;
+  const owner = m[1]!;
+  const id = m[2]!;
+  const urls = Array.isArray(d.urls)
+    ? (d.urls as string[]).filter((u) => /^https?:\/\//.test(u))
+    : typeof d.url === 'string' && /^https?:\/\//.test(d.url)
+      ? [d.url]
+      : [];
+  const accessKey = typeof d.access_key === 'string' ? d.access_key : undefined;
+  let restricted: number | undefined;
+  if (typeof d.content_restricted === 'number') restricted = d.content_restricted;
+  else if (typeof d.restricted === 'number') restricted = d.restricted;
+
+  return {
+    key: `${owner}_${id}`,
+    id,
+    owner,
+    artist,
+    title,
+    album: '',
+    year: null,
+    duration: (d.duration ?? null) as number | string | null,
+    urls,
+    covers: typeof d.cover_url === 'string' ? [d.cover_url] : [],
+    ...(accessKey ? { access_key: accessKey } : {}),
+    ...(restricted !== undefined ? { restricted } : {}),
+  };
+}
+
+export function isBadgeOrControl(el: Element): boolean {
+  const tag = (el.tagName || '').toLowerCase();
+  if (tag === 'button' || tag === 'svg') return true;
+  const role = el.getAttribute?.('role') || '';
+  if (role === 'button') return true;
+  const testId = el.getAttribute?.('data-testid') || '';
+  if (/badge|explicit|action|control|playback/i.test(testId)) return true;
+  const className = typeof el.className === 'string' ? el.className : '';
+  if (/badge|explicit/i.test(className)) return true;
+  const ariaLabel = el.getAttribute?.('aria-label') || '';
+  if (/explicit/i.test(ariaLabel)) return true;
+  return false;
+}
+
+export function cleanText(el: Element): string {
+  if (isBadgeOrControl(el)) return '';
+  if (typeof el.cloneNode === 'function') {
+    const clone = el.cloneNode(true) as Element;
+    if (typeof clone.querySelectorAll === 'function') {
+      clone
+        .querySelectorAll(
+          'button, svg, [role="button"], [data-testid*="Badge" i], [data-testid*="badge" i], [data-testid*="Explicit" i], [class*="badge" i], [class*="explicit" i], [aria-label*="explicit" i], .AudioTrackBadge, [data-testid*="Action" i], [data-testid*="Control" i]',
+        )
+        .forEach((b) => b.remove());
+    }
+    return (clone.textContent || '').trim();
+  }
+  return (el.textContent || '').trim();
+}
+
+/**
+ * Extracts AudioMeta from a single track row.
+ * Prefers named title/artist selectors, ignores badges/buttons, and falls back to
+ * clean text from MusicTrackRow_Info children.
+ */
+export function parseTrackRow(row: Element): AudioMeta | null {
+  const holder = row.closest?.('[data-audio-id]') ?? row.querySelector?.('[data-audio-id]');
+  const key = holder?.getAttribute('data-audio-id') ?? row.getAttribute?.('data-audio-id') ?? '';
+
+  // 1. Prefer named selectors for title and artist
+  const titleEl = row.querySelector?.(
+    '[data-testid="MusicTrackRow_Title"], [data-testid="MusicTrackTitle"], [data-testid*="Title" i], .audio_row__title, [class*="MusicTrackTitle" i], [class*="TrackRow__title" i]',
+  );
+  const artistEl = row.querySelector?.(
+    '[data-testid="MusicTrackRow_Artist"], [data-testid="MusicTrackRow_Author"], [data-testid="MusicTrackArtist"], [data-testid="MusicTrackAuthor"], [data-testid*="Artist" i], [data-testid*="Author" i], .audio_row__performers, .audio_row__artists, .audio_row__artist, [class*="MusicTrackAuthor" i], [class*="MusicTrackArtist" i], [class*="TrackRow__author" i], [class*="TrackRow__artist" i]',
+  );
+
+  let title = '';
+  let artist = '';
+
+  if (titleEl && artistEl && titleEl !== artistEl) {
+    title = cleanText(titleEl);
+    artist = cleanText(artistEl);
+  }
+
+  // 2. Fallback: examine children of MusicTrackRow_Info, ignoring badges and controls
+  if (!title || !artist) {
+    const info = row.querySelector?.('[data-testid="MusicTrackRow_Info"]');
+    if (!info) return null;
+    const nonBadgeChildren = [...info.children].filter((c) => !isBadgeOrControl(c));
+    const parts = nonBadgeChildren.map((c) => cleanText(c)).filter(Boolean);
+    if (parts.length < 2) return null;
+    title = parts[0]!;
+    artist = parts.slice(1).join(' ');
+  }
+
+  return domNormalize({ id: key, title, artist });
+}
+
+export function domRows(root?: ParentNode): AudioMeta[] {
+  const doc = root ?? (typeof document !== 'undefined' ? document : null);
+  if (!doc) return [];
+  const out: AudioMeta[] = [];
+  doc.querySelectorAll('[data-testid="MusicTrackRow"]').forEach((row) => {
+    const a = parseTrackRow(row);
+    if (a) out.push(a);
+  });
+  return out;
+}
+
+export function domAudios(root?: ParentNode): AudioMeta[] {
+  const doc = root ?? (typeof document !== 'undefined' ? document : undefined);
+  const out = domRows(doc);
+  doc?.querySelectorAll('[data-audio]').forEach((el) => {
+    try {
+      const a = domNormalize(JSON.parse(el.getAttribute('data-audio')!) as DomAudioRaw);
+      if (a) out.push(a);
+    } catch {
+      /* malformed data-audio */
+    }
+  });
+  return out;
+}
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+function bestScroller(probe: Element): Element | null {
+  let node: Element | null = probe.parentElement;
+  let best: Element | null = null;
+  let bestScore = 0;
+  while (node && node !== document.body) {
+    const s = node.scrollHeight - node.clientHeight;
+    if (s >= 20 && (best === null || s > bestScore)) {
+      bestScore = s;
+      best = node;
+    }
+    node = node.parentElement;
+  }
+  if (best) return best;
+  return document.scrollingElement;
+}
+
+function pageName(): string {
+  const el = document.querySelector(
+    '[class*="playlist_title"], [data-testid="audio_page_title"], h1',
+  );
+  let name = el && el.textContent ? el.textContent.trim() : '';
+  if (!name) name = document.title.replace(/\s*\|\s*ВКонтакте.*$/i, '').trim();
+  return name || 'Плейлист';
+}
+
+// Content script lifecycle in browser
 (() => {
+  if (typeof window === 'undefined') return;
   if (window.__VKMF_COLLECTOR__) return;
   window.__VKMF_COLLECTOR__ = true;
 
@@ -46,109 +219,6 @@ declare global {
       lastSamples = d.p as ResponseSample[];
     }
   });
-
-  interface DomAudioRaw {
-    id?: unknown;
-    artist?: unknown;
-    title?: unknown;
-    urls?: unknown;
-    url?: unknown;
-    duration?: unknown;
-    cover_url?: unknown;
-  }
-
-  function domNormalize(d: DomAudioRaw): AudioMeta | null {
-    const idRaw = String(d.id ?? '');
-    const m = idRaw.match(/^(-?\d+)_(\d+)/);
-    const artist = String(d.artist || '').trim();
-    const title = String(d.title || '').trim();
-    if (!m || !artist || !title) return null;
-    const owner = m[1]!;
-    const id = m[2]!;
-    const urls = Array.isArray(d.urls)
-      ? (d.urls as string[]).filter((u) => /^https?:\/\//.test(u))
-      : typeof d.url === 'string' && /^https?:\/\//.test(d.url)
-        ? [d.url]
-        : [];
-    return {
-      key: `${owner}_${id}`,
-      id,
-      owner,
-      artist,
-      title,
-      album: '',
-      year: null,
-      duration: (d.duration ?? null) as number | string | null,
-      urls,
-      covers: typeof d.cover_url === 'string' ? [d.cover_url] : [],
-    };
-  }
-
-  /**
-   * Modern VK web player rows (`vk.ru/audios*`).
-   *
-   * The old `[data-audio]` JSON attribute no longer exists (verified on the live
-   * page: 0 rows), so the documented DOM fallback was dead. Rows now expose
-   * stable test ids instead: `[data-testid=MusicTrackRow]` containing
-   * `MusicTrackRow_Info` whose children are `[title, artist]`, nested inside
-   * `[data-audio-id="<owner>_<id>"]`. URLs still come only from the network
-   * hook — the DOM carries no playable link.
-   */
-  function domRows(): AudioMeta[] {
-    const out: AudioMeta[] = [];
-    document.querySelectorAll('[data-testid="MusicTrackRow"]').forEach((row) => {
-      const holder = row.closest('[data-audio-id]') ?? row.querySelector('[data-audio-id]');
-      const key = holder?.getAttribute('data-audio-id') ?? '';
-      const info = row.querySelector('[data-testid="MusicTrackRow_Info"]');
-      if (!info) return;
-      const parts = [...info.children].map((c) => (c.textContent || '').trim()).filter(Boolean);
-      if (parts.length < 2) return;
-      const a = domNormalize({ id: key, title: parts[0], artist: parts.slice(1).join(' ') });
-      if (a) out.push(a);
-    });
-    return out;
-  }
-
-  function domAudios(): AudioMeta[] {
-    const out: AudioMeta[] = [];
-    document.querySelectorAll('[data-audio]').forEach((el) => {
-      try {
-        const a = domNormalize(JSON.parse(el.getAttribute('data-audio')!) as DomAudioRaw);
-        if (a) out.push(a);
-      } catch {
-        /* malformed data-audio */
-      }
-    });
-    out.push(...domRows());
-    return out;
-  }
-
-  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-  function bestScroller(probe: Element): Element | null {
-    let node: Element | null = probe.parentElement;
-    let best: Element | null = null;
-    let bestScore = 0;
-    while (node && node !== document.body) {
-      const s = node.scrollHeight - node.clientHeight;
-      if (s >= 20 && (best === null || s > bestScore)) {
-        bestScore = s;
-        best = node;
-      }
-      node = node.parentElement;
-    }
-    if (best) return best;
-    return document.scrollingElement;
-  }
-
-  function pageName(): string {
-    const el = document.querySelector(
-      '[class*="playlist_title"], [data-testid="audio_page_title"], h1',
-    );
-    let name = el && el.textContent ? el.textContent.trim() : '';
-    if (!name) name = document.title.replace(/\s*\|\s*ВКонтакте.*$/i, '').trim();
-    return name || 'Плейлист';
-  }
 
   async function scan(overrideName?: string): Promise<ScanResult> {
     scanName = overrideName || pageName();
