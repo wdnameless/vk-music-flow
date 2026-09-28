@@ -139,6 +139,9 @@ const inFlight = new Set<string>();
 let booted: Promise<void> | undefined;
 let lastStartAt = 0; // rate limiter anchor (time of last download start)
 
+/** Track the offscreen document is currently playing, for scrobbling. */
+let nowPlaying: { track: PlayerTrack; startedAt: number; scrobbled: boolean } | null = null;
+
 /** Persistent queue journal in chrome.storage.local (survives SW termination). */
 const journal = new Journal(chromeStorageJournalKv());
 
@@ -149,6 +152,9 @@ async function load(): Promise<void> {
     // defaults-fill: pre-Phase-1 persisted states lack the new settings keys
     S.settings = { ...DEFAULT_SETTINGS, ...S.settings };
     if (!S.settings.baseDir) S.settings.baseDir = 'VK Music';
+    if ('nowPlaying' in S.settings && S.settings.nowPlaying) {
+      nowPlaying = S.settings.nowPlaying;
+    }
   } catch {
     /* keep defaults */
   }
@@ -314,11 +320,34 @@ async function flushScrobbles(): Promise<{ ok: boolean; sent: number; pending: n
 
 /** Queue a finished play and try to send it right away. */
 async function enqueueScrobble(item: ScrobbleQueueItem): Promise<void> {
+  const isDuplicate = scrobbleQ.some(
+    (q) => q.artist === item.artist && q.title === item.title && q.startedAt === item.startedAt,
+  );
+  if (isDuplicate) return;
   scrobbleQ.push(item);
   // Bound the backlog so a long offline stretch cannot grow it without limit.
   if (scrobbleQ.length > 500) scrobbleQ = scrobbleQ.slice(-500);
   persistLastfm();
   await flushScrobbles();
+}
+
+async function journalEnsureAll(items: QueueItem[]): Promise<void> {
+  let changed = false;
+  const j = journal as unknown as { save: () => Promise<void> };
+  const origSave = j.save.bind(journal);
+  j.save = async () => {
+    changed = true;
+  };
+  try {
+    for (const item of items) {
+      await journal.ensure(item);
+    }
+  } finally {
+    j.save = origSave;
+  }
+  if (changed) {
+    await j.save();
+  }
 }
 
 function mergeAudio(a: AudioMeta): boolean {
@@ -468,7 +497,7 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
           S.queue.push({ key, pl: name, idx, w });
         });
       }
-      for (const qj of S.queue) await journal.ensure(qj);
+      await journalEnsureAll(S.queue);
       persist();
       pump();
       return { queued: S.queue.length, skipped };
@@ -776,7 +805,7 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
         }
         S.queue.push({ key, pl: m.name, idx: i + 1, w });
       });
-      for (const qj of S.queue) await journal.ensure(qj);
+      await journalEnsureAll(S.queue);
       persist();
       pump();
       return { ok: true, queued: S.queue.length, skipped, total: metas.length };
@@ -799,6 +828,7 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
         ? await sendToPlayer({ t: 'P_PLAY_QUEUE', tracks: allowed, startIndex })
         : null;
       if (started) rememberPlayerState(started as PlayerState);
+      persistPlayerQueue();
       return { ok: started !== null, state: playerSnapshot(), skipped };
     }
     // ---- Queue control (popup -> offscreen) ----
@@ -835,6 +865,7 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
     case 'PLAY_JUMP': {
       const st = await sendToPlayer({ t: 'P_JUMP', index: m.index });
       if (st) rememberPlayerState(st as PlayerState);
+      persistPlayerQueue();
       return { ok: true, state: playerSnapshot() };
     }
     // ---- Sound processing ----
@@ -872,11 +903,13 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
     case 'PLAY_NEXT': {
       const s = await sendToPlayer({ t: 'P_NEXT' });
       if (s) rememberPlayerState(s as PlayerState);
+      persistPlayerQueue();
       return { ok: true, state: playerSnapshot() };
     }
     case 'PLAY_PREV': {
       const s = await sendToPlayer({ t: 'P_PREV' });
       if (s) rememberPlayerState(s as PlayerState);
+      persistPlayerQueue();
       return { ok: true, state: playerSnapshot() };
     }
     case 'PLAY_SEEK': {
@@ -1346,8 +1379,25 @@ async function fetchStream(url: string): Promise<Uint8Array> {
  * number as a big-endian 128-bit integer. Without this the segments were
  * concatenated still encrypted and every file landed as unsniffable garbage.
  */
+async function fetchSegmentWithRetry(url: string, maxRetries = 2): Promise<Uint8Array> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await rawFetch(url);
+    } catch (err) {
+      if (attempt >= maxRetries) throw err;
+      attempt++;
+      const baseMs = S.settings?.baseBackoffMs ?? 200;
+      const maxMs = S.settings?.maxBackoffMs ?? 2000;
+      const jitterMs = S.settings?.jitterMs ?? 50;
+      const delay = computeBackoff(attempt, baseMs, maxMs, jitterMs);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
 async function hlsKeyBytes(uri: string): Promise<Uint8Array> {
-  const b = await rawFetch(uri);
+  const b = await fetchSegmentWithRetry(uri);
   if (b.length !== 16) throw new Error(`ожидался 16-байтный ключ, получено ${b.length}`);
   return b;
 }
@@ -1363,6 +1413,9 @@ async function decryptAes128(
   keyBytes: Uint8Array,
   iv: Uint8Array,
 ): Promise<Uint8Array> {
+  if (iv.length !== 16) {
+    throw new Error(`Недопустимая длина IV: ${iv.length} (ожидается 16)`);
+  }
   const key = await crypto.subtle.importKey('raw', keyBytes as BufferSource, 'AES-CBC', false, [
     'decrypt',
   ]);
@@ -1383,12 +1436,12 @@ async function assembleHls(txt: string, baseUrl: string): Promise<Uint8Array> {
   }
   if (!p.segments.length) throw new Error('плейлист без сегментов');
   const parts: Uint8Array[] = [];
-  if (p.init) parts.push(await rawFetch(p.init));
+  if (p.init) parts.push(await fetchSegmentWithRetry(p.init));
   const keys = new Map<string, Uint8Array>();
   let i = 0;
   for (const s of p.segments) {
-    if (i > 5000) break;
-    let seg = await rawFetch(s.url);
+    if (i >= 5000) break;
+    let seg = await fetchSegmentWithRetry(s.url);
     if (s.key?.method === 'AES-128' && s.key.uri) {
       let kb = keys.get(s.key.uri);
       if (!kb) {
@@ -1456,24 +1509,47 @@ function waitDone(id: number, timeoutMs?: number): Promise<void> {
  * Cost: the payload lives once as bytes and once as a ~1.33x base64 string.
  * VK tracks are single-digit MB; verified working to 30 MB in real Chromium.
  */
-async function bytesToDataUrl(bytes: Uint8Array, mime: string): Promise<string> {
-  const blob = new Blob([bytes as unknown as BlobPart], { type: mime });
-  return await new Promise<string>((res, rej) => {
-    const fr = new FileReader();
-    fr.onload = () => res(fr.result as string);
-    fr.onerror = () => rej(fr.error ?? new Error('не удалось закодировать данные'));
-    fr.readAsDataURL(blob);
-  });
+function bytesToDataUrl(bytes: Uint8Array, mime: string): string {
+  const CHUNK_SIZE = 0x6000;
+  const chunks: string[] = [`data:${mime};base64,`];
+  const useBuffer = typeof Buffer !== 'undefined';
+  for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+    const end = Math.min(i + CHUNK_SIZE, bytes.length);
+    const sub = bytes.subarray(i, end);
+    if (useBuffer) {
+      chunks.push(Buffer.from(sub.buffer, sub.byteOffset, sub.byteLength).toString('base64'));
+    } else {
+      let s = '';
+      for (let j = 0; j < sub.length; j++) {
+        s += String.fromCharCode(sub[j]!);
+      }
+      chunks.push(btoa(s));
+    }
+  }
+  return chunks.join('');
 }
 
 async function saveBlob(bytes: Uint8Array, fname: string): Promise<void> {
   const mime = fname.endsWith('.mp3') ? 'audio/mpeg' : 'audio/aac';
-  const id = await chrome.downloads.download({
-    url: await bytesToDataUrl(bytes, mime),
-    filename: fname,
-    conflictAction: 'uniquify',
-  });
-  await waitDone(id);
+  let url: string;
+  let revoke: (() => void) | null = null;
+  if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+    const blob = new Blob([bytes as unknown as BlobPart], { type: mime });
+    url = URL.createObjectURL(blob);
+    revoke = () => URL.revokeObjectURL(url);
+  } else {
+    url = bytesToDataUrl(bytes, mime);
+  }
+  try {
+    const id = await chrome.downloads.download({
+      url,
+      filename: fname,
+      conflictAction: 'uniquify',
+    });
+    await waitDone(id);
+  } finally {
+    revoke?.();
+  }
 }
 
 /**
@@ -1672,8 +1748,7 @@ const PRELOAD_MAX = 4;
 /** Tracks whose master was measured at full scale, for the UI to report. */
 const clipReported = new Set<string>();
 
-/** Track the offscreen document is currently playing, for scrobbling. */
-let nowPlaying: { track: PlayerTrack; startedAt: number; scrobbled: boolean } | null = null;
+/** Track the offscreen document is currently playing, for scrobbling (declared above). */
 
 chrome.commands?.onCommand.addListener((cmd) => {
   void (async () => {
@@ -1710,9 +1785,15 @@ chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
     // advancing, so we only observe here.
     if (state.track && state.track.key !== nowPlaying?.track.key) {
       nowPlaying = { track: state.track, startedAt: Date.now(), scrobbled: false };
+      S.settings.nowPlaying = nowPlaying;
+      persist();
       if (lastfmReady()) void lastfmNowPlaying(state.track, L);
       // Normalisation follows the track, so it is recomputed on every change.
       void applyNormalisation();
+    } else if (!state.track && nowPlaying) {
+      nowPlaying = null;
+      S.settings.nowPlaying = null;
+      persist();
     }
     // Scrobble once the play qualifies, without waiting for the track to end
     // (Last.fm's rule is about elapsed play time, not completion). The play goes
@@ -1723,6 +1804,8 @@ chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
       shouldScrobble(state.currentTime, state.duration || nowPlaying.track.duration, lastfmReady())
     ) {
       nowPlaying.scrobbled = true;
+      S.settings.nowPlaying = nowPlaying;
+      persist();
       void enqueueScrobble({
         artist: nowPlaying.track.artist,
         title: nowPlaying.track.title,

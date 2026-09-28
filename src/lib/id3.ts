@@ -81,10 +81,23 @@ function usltPayload(lyrics: string): Uint8Array {
   ]);
 }
 
-function apicPayload(imgBytes: Uint8Array): Uint8Array {
+export function apicPayload(imgBytes: Uint8Array): Uint8Array {
   let mime = 'image/jpeg';
-  if (imgBytes[0] === 0x89 && imgBytes[1] === 0x50 && imgBytes[2] === 0x4e && imgBytes[3] === 0x47)
+  if (imgBytes[0] === 0x89 && imgBytes[1] === 0x50 && imgBytes[2] === 0x4e && imgBytes[3] === 0x47) {
     mime = 'image/png';
+  } else if (
+    imgBytes.length >= 12 &&
+    imgBytes[0] === 0x52 &&
+    imgBytes[1] === 0x49 &&
+    imgBytes[2] === 0x46 &&
+    imgBytes[3] === 0x46 &&
+    imgBytes[8] === 0x57 &&
+    imgBytes[9] === 0x45 &&
+    imgBytes[10] === 0x42 &&
+    imgBytes[11] === 0x50
+  ) {
+    mime = 'image/webp';
+  }
   return concat([
     new Uint8Array([3]),
     new TextEncoder().encode(mime),

@@ -658,6 +658,9 @@ export interface Settings {
   playerQueueIndex?: number;
   playerShuffle?: boolean;
   playerRepeat?: RepeatMode;
+  /** Scrobble window for the currently playing track; survives SW restarts so a
+   *  restart cannot re-scrobble the same play (R24). Cleared when playback stops. */
+  nowPlaying?: { track: PlayerTrack; startedAt: number; scrobbled: boolean } | null;
   /** Sound processing settings. */
   audioFx?: AudioFx;
   /** Chosen audio output; empty means the system default. */

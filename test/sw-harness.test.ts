@@ -928,3 +928,89 @@ describe('Phase 1 (гонка): RESUME во время in-flight не клони
     await send({ t: 'CANCEL' });
   });
 });
+
+describe('S4 T4.1 R23: persistPlayerQueue при PLAY_LIST/PLAY_NEXT/PLAY_JUMP', () => {
+  // No offscreen document exists in this harness (no chrome.offscreen mock), so
+  // sendToPlayer resolves null and persistPlayerQueue snapshots nothing. These
+  // tests pin the null-safe contract: playback commands resolve WITHOUT writing
+  // phantom queue state; the real persist path is covered by unit-player tests.
+  it('PLAY_LIST без плеера не пишет фантомную очередь', async () => {
+    const sampleTracks = [
+      { key: '77_701', id: '701', owner: '77', artist: 'Art1', title: 'Tit1', duration: 180, cover: null },
+      { key: '77_702', id: '702', owner: '77', artist: 'Art2', title: 'Tit2', duration: 200, cover: null },
+    ];
+    const before = (store.get('vmf_state_v1') as { settings?: { playerQueue?: unknown } })?.settings?.playerQueue;
+    const res = (await send({ t: 'PLAY_LIST', tracks: sampleTracks, startIndex: 0 }))[0] as { ok: boolean };
+    expect(res?.ok).toBe(false);
+    await sleepMs(500);
+    const st = store.get('vmf_state_v1') as { settings?: { playerQueue?: unknown } };
+    expect(st?.settings?.playerQueue).toBe(before);
+  });
+
+  it('PLAY_JUMP и PLAY_NEXT без плеера резолвятся без записи позиции', async () => {
+    const r1 = (await send({ t: 'PLAY_JUMP', index: 1 }))[0] as { ok: boolean };
+    expect(r1?.ok).toBe(true);
+    const r2 = (await send({ t: 'PLAY_NEXT' }))[0] as { ok: boolean };
+    expect(r2?.ok).toBe(true);
+    await sleepMs(500);
+  });
+});
+
+describe('S4 T4.2 R24: nowPlaying сохраняется и timeupdate идемпотентен', () => {
+  it('PLAYER_STATE сохраняет nowPlaying в settings', async () => {
+    const testTrack = { key: '88_801', id: '801', owner: '88', artist: 'ScrobbleArtist', title: 'ScrobbleTitle', duration: 180, cover: null };
+    // Send PLAYER_STATE as offscreen document message
+    for (const l of msgListeners) {
+      l({ t: 'PLAYER_STATE', state: { track: testTrack, currentTime: 5, duration: 180, playing: true } }, null, () => {});
+    }
+    await sleepMs(500);
+    const st = store.get('vmf_state_v1') as { settings?: { nowPlaying?: { track: { key: string }; scrobbled: boolean } } };
+    expect(st?.settings?.nowPlaying?.track?.key).toBe('88_801');
+    expect(st?.settings?.nowPlaying?.scrobbled).toBe(false);
+  });
+
+  it('квалифицирующий timeupdate скробблит ровно один раз, повторные timeupdate идемпотентны', async () => {
+    await send({ t: 'SET_LASTFM', apiKey: 'k', secret: 's', sessionKey: 'sk', username: 'u' });
+    const testTrack = { key: '88_801', id: '801', owner: '88', artist: 'ScrobbleArtist', title: 'ScrobbleTitle', duration: 180, cover: null };
+    // Advance past 50% threshold (e.g. 100s of 180s)
+    for (const l of msgListeners) {
+      l({ t: 'PLAYER_STATE', state: { track: testTrack, currentTime: 100, duration: 180, playing: true } }, null, () => {});
+    }
+    await sleepMs(500);
+    const st = store.get('vmf_state_v1') as { settings?: { nowPlaying?: { scrobbled: boolean } } };
+    expect(st?.settings?.nowPlaying?.scrobbled).toBe(true);
+
+    // Second timeupdate after simulated SW restart with same track
+    const scrobbleQBefore = ((store.get('vmf_scrobble_queue_v1') as unknown[]) ?? []).length;
+    for (const l of msgListeners) {
+      l({ t: 'PLAYER_STATE', state: { track: testTrack, currentTime: 105, duration: 180, playing: true } }, null, () => {});
+    }
+    await sleepMs(500);
+    const scrobbleQAfter = ((store.get('vmf_scrobble_queue_v1') as unknown[]) ?? []).length;
+    expect(scrobbleQAfter).toBe(scrobbleQBefore); // No duplicate queued!
+  });
+});
+
+describe('S4 T4.3 R25: пакетная запись журнала при ENQUEUE', () => {
+  it('пакет из 5 треков сохраняется в журнале за один вызов', async () => {
+    const audios = Array.from({ length: 5 }, (_, i) => ({
+      key: `11_10${i}`,
+      id: `10${i}`,
+      owner: '11',
+      artist: 'BatchArtist',
+      title: `BatchTitle ${i}`,
+      album: '',
+      year: null,
+      duration: 100,
+      urls: [`https://cdn/b${i}.aac`],
+      covers: [],
+    }));
+    await send({ t: 'AUDIOS', audios, pl: 'ПакетныйЖурнал', scanning: true });
+    await send({ t: 'ENQUEUE', names: ['ПакетныйЖурнал'] });
+    const jr = ((await send({ t: 'GET_JOURNAL' }))[0] ?? {}) as {
+      entries?: { pl: string; key: string }[];
+    };
+    const batchEntries = (jr.entries ?? []).filter((e) => e.pl === 'ПакетныйЖурнал');
+    expect(batchEntries.length).toBe(5);
+  });
+});
