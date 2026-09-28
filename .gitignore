@@ -19,3 +19,9 @@ dist-ssr/
 # env
 .env
 .env.*
+
+# runtime / tool state
+.workflow/
+.worktrees/
+backups/
+data/
