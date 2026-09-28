@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'vitest';
 
 import { clampDb, flatEq, Player } from '../src/offscreen/player.js';
-import type { PlayerState, PlayerTrack } from '../src/types.js';
+import type { PlayerTrack } from '../src/types.js';
 import { EQ_BANDS } from '../src/types.js';
 
 // Wave 2 unit tests for the parts of the offscreen player that are pure logic.
@@ -196,11 +196,8 @@ describe('player: удаление треков и подсветка при ш�
   it('удаление НЕтекущего трека перед текущим не смещает курсор на другой трек', async () => {
     setupPlayer();
     try {
-      let lastState: PlayerState | undefined = undefined;
       const p = new Player({
-        onState: (s: PlayerState) => {
-          lastState = s;
-        },
+        onState: () => {},
         onEnded: () => {},
         onLoudness: () => {},
         onClip: () => {},
@@ -236,11 +233,8 @@ describe('player: удаление треков и подсветка при ш�
   it('при шафле строка cur совпадает с играющим треком после jump, move и remove', async () => {
     setupPlayer();
     try {
-      let lastState: PlayerState | undefined = undefined;
       const p = new Player({
-        onState: (s: PlayerState) => {
-          lastState = s;
-        },
+        onState: () => {},
         onEnded: () => {},
         onLoudness: () => {},
         onClip: () => {},

@@ -176,19 +176,17 @@ class FakeElement {
   querySelectorAll(selector: string): FakeElement[] {
     const result: FakeElement[] = [];
     const check = (el: FakeElement) => {
-      let match = false;
       if (selector.startsWith('#')) {
-        match = el.id === selector.slice(1);
+        if (el.id === selector.slice(1)) result.push(el);
       } else if (selector.startsWith('.')) {
         const parts = selector.split('.').filter(Boolean);
-        match = parts.every((p) => el.classList.contains(p));
+        if (parts.every((p) => el.classList.contains(p))) result.push(el);
       } else if (selector.startsWith('[')) {
         const attr = selector.replace(/[[\]]/g, '').split('=')[0]!;
-        match = el.attributes[attr] !== undefined || el.dataset[attr.replace(/^data-/, '')] !== undefined;
-      } else {
-        match = el.tagName.toLowerCase() === selector.toLowerCase();
+        if (el.attributes[attr] !== undefined || el.dataset[attr.replace(/^data-/, '')] !== undefined) result.push(el);
+      } else if (el.tagName.toLowerCase() === selector.toLowerCase()) {
+        result.push(el);
       }
-      if (match) result.push(el);
       for (const c of el.children) check(c);
     };
     for (const c of this.children) check(c);
