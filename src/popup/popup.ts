@@ -4,6 +4,7 @@ import type {
   EqBand,
   LastfmAuth,
   PlayerState,
+  PlayerTrack,
   PlatformId,
   PlaylistRef,
   ProxyCheckResult,
@@ -62,6 +63,7 @@ const fmtDur = (s: number | null): string => {
    <body> and the CSS adapts from there. */
 
 const HOST: 'popup' | 'window' | 'panel' = (() => {
+  if (typeof location === 'undefined') return 'window';
   const mode = new URLSearchParams(location.search).get('mode');
   if (mode === 'window' || mode === 'panel') return mode;
 
@@ -71,8 +73,8 @@ const HOST: 'popup' | 'window' | 'panel' = (() => {
   // 0, so it declared itself the side panel, never applied the fixed size, and
   // Chrome then sized the popup to the collapsed content — an empty window.
   try {
-    const views = chrome.extension?.getViews?.({ type: 'popup' }) ?? [];
-    if (views.includes(window)) return 'popup';
+    const views = (typeof chrome !== 'undefined' ? chrome.extension?.getViews?.({ type: 'popup' }) : undefined) ?? [];
+    if (typeof window !== 'undefined' && views.includes(window)) return 'popup';
   } catch {
     /* getViews is not available everywhere; fall through */
   }
@@ -84,7 +86,9 @@ const HOST: 'popup' | 'window' | 'panel' = (() => {
   return 'window';
 })();
 
-document.body.dataset.host = HOST;
+if (typeof document !== 'undefined' && document.body) {
+  document.body.dataset.host = HOST;
+}
 
 /** Open the player in its own window. */
 $('btnOpenWindow').addEventListener('click', async () => {
@@ -111,11 +115,42 @@ $('btnOpenPanel').addEventListener('click', async () => {
 
 /* ---------------- Navigation ---------------- */
 
+let activeView = 'home';
+
+export function getActiveView(): string {
+  const activeEl = typeof document !== 'undefined' ? document.querySelector('.view.active') : null;
+  if (activeEl?.id) {
+    return activeEl.id.replace(/^view-/, '');
+  }
+  return activeView;
+}
+
 function showView(name: string): void {
+  activeView = name;
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + name));
   document.querySelectorAll('.nav-item').forEach((b) =>
     b.classList.toggle('active', (b as HTMLElement).dataset.view === name),
   );
+}
+
+export function showNotice(view: string, text: string): void {
+  if (typeof document === 'undefined') return;
+  const norm = view.startsWith('view-') ? view.slice(5) : view;
+  const targetView = document.getElementById('view-' + norm) ?? document.querySelector('.view.active');
+  if (!targetView) return;
+  let notice = targetView.querySelector<HTMLElement>('.view-notice');
+  if (!notice) {
+    notice = document.createElement('p');
+    notice.className = 'view-notice meta';
+    const head = targetView.querySelector('.page-head') ?? targetView.firstElementChild;
+    if (head && head.nextSibling) {
+      targetView.insertBefore(notice, head.nextSibling);
+    } else {
+      targetView.prepend(notice);
+    }
+  }
+  notice.textContent = text;
+  notice.hidden = !text;
 }
 
 document.querySelectorAll('.nav-item').forEach((b) => {
@@ -161,6 +196,10 @@ async function refreshPlatformAuth(): Promise<void> {
       el.textContent = r.reason || 'не удалось проверить сессию';
       return;
     }
+    if (r.status.userId) {
+      currentUserId = String(r.status.userId);
+      syncLikeButtons();
+    }
     el.textContent = r.status.signedIn
       ? `${PLATFORM_LABELS[activePlatform]}: вошёл${r.status.userId ? ' (id ' + r.status.userId + ')' : ''}`
       : `${PLATFORM_LABELS[activePlatform]}: ` + (r.status.reason || 'не удалось войти');
@@ -200,6 +239,13 @@ async function loadList(
       return;
     }
     listTracks = r.tracks ?? [];
+    if (kind === 'my-tracks' && r.tracks) {
+      for (const t of r.tracks) {
+        likedKeys.add(t.key);
+        likedKeys.add(t.nativeId);
+      }
+      syncLikeButtons();
+    }
     ticked.clear();
     renderTracks(target);
   } catch (e) {
@@ -341,12 +387,23 @@ function wireTrackList(target: string): void {
 
 /* ---------------- My music ---------------- */
 
-$('btnMyTracks').addEventListener('click', () => {
+export async function loadMyDefault(): Promise<void> {
   $('myTracks').hidden = false;
   $('myPlaylists').hidden = true;
   $('btnMyTracks').classList.add('active');
   $('btnMyPlaylists').classList.remove('active');
-  void loadList('my-tracks', undefined, 'myTracks');
+  await loadList('my-tracks', undefined, 'myTracks');
+}
+
+export async function loadRadioDefault(mode: 'mix' | 'recs' = 'mix'): Promise<void> {
+  const isMix = mode === 'mix';
+  $('btnMix').classList.toggle('active', isMix);
+  $('btnRecs').classList.toggle('active', !isMix);
+  await loadList('recommendations', mode, 'radioTracks');
+}
+
+$('btnMyTracks').addEventListener('click', () => {
+  void loadMyDefault();
 });
 
 $('btnMyPlaylists').addEventListener('click', () => {
@@ -372,8 +429,8 @@ $('q').addEventListener('keydown', (e) => {
   if ((e as KeyboardEvent).key === 'Enter') $btn('btnSearch').click();
 });
 
-$('btnMix').addEventListener('click', () => void loadList('recommendations', undefined, 'radioTracks'));
-$('btnRecs').addEventListener('click', () => void loadList('recommendations', undefined, 'radioTracks'));
+$('btnMix').addEventListener('click', () => void loadRadioDefault('mix'));
+$('btnRecs').addEventListener('click', () => void loadRadioDefault('recs'));
 
 /* ---------------- Downloads: queue and library ---------------- */
 
@@ -507,9 +564,10 @@ async function queueTracks(keys: string[], next: boolean): Promise<void> {
   pState = res.state;
   renderPlayer();
   if (!$('queuePanel').hidden) renderQueue();
-  $('dlNote').textContent = next
-    ? `Играет следующим: ${tracks.length}.`
-    : `В очередь добавлено: ${tracks.length}.`;
+  showNotice(
+    getActiveView(),
+    next ? `Играет следующим: ${tracks.length}.` : `В очередь добавлено: ${tracks.length}.`,
+  );
 }
 
 /**
@@ -527,11 +585,11 @@ async function playTracks(keys: string[], startKey?: string): Promise<void> {
     if (at >= 0) picked = listTracks.slice(at).filter((t) => !t.restricted);
   }
   if (!picked.length) {
-    $('dlNote').textContent = 'Эти треки недоступны для воспроизведения.';
+    showNotice(getActiveView(), 'Эти треки недоступны для воспроизведения.');
     return;
   }
   if (picked.length < keys.length) {
-    $('dlNote').textContent = `Пропущено недоступных: ${keys.length - picked.length}.`;
+    showNotice(getActiveView(), `Пропущено недоступных: ${keys.length - picked.length}.`);
   }
   const r = await send<{ ok: boolean; streams: Record<string, { url: string }> }>({
     t: 'P_RESOLVE',
@@ -556,7 +614,7 @@ async function playTracks(keys: string[], startKey?: string): Promise<void> {
     })
     .filter((x): x is NonNullable<typeof x> => !!x);
   if (!tracks.length) {
-    $('dlNote').textContent = 'Не удалось получить ссылки для воспроизведения.';
+    showNotice(getActiveView(), 'Не удалось получить ссылки для воспроизведения.');
     return;
   }
   const res = await send<{ ok: boolean; state: PlayerState | null }>({
@@ -616,9 +674,56 @@ function renderEqBands(bands: EqBand[]): void {
   }
 }
 
+const likedKeys = new Set<string>();
+const unlikedKeys = new Set<string>();
+let dislikedKeys = new Set<string>();
+let currentUserId: string | null = null;
+
+export function isTrackLiked(t: PlayerTrack | null | undefined): boolean {
+  if (!t) return false;
+  const key = `${t.owner}_${t.id}`;
+  if (unlikedKeys.has(key) || (t.key && unlikedKeys.has(t.key))) return false;
+  if (likedKeys.has(key) || (t.key && likedKeys.has(t.key))) return true;
+  if (currentUserId && String(t.owner) === String(currentUserId)) return true;
+  return false;
+}
+
+export function isTrackDisliked(t: PlayerTrack | null | undefined): boolean {
+  if (!t) return false;
+  const key = `${t.owner}_${t.id}`;
+  return dislikedKeys.has(key) || (t.key ? dislikedKeys.has(t.key) : false);
+}
+
+export function setTrackLikedState(key: string, liked: boolean): void {
+  if (liked) {
+    likedKeys.add(key);
+    unlikedKeys.delete(key);
+  } else {
+    likedKeys.delete(key);
+    unlikedKeys.add(key);
+  }
+}
+
+export function setTrackDislikedState(key: string, disliked: boolean): void {
+  if (disliked) {
+    dislikedKeys.add(key);
+  } else {
+    dislikedKeys.delete(key);
+  }
+}
+
+export function syncLikeButtons(): void {
+  const t = pState?.track;
+  const likeBtn = typeof document !== 'undefined' ? $('pLike') : null;
+  const dislikeBtn = typeof document !== 'undefined' ? $('pDislike') : null;
+  if (likeBtn) likeBtn.classList.toggle('liked', isTrackLiked(t));
+  if (dislikeBtn) dislikeBtn.classList.toggle('liked', isTrackDisliked(t));
+}
+
 function renderPlayer(): void {
   const s = pState;
   const cover = $('pCover');
+  syncLikeButtons();
   if (!s || !s.track) {
     $('pTitle').textContent = 'Ничего не играет';
     $('pArtist').textContent = '';
@@ -742,20 +847,45 @@ $('pLike').addEventListener('click', async () => {
     cover: t.cover,
     restricted: false,
   };
+  const currentlyLiked = isTrackLiked(t);
+  const nextLiked = !currentlyLiked;
+  const view = getActiveView();
   try {
-    const r = await send<{ ok: boolean; reason?: string }>({ t: 'P_LIKE', key, liked: true, track });
-    $('pLike').classList.toggle('liked', !!r.ok);
-    if (!r.ok) $('dlNote').textContent = r.reason || 'не удалось добавить в «Мою музыку»';
+    const r = await send<{ ok: boolean; reason?: string }>({ t: 'P_LIKE', key, liked: nextLiked, track });
+    if (r.ok) {
+      setTrackLikedState(key, nextLiked);
+      if (t.key) setTrackLikedState(t.key, nextLiked);
+      syncLikeButtons();
+    } else {
+      showNotice(
+        view,
+        r.reason || (nextLiked ? 'не удалось добавить в «Мою музыку»' : 'не удалось удалить из «Моей музыки»'),
+      );
+    }
   } catch (e) {
-    $('dlNote').textContent = 'Ошибка: ' + ((e as Error).message || e);
+    showNotice(view, 'Ошибка: ' + ((e as Error).message || e));
   }
 });
 
 $('pDislike').addEventListener('click', async () => {
   const t = pState?.track;
   if (!t) return;
-  await send({ t: 'TOGGLE_DISLIKE', owner: t.owner, id: t.id });
-  $('pDislike').classList.toggle('liked');
+  const key = `${t.owner}_${t.id}`;
+  try {
+    const res = await send<{ ok: boolean; rules?: BlockRules; disliked?: boolean }>({
+      t: 'TOGGLE_DISLIKE',
+      owner: t.owner,
+      id: t.id,
+    });
+    if (res?.ok) {
+      const nextDisliked = typeof res.disliked === 'boolean' ? res.disliked : !isTrackDisliked(t);
+      setTrackDislikedState(key, nextDisliked);
+      if (t.key) setTrackDislikedState(t.key, nextDisliked);
+      syncLikeButtons();
+    }
+  } catch (e) {
+    showNotice(getActiveView(), 'Ошибка: ' + ((e as Error).message || e));
+  }
 });
 
 /* ---------------- Sound panel ---------------- */
@@ -1256,7 +1386,7 @@ async function queueTicked(): Promise<number> {
     name,
   });
   if (!r?.ok) {
-    $('dlNote').textContent = r?.reason || 'не удалось поставить в очередь';
+    showNotice(getActiveView(), r?.reason || 'не удалось поставить в очередь');
     return 0;
   }
   $('dlNote').textContent = r.skipped
@@ -1328,7 +1458,7 @@ $('baseDir').addEventListener('input', (e) => {
 
 /* ---------------- Home ---------------- */
 
-async function loadHome(): Promise<void> {
+export async function loadHome(): Promise<void> {
   // The home shelf mirrors what VK itself puts first: the account's own music.
   await loadList('my-tracks', undefined, 'homeTracks');
   const playable = listTracks.filter((t) => !t.restricted);
@@ -1349,17 +1479,22 @@ async function loadHome(): Promise<void> {
   $('homeCount').textContent = listTracks.length
     ? `${listTracks.length} треков` + (playable.length < listTracks.length ? ` · ${playable.length} играбельных` : '')
     : '';
-  $('homeHero').addEventListener('click', (e) => {
-    const hero = (e.target as HTMLElement).closest('[data-play]') as HTMLElement | null;
-    const key = hero?.dataset.play;
-    if (key) void playTracks([key], key);
-  });
 }
 
-async function openView(name: string): Promise<void> {
+$('homeHero').addEventListener('click', (e) => {
+  const hero = (e.target as HTMLElement).closest('[data-play]') as HTMLElement | null;
+  const key = hero?.dataset.play;
+  if (key) void playTracks([key], key);
+});
+
+export async function openView(
+  name: 'home' | 'explore' | 'my' | 'radio' | 'search' | 'downloads' | 'settings' | string,
+): Promise<void> {
   showView(name);
   if (name === 'home') await loadHome();
-  if (name === 'explore') await loadList('sections', undefined, 'exploreTracks');
+  else if (name === 'my') await loadMyDefault();
+  else if (name === 'radio') await loadRadioDefault('mix');
+  else if (name === 'explore') await loadList('sections', undefined, 'exploreTracks');
 }
 
 /* ---------------- Keyboard ---------------- */
@@ -1426,6 +1561,7 @@ document.addEventListener('keydown', async (e) => {
 
 /* ---------------- Init ---------------- */
 
+if (typeof document !== 'undefined') {
 void (async function init() {
   try {
     const s = await send<StateSnapshot | null>({ t: 'GET_STATE' });
@@ -1463,6 +1599,7 @@ void (async function init() {
   // Progress lives in the offscreen document, so poll it on its own cadence.
   setInterval(() => void refreshPlayer(), 700);
 })();
+}
 
 /* ---------------- Phase 1 slice A: storage (FSA) ---------------- */
 
@@ -1819,6 +1956,10 @@ $('btnLfFlush').addEventListener('click', async () => {
 async function refreshRules(): Promise<void> {
   try {
     const r = await send<{ ok: boolean; rules: BlockRules }>({ t: 'GET_BLOCK_RULES' });
+    if (r?.ok && r.rules) {
+      dislikedKeys = new Set(r.rules.disliked ?? []);
+      syncLikeButtons();
+    }
     const el = $in('blockedArtists');
     if (document.activeElement !== el) el.value = r.rules.blockedArtists.join(', ');
     $('blockedState').textContent = r.rules.blockedArtists.length
@@ -1938,3 +2079,30 @@ $('btnDiag').addEventListener('click', async () => {
     btn.disabled = false;
   }
 });
+
+export function setPlayerStateForTest(state: PlayerState | null): void {
+  pState = state;
+  renderPlayer();
+}
+
+export function getPlayerStateForTest(): PlayerState | null {
+  return pState;
+}
+
+export function setListTracksForTest(tracks: Track[]): void {
+  listTracks = tracks;
+}
+
+export function getLikedKeysForTest(): Set<string> {
+  return likedKeys;
+}
+
+export function getDislikedKeysForTest(): Set<string> {
+  return dislikedKeys;
+}
+
+export function setCurrentUserIdForTest(id: string | null): void {
+  currentUserId = id;
+}
+
+export { renderPlayer };
