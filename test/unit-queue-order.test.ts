@@ -63,6 +63,16 @@ describe('queue: порядок воспроизведения', () => {
     assert.deepEqual(removeFromOrder([0, 1, 2], 2), [0, 1]);
   });
 
+  it('удаление нетекущего элемента до текущего сдвигает индекс текущего в очереди, сохраняя порядок', () => {
+    const order = [2, 0, 1];
+    const removedQi = 0;
+    const newOrder = removeFromOrder(order, removedQi);
+    assert.deepEqual(newOrder, [1, 0]);
+    const targetQi = 1 > removedQi ? 1 - 1 : 1;
+    assert.equal(targetQi, 0);
+    assert.equal(newOrder.indexOf(targetQi), 1);
+  });
+
   it('перенос вверх ставит трек на новое место, сдвигая промежуточные', () => {
     // Dragging a row rearranges the play sequence itself.
     assert.deepEqual(moveInOrder([0, 1, 2, 3], 0, 2), [1, 2, 0, 3]);

@@ -377,6 +377,10 @@ $('btnRecs').addEventListener('click', () => void loadList('recommendations', un
 
 /* ---------------- Downloads: queue and library ---------------- */
 
+let lastQSig = '';
+let lastFSig = '';
+let lastPlSig = '';
+
 function render(): void {
   if (!state) return;
 
@@ -389,64 +393,76 @@ function render(): void {
   $btn('btnResume').disabled = !state.paused;
 
   const qList = $('qList');
-  qList.innerHTML = '';
   const qShow = state.queue.slice(0, 30);
-  if (!qShow.length) qList.innerHTML = '<li class="meta">Очередь пуста</li>';
-  for (const q of qShow) {
-    const li = document.createElement('li');
-    const num = document.createElement('span');
-    num.className = 't-dur';
-    num.textContent = String(q.idx).padStart(2, '0');
-    const body = document.createElement('div');
-    body.className = 't-body';
-    const title = document.createElement('b');
-    title.textContent = q.a ? q.a.title || '?' : '?';
-    const sub = document.createElement('span');
-    sub.textContent = (q.a?.artist ? q.a.artist + ' · ' : '') + q.pl;
-    body.append(title, sub);
-    li.append(num, body);
-    qList.appendChild(li);
+  const qSig = qShow.map((q) => `${q.idx}:${q.pl}:${q.a?.artist}:${q.a?.title}`).join('|');
+  if (qSig !== lastQSig) {
+    lastQSig = qSig;
+    qList.innerHTML = '';
+    if (!qShow.length) qList.innerHTML = '<li class="meta">Очередь пуста</li>';
+    for (const q of qShow) {
+      const li = document.createElement('li');
+      const num = document.createElement('span');
+      num.className = 't-dur';
+      num.textContent = String(q.idx).padStart(2, '0');
+      const body = document.createElement('div');
+      body.className = 't-body';
+      const title = document.createElement('b');
+      title.textContent = q.a ? q.a.title || '?' : '?';
+      const sub = document.createElement('span');
+      sub.textContent = (q.a?.artist ? q.a.artist + ' · ' : '') + q.pl;
+      body.append(title, sub);
+      li.append(num, body);
+      qList.appendChild(li);
+    }
   }
 
   const fList = $('fList');
-  fList.innerHTML = '';
   const fShow = state.failed.slice(0, 30);
-  if (!fShow.length) fList.innerHTML = '<li class="meta">Ошибок нет</li>';
-  for (const f of fShow) {
-    const li = document.createElement('li');
-    const t = document.createElement('span');
-    t.textContent = `${f.pl} — ${f.a ? f.a.artist + ' — ' + f.a.title : '?'}`;
-    const err = document.createElement('span');
-    err.className = 'err-msg';
-    err.textContent = f.err;
-    li.append(t, err);
-    fList.appendChild(li);
+  const fSig = fShow.map((f) => `${f.pl}:${f.err}:${f.a?.artist}:${f.a?.title}`).join('|');
+  if (fSig !== lastFSig) {
+    lastFSig = fSig;
+    fList.innerHTML = '';
+    if (!fShow.length) fList.innerHTML = '<li class="meta">Ошибок нет</li>';
+    for (const f of fShow) {
+      const li = document.createElement('li');
+      const t = document.createElement('span');
+      t.textContent = `${f.pl} — ${f.a ? f.a.artist + ' — ' + f.a.title : '?'}`;
+      const err = document.createElement('span');
+      err.className = 'err-msg';
+      err.textContent = f.err;
+      li.append(t, err);
+      fList.appendChild(li);
+    }
   }
 
   const plList = $('plList');
-  plList.innerHTML = '';
   const names = Object.keys(state.playlists).sort((a, b) => a.localeCompare(b));
-  if (!names.length) {
-    plList.innerHTML =
-      '<li class="meta">Плейлисты не собраны. Открой плейлист во ВКонтакте и нажми «Сканировать вкладку».</li>';
-  }
-  for (const name of names) {
-    const li = document.createElement('li');
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = selected.has(name);
-    cb.addEventListener('change', () => {
-      if (cb.checked) selected.add(name);
-      else selected.delete(name);
-      updateDlBtn();
-    });
-    const label = document.createElement('span');
-    label.textContent = name;
-    const cnt = document.createElement('span');
-    cnt.className = 'cnt';
-    cnt.textContent = String(state!.playlists[name]);
-    li.append(cb, label, cnt);
-    plList.appendChild(li);
+  const plSig = names.map((name) => `${name}:${state!.playlists[name]}`).join('|');
+  if (plSig !== lastPlSig) {
+    lastPlSig = plSig;
+    plList.innerHTML = '';
+    if (!names.length) {
+      plList.innerHTML =
+        '<li class="meta">Плейлисты не собраны. Открой плейлист во ВКонтакте и нажми «Сканировать вкладку».</li>';
+    }
+    for (const name of names) {
+      const li = document.createElement('li');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = selected.has(name);
+      cb.addEventListener('change', () => {
+        if (cb.checked) selected.add(name);
+        else selected.delete(name);
+        updateDlBtn();
+      });
+      const label = document.createElement('span');
+      label.textContent = name;
+      const cnt = document.createElement('span');
+      cnt.className = 'cnt';
+      cnt.textContent = String(state!.playlists[name]);
+      li.append(cb, label, cnt);
+      plList.appendChild(li);
+    }
   }
   updateDlBtn();
 }
@@ -949,10 +965,12 @@ function drawWaterfall(canvas: HTMLCanvasElement): void {
     waterfallBuf.fill(0);
     waterfallPrimed = true;
   } else {
-    // Scroll by one pixel with a native move rather than redrawing the history:
-    // a canvas drawn onto itself does not shift reliably, and rebuilding 450 KB
-    // of pixels every frame to do the same thing is far more work.
-    waterfallBuf.copyWithin(0, 4);
+    // Scroll each row left by one pixel (4 bytes) rather than shifting across rows:
+    const rowBytes = w * 4;
+    for (let y = 0; y < h; y++) {
+      const rowStart = y * rowBytes;
+      waterfallBuf.copyWithin(rowStart, rowStart + 4, rowStart + rowBytes);
+    }
   }
 
   // Mono sum: a spectrogram is about the recording's frequency content, and two
