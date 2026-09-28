@@ -19,13 +19,24 @@ export function normalizeName(s: string): string {
     .trim();
 }
 
+/** Split collaboration artists into individual normalized tokens. */
+export function splitArtistTokens(artist: string): string[] {
+  const parts = artist.split(
+    /(?:[\n,;&+•·|~()\[\]{}]|\s[-–—/x×]\s|\b(?:feat\.?|ft\.?|featuring|vs\.?|with)\b)/iu,
+  );
+  return parts.map((s) => normalizeName(s)).filter((s) => s.length > 0);
+}
+
 /** True when the artist is on the block list. */
 export function isArtistBlocked(artist: string, rules: BlockRules): boolean {
+  if (!artist || !artist.trim()) return false;
   const a = normalizeName(artist);
   if (!a) return false;
+  const tokens = splitArtistTokens(artist);
   return rules.blockedArtists.some((b) => {
     const n = normalizeName(b);
-    return n.length > 0 && (a === n || a.includes(n));
+    if (!n) return false;
+    return a === n || tokens.includes(n);
   });
 }
 

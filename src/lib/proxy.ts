@@ -177,8 +177,25 @@ export async function readApplied(): Promise<ProxyAppliedState> {
 /* Credentials                                                         */
 /* ------------------------------------------------------------------ */
 
-type AuthDetails = { isProxy: boolean; host: string; port: number; challenger?: { host?: string } };
+export const MAX_PROXY_AUTH_RETRIES = 3;
+
+type AuthDetails = {
+  isProxy: boolean;
+  host: string;
+  port: number;
+  challenger?: { host?: string; port?: number };
+};
 type AuthCallback = (result?: { authCredentials?: { username: string; password: string }; cancel?: boolean }) => void;
+
+const proxyAuthFailures = new Map<string, number>();
+
+export function resetProxyAuthFailures(key?: string): void {
+  if (key) {
+    proxyAuthFailures.delete(key);
+  } else {
+    proxyAuthFailures.clear();
+  }
+}
 
 /**
  * Answer proxy auth challenges from the configured entries.
@@ -200,10 +217,22 @@ export function installProxyAuth(getSettings: () => ProxySettings): () => void {
   const handler = (details: AuthDetails, cb: AuthCallback): void => {
     if (!details.isProxy) return cb();
     const s = getSettings();
+    const host = details.challenger?.host ?? details.host;
+    const port = details.challenger?.port ?? details.port;
     const entry =
-      s.entries.find((e) => e.enabled && e.host === details.host && e.port === details.port) ??
+      s.entries.find((e) => e.enabled && e.host === host && e.port === port) ??
       pickActiveEntry(s);
     if (!entry?.username) return cb();
+
+    const key = entry.id || `${host}:${port}`;
+    const failures = proxyAuthFailures.get(key) ?? 0;
+    if (failures >= MAX_PROXY_AUTH_RETRIES) {
+      entry.lastCheckOk = false;
+      entry.lastCheckTs = Date.now();
+      return cb();
+    }
+    proxyAuthFailures.set(key, failures + 1);
+
     // The credentials must be nested under `authCredentials`: handing the
     // browser a bare `{username, password}` makes it reject the response with
     // "webRequestInternal.eventHandled", and every proxied request then fails.
@@ -235,6 +264,9 @@ export async function checkProxy(): Promise<ProxyCheckResult> {
       signal: ctl.signal,
       body: new URLSearchParams({ v: '5.251' }),
     });
+    if (r.status === 407 || r.status === 502) {
+      return { ok: false, status: r.status, latencyMs: Date.now() - started, error: `HTTP ${r.status}` };
+    }
     return { ok: true, status: r.status, latencyMs: Date.now() - started };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

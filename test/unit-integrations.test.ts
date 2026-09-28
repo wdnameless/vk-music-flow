@@ -47,6 +47,20 @@ describe('integrations: блокировка артистов', () => {
     const r = rules({ blockedArtists: ['Кино'] });
     assert.equal(isArtistBlocked('Кино feat. Виктор Цой', r), true);
   });
+  it('не блокирует частичные совпадения (Кино не блокирует Кинопробы) (R16)', () => {
+    const r = rules({ blockedArtists: ['Кино'] });
+    assert.equal(isArtistBlocked('Кинопробы', r), false);
+    assert.equal(isArtistBlocked('Киномания', r), false);
+    assert.equal(isArtistBlocked('Кино', r), true);
+  });
+
+  it('блокирует артиста при различных разделителях фитов (&, запятая, слэш)', () => {
+    const r = rules({ blockedArtists: ['Кино'] });
+    assert.equal(isArtistBlocked('Кино & Аквариум', r), true);
+    assert.equal(isArtistBlocked('Би-2, Кино', r), true);
+    assert.equal(isArtistBlocked('Кино / Сплин', r), true);
+    assert.equal(isArtistBlocked('Кино (feat. ДДТ)', r), true);
+  });
 
   it('пустые правила ничего не блокируют', () => {
     assert.equal(isArtistBlocked('Кто угодно', rules()), false);

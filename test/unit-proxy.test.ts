@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'vitest';
 
-import { buildPacScript, installProxyAuth, normalizeProxySettings, pacProxyToken, pickActiveEntry } from '../src/lib/proxy.js';
+import {
+  buildPacScript,
+  checkProxy,
+  installProxyAuth,
+  MAX_PROXY_AUTH_RETRIES,
+  normalizeProxySettings,
+  pacProxyToken,
+  pickActiveEntry,
+  resetProxyAuthFailures,
+} from '../src/lib/proxy.js';
 import { toDnrRules } from '../src/lib/dnr.js';
 import { DEFAULT_PROXY_SETTINGS, VK_PROXY_HOSTS, type ProxyEntry, type ProxySettings } from '../src/types.js';
 
@@ -204,6 +213,63 @@ describe('proxy: ответ на запрос авторизации', () => {
   it('молчит, когда у записи нет логина', () => {
     const handler = capture(() => settings({ entries: [entry()] }));
     assert.equal(asked(handler, { isProxy: true, host: '10.0.0.1', port: 1080 }), undefined);
+  });
+
+  it('сверяет авторизацию с details.challenger (host и port) (R13)', () => {
+    resetProxyAuthFailures();
+    const targetEntry = entry({ id: 'p_corp', host: 'proxy.corp.internal', port: 8080, username: 'user_corp', password: 'pwd' });
+    const fallbackEntry = entry({ id: 'p_def', host: 'default.proxy', port: 1080, username: 'user_def', password: 'def' });
+    const handler = capture(() => settings({ entries: [targetEntry, fallbackEntry] }));
+
+    // details.host is the destination web server, details.challenger is the proxy challenge
+    const res = asked(handler, {
+      isProxy: true,
+      host: 'api.vk.ru',
+      port: 443,
+      challenger: { host: 'proxy.corp.internal', port: 8080 },
+    });
+    assert.deepEqual(res, {
+      authCredentials: { username: 'user_corp', password: 'pwd' },
+    });
+  });
+
+  it('счётчик подряд отклонённых авторизаций (407) останавливается на пороге и помечает lastCheckOk=false (R14)', () => {
+    resetProxyAuthFailures();
+    const badEntry = entry({ id: 'p_bad', host: 'bad.proxy', port: 1080, username: 'u', password: 'wrong' });
+    const handler = capture(() => settings({ entries: [badEntry] }));
+
+    for (let i = 0; i < MAX_PROXY_AUTH_RETRIES; i++) {
+      const res = asked(handler, { isProxy: true, host: 'bad.proxy', port: 1080 });
+      assert.deepEqual(res, { authCredentials: { username: 'u', password: 'wrong' } });
+    }
+    // Next attempt exceeds threshold: should stop (call cb() without credentials) and mark entry failed
+    const stopped = asked(handler, { isProxy: true, host: 'bad.proxy', port: 1080 });
+    assert.equal(stopped, undefined);
+    assert.equal(badEntry.lastCheckOk, false);
+  });
+});
+
+describe('proxy: liveness probe (checkProxy)', () => {
+  it('407 и 502 от прокси возвращают ok: false (R15)', async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => new Response('Proxy Auth Required', { status: 407 });
+      const r407 = await checkProxy();
+      assert.equal(r407.ok, false);
+      assert.equal(r407.status, 407);
+
+      globalThis.fetch = async () => new Response('Bad Gateway', { status: 502 });
+      const r502 = await checkProxy();
+      assert.equal(r502.ok, false);
+      assert.equal(r502.status, 502);
+
+      globalThis.fetch = async () => new Response('{"response":{}}', { status: 200 });
+      const r200 = await checkProxy();
+      assert.equal(r200.ok, true);
+      assert.equal(r200.status, 200);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 
