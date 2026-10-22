@@ -120,10 +120,18 @@ describe('m3u8.js', () => {
       base,
     );
     assert.equal(p.variant, null);
-    assert.deepEqual(p.segments, [
-      'https://cdn.example/a/seg0.ts',
-      'https://cdn.example/a/seg1.ts',
-    ]);
+    assert.deepEqual(
+      p.segments.map((s) => s.url),
+      ['https://cdn.example/a/seg0.ts', 'https://cdn.example/a/seg1.ts'],
+    );
+    // unencrypted playlist: no key attached, sequence numbers still advance
+    assert.deepEqual(
+      p.segments.map((s) => [s.key, s.seq]),
+      [
+        [null, 0],
+        [null, 1],
+      ],
+    );
   });
   it('мастер-плейлист: выбирается вариант с максимальным BANDWIDTH', () => {
     const p = parseM3U8(
@@ -136,6 +144,40 @@ describe('m3u8.js', () => {
   it('EXT-X-MAP: init-сегмент извлекается', () => {
     const p = parseM3U8('#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:5,\ns.ts\n', base);
     assert.equal(p.init, 'https://cdn.example/a/init.mp4');
+  });
+  it('EXT-X-KEY AES-128: ключ резолвится, действие доходит до сегментов', () => {
+    const p = parseM3U8(
+      '#EXTM3U\n' +
+        '#EXT-X-KEY:METHOD=AES-128,URI="key.pub?siren=1"\n' +
+        '#EXTINF:2,\nseg-00-a2.ts\n' +
+        '#EXTINF:4,\nseg-01-a2.ts\n' +
+        '#EXT-X-KEY:METHOD=NONE\n' +
+        '#EXTINF:5,\nseg-02-a2.ts\n',
+      base,
+    );
+    assert.equal(p.segments[0]!.key?.method, 'AES-128');
+    assert.equal(p.segments[0]!.key?.uri, 'https://cdn.example/a/key.pub?siren=1');
+    assert.equal(p.segments[0]!.key?.iv, null); // implicit: derived from seq
+    // key persists across segments until METHOD=NONE switches it off
+    assert.equal(p.segments[1]!.key?.method, 'AES-128');
+    assert.equal(p.segments[2]!.key, null);
+    assert.deepEqual(
+      p.segments.map((s) => s.seq),
+      [0, 1, 2],
+    );
+  });
+  it('EXT-X-KEY: явный IV парсится; MEDIA-SEQUENCE сдвигает нумерацию', () => {
+    const p = parseM3U8(
+      '#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:7\n' +
+        '#EXT-X-KEY:METHOD=AES-128,URI="k",IV=0x000102030405060708090a0b0c0d0e0f\n' +
+        '#EXTINF:5,\ns.ts\n',
+      base,
+    );
+    assert.equal(p.segments[0]!.seq, 7);
+    assert.deepEqual(
+      [...(p.segments[0]!.key?.iv ?? [])],
+      [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    );
   });
   it('не-m3u8 бросает ошибку', () => {
     assert.throws(() => parseM3U8('<html>404</html>', base), /не m3u8/);

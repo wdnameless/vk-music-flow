@@ -19,7 +19,7 @@ const ROOT = path.resolve(HERE, '..');
 const MOCK_DIR = path.join(HERE, 'mock');
 
 const CHROMIUM_EXE =
-  process.env.VMF_CHROMIUM_EXE || 'D:\\progg\\pw-browsers\\chromium-1234\\chrome-win64\\chrome.exe';
+  process.env.VMF_CHROMIUM_EXE || 'D:\\progg\\NULLTRACE\\chromium\\fingerprint-chromium\\ungoogled-chromium_148.0.7778.215-1.1_windows_x64\\chrome.exe';
 const hasChromium = existsSync(CHROMIUM_EXE);
 const isCI = !!process.env.CI;
 
@@ -124,7 +124,7 @@ describeB('browser: acquisition on real Chromium (mocks)', () => {
       throw new Error(
         `CI must run the 13 browser checks, but no Chromium binary found at ` +
           `"${CHROMIUM_EXE}" (VMF_CHROMIUM_EXE=${process.env.VMF_CHROMIUM_EXE ?? '<unset>'}). ` +
-          `Check the "Provision Chromium" CI step.`
+          `Check the "Provision Chromium" CI step.`,
       );
     }
     compiled['hook-main'] = await compiledScript('hook-main');
@@ -220,9 +220,9 @@ describeB('browser: acquisition on real Chromium (mocks)', () => {
     expect(hook.stats!.parsed).toBeGreaterThanOrEqual(2);
   });
 
-  it('B3: собраны ровно два трека (дедуп по key)', () => {
+  it('B3: собраны ровно три трека (дедуп по key)', () => {
     const keys = hook.audios.map((a) => a.key).sort();
-    expect(keys).toEqual(['55_101', '55_102']);
+    expect(keys).toEqual(['55_101', '55_102', '55_103']);
   });
 
   it('B4: 55_101 — artist/title/album из плоскового поля', () => {
@@ -251,6 +251,21 @@ describeB('browser: acquisition on real Chromium (mocks)', () => {
     expect(a!.urls.some((u) => u === 'https://userapi.com/hls/index.m3u8')).toBe(true);
   });
 
+  it('B7a: 55_103 (реальная форма VK) — обложки НЕ попадают в urls', () => {
+    const a = hook.audios.find((x) => x.key === '55_103');
+    expect(a).toBeTruthy();
+    // the audio payload is the only entry; the 3 photo_* JPEGs must not be here
+    expect(a!.urls).toEqual(['https://cs9-3v4.vkuseraudio.ru/s/v1/ac/ABCDEF/index.m3u8?siren=1']);
+    expect(a!.urls.some((u) => /vkuserphoto/.test(u))).toBe(false);
+  });
+
+  it('B7b: 55_103 — обложки берутся из thumb.photo_* (крупная первой)', () => {
+    const a = hook.audios.find((x) => x.key === '55_103');
+    expect(a!.covers.length).toBe(3);
+    expect(a!.covers[0]).toContain('size=1200x1200');
+    expect(a!.covers[2]).toContain('size=34x34');
+  });
+
   it('B8: тексты песен мостятся через LYRICS', () => {
     expect(hook.lyrics).toBeTruthy();
     expect(hook.lyrics!['101']).toContain('текст песни длиннее тридцати символов');
@@ -276,6 +291,19 @@ describeB('browser: acquisition on real Chromium (mocks)', () => {
 
   it('B12: автоскролл досканировал все 40 строк', () => {
     expect(collector.scan!.count).toBe(40);
+  });
+
+  it('B12a: DOM-fallback читает современные строки VK (data-audio-id + MusicTrackRow_Info)', () => {
+    const relays = collector.sent.filter(
+      (m) => m.t === 'AUDIOS' && m.pl === 'Рок классика' && m.scanning === true,
+    );
+    const first = relays.flatMap((m) => m.audios ?? []).find((a) => a.key === '77_0');
+    expect(first).toBeTruthy();
+    // title/artist come from the DOM row, split across the Info children
+    expect(first!.title).toBe('Песня 0');
+    expect(first!.artist).toBe('Артист 0');
+    // the DOM exposes no playable link; urls stay empty until the hook fills them
+    expect(first!.urls).toEqual([]);
   });
 
   it('B13: все ключи 77_0..77_39 релеятся в SW сообщениями AUDIOS с pl+scanning', () => {

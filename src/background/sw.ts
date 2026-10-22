@@ -1,16 +1,108 @@
-import { buildTag, stripTag } from '../lib/id3.js';
+import { buildTag, stripTag, type Id3Meta } from '../lib/id3.js';
 import { parseM3U8, type M3U8ParseResult } from '../lib/m3u8.js';
 import { sanitize, pad, sniffExt, concatBytes, sanitizePath } from '../lib/util.js';
-import type {
-  AudioMeta,
-  FailedItem,
-  FlowState,
-  QueueItem,
-  RuntimeMessage,
-  StateSnapshot,
+import { computeBackoff, computeStartDelay } from '../lib/backoff.js';
+import { chromeStorageJournalKv, Journal, journalId } from '../lib/journal.js';
+import {
+  clearRootHandle,
+  ensurePermission,
+  loadRootHandle,
+  StoragePermissionError,
+  writeToRoot,
+} from '../storage/fs.js';
+import {
+  DEFAULT_AUDIO_FX,
+  DEFAULT_BLOCK_RULES,
+  PLATFORM_LABELS,
+  DEFAULT_PROXY_SETTINGS,
+  DEFAULT_SETTINGS,
+  type AudioMeta,
+  type FailedItem,
+  type PlaylistRef,
+  type FlowState,
+  type JournalResponse,
+  type ProxyCheckResult,
+  type ProxySettings,
+  type ProxyStateResult,
+  type QueueItem,
+  type RuntimeMessage,
+  type BlockRules,
+  type LastfmAuth,
+  type LyricsResult,
+  type PlatformId,
+  type PlayerCommand,
+  type PlayerState,
+  type PlayerTrack,
+  type ScrobbleQueueItem,
+  type StateSnapshot,
+  type StorageStateResult,
+  type StreamRef,
+  type Track,
+  type VkAudio,
+  type VkAuthState,
+  type VkCatalogBlock,
+  type VkCatalogResult,
+  type CatalogSection,
+  type VkCatalogSection,
+  type VkPlaylist,
 } from '../types.js';
+import { applyProxy, checkProxy, installProxyAuth, normalizeProxySettings, pickActiveEntry, readApplied } from '../lib/proxy.js';
+import { installDnrRules, readDnrRules, toDnrRules } from '../lib/dnr.js';
+import { provider, providerForKey, platformStatus } from '../platforms/registry.js';
+import { parseTrackKey } from '../platforms/provider.js';
+import { RestrictedTrackError, resolveTrackUrls } from '../lib/resolve.js';
+import {
+  playerSnapshot,
+  rememberPlayerState,
+  sendToPlayer,
+} from '../lib/player-bridge.js';
+import {
+  fetchLyrics,
+  filterPlayable,
+  normalizeBlockRules,
+  parseLyricsResponse,
+} from '../lib/integrations.js';
+import {
+  authorizeUrl,
+  exchangeToken,
+  isLinked,
+  isSessionInvalid,
+  normalizeLastfm,
+  nowPlaying as lastfmNowPlaying,
+  requestToken,
+  scrobbleBatch,
+  shouldScrobble,
+} from '../lib/lastfm.js';
+import { audioMetaListFromVk } from '../lib/vk-track.js';
+import {
+  authState,
+  vkCall,
+  getCatalogSection,
+  getCatalogSections,
+  getMyAudios,
+  getStreamMix,
+  getPlaylistAudios,
+  getPlaylists,
+  getRecommendations,
+  searchAudios,
+} from '../lib/vk-api.js';
+import { clearToken } from '../lib/vk-auth.js';
+import { normalisationGain } from '../offscreen/audio-graph.js';
+import {
+  albumLufs,
+  GATE_ABSOLUTE_LUFS,
+  modeGain,
+  replayGainDb,
+  replayGainPeak,
+  REPLAYGAIN_REFERENCE_LUFS,
+} from '../lib/loudness.js';
 
 const SKEY = 'vmf_state_v1';
+const PKEY = 'vmf_proxy_v1';
+const RKEY = 'vmf_rules_v1';
+const LKEY = 'vmf_lastfm_v1';
+const SKEY_SCROBBLE = 'vmf_scrobble_queue_v1';
+const SKEY_LF_TOKEN = 'vmf_lastfm_token_v1';
 
 let S: FlowState = {
   audios: {},
@@ -19,21 +111,98 @@ let S: FlowState = {
   queue: [],
   failed: [],
   done: {},
-  settings: { conc: 2, gapMs: 450, baseDir: 'VK Music' },
+  settings: { ...DEFAULT_SETTINGS },
 };
 
+/** Proxy routing config, persisted separately from the download catalog. */
+let P: ProxySettings = { ...DEFAULT_PROXY_SETTINGS, entries: [] };
+
+/** Listening preferences (block list / dislikes), persisted separately. */
+let R: BlockRules = { ...DEFAULT_BLOCK_RULES, blockedArtists: [], disliked: [] };
+
+/** Last.fm credentials, persisted separately. */
+let L: LastfmAuth = { apiKey: '', secret: '', sessionKey: null, username: null };
+/** Plays waiting to be scrobbled (Last.fm is often unreachable). */
+let scrobbleQ: ScrobbleQueueItem[] = [];
+/** Pending desktop-auth token, between "get token" and "user authorised". */
+let lfPendingToken: string | null = null;
+
 let pumping = false;
-let stopFlag = false;
+let stopFlag = false; // CANCEL: stop loops + drop pending
+let paused = false; // PAUSE: stop new starts, keep in-flight running
+/** Journal ids executing in THIS SW instance — rehydrate must never re-queue them. */
+const inFlight = new Set<string>();
+/** Cold-start hydration, resolved exactly once per SW instance. Every boot
+ *  trigger below must reuse it: load() merges persisted state over live state,
+ *  so a second call rolls back settings changed since boot and resurrects
+ *  queue lines the workers are executing right now. */
+let booted: Promise<void> | undefined;
+let lastStartAt = 0; // rate limiter anchor (time of last download start)
+
+/** Track the offscreen document is currently playing, for scrobbling. */
+let nowPlaying: { track: PlayerTrack; startedAt: number; scrobbled: boolean } | null = null;
+
+/** Persistent queue journal in chrome.storage.local (survives SW termination). */
+const journal = new Journal(chromeStorageJournalKv());
 
 async function load(): Promise<void> {
   try {
     const o = await chrome.storage.local.get(SKEY);
     if (o[SKEY]) S = { ...S, ...(o[SKEY] as Partial<FlowState>) };
-    if (!S.settings) S.settings = { conc: 2, gapMs: 450, baseDir: 'VK Music' };
+    // defaults-fill: pre-Phase-1 persisted states lack the new settings keys
+    S.settings = { ...DEFAULT_SETTINGS, ...S.settings };
     if (!S.settings.baseDir) S.settings.baseDir = 'VK Music';
+    if ('nowPlaying' in S.settings && S.settings.nowPlaying) {
+      nowPlaying = S.settings.nowPlaying;
+    }
   } catch {
     /* keep defaults */
   }
+  try {
+    await journal.hydrate();
+    await rehydrateQueueFromJournal();
+  } catch {
+    /* journal unavailable — plain in-session queueing still works */
+  }
+  // Wave 1 network layer: hydrate proxy config, install header rules, then push
+  // the routing into Chromium. DNR must go in first: VK rejects token minting
+  // from an extension origin until the Origin header is spoofed.
+  try {
+    const o = await chrome.storage.local.get([PKEY, RKEY, LKEY, SKEY_SCROBBLE, SKEY_LF_TOKEN]);
+    P = normalizeProxySettings(o[PKEY]);
+    R = normalizeBlockRules(o[RKEY]);
+    L = normalizeLastfm(o[LKEY]);
+    scrobbleQ = normalizeScrobbleQueue(o[SKEY_SCROBBLE]);
+    lfPendingToken = typeof o[SKEY_LF_TOKEN] === 'string' ? o[SKEY_LF_TOKEN] : null;
+    await installDnrRules();
+    await applyProxy(P);
+  } catch {
+    /* no network permissions — downloads still work direct */
+  }
+}
+
+/** Re-pump every journal line still pending (resume after SW death). */
+async function rehydrateQueueFromJournal(): Promise<void> {
+  let ch = false;
+  for (const e of journal.pendingEntries()) {
+    const id = journalId(e);
+    const doneKey = e.pl + '/' + e.key;
+    if (S.done[doneKey]) {
+      await journal.setStatus(id, 'done');
+      continue;
+    }
+    // A 'downloading' line only means "interrupted" for a COLD start. In a live
+    // SW the worker holds it in flight; re-queueing it would download a twin.
+    if (inFlight.has(id)) continue;
+    if (
+      !S.queue.some((q) => q.pl === e.pl && q.key === e.key) &&
+      !S.failed.some((f) => f.key === e.key && f.pl === e.pl)
+    ) {
+      S.queue.push({ key: e.key, pl: e.pl, idx: e.idx, w: e.w });
+      ch = true;
+    }
+  }
+  if (ch) persist();
 }
 
 let saveT: ReturnType<typeof setTimeout> | undefined;
@@ -44,6 +213,141 @@ function persist(): void {
       /* best-effort */
     });
   }, 400);
+}
+
+let saveRT: number | undefined;
+function persistRules(): void {
+  clearTimeout(saveRT);
+  saveRT = setTimeout(() => {
+    chrome.storage.local.set({ [RKEY]: JSON.parse(JSON.stringify(R)) }).catch(() => {
+      /* best-effort */
+    });
+  }, 200) as unknown as number;
+}
+
+let saveLT: number | undefined;
+function persistLastfm(): void {
+  clearTimeout(saveLT);
+  saveLT = setTimeout(() => {
+    chrome.storage.local
+      .set({
+        [LKEY]: JSON.parse(JSON.stringify(L)),
+        [SKEY_SCROBBLE]: JSON.parse(JSON.stringify(scrobbleQ)),
+        [SKEY_LF_TOKEN]: lfPendingToken,
+      })
+      .catch(() => {
+        /* best-effort */
+      });
+  }, 200) as unknown as number;
+}
+
+let savePT: number | undefined;
+function persistProxy(): void {
+  clearTimeout(savePT);
+  savePT = setTimeout(() => {
+    chrome.storage.local.set({ [PKEY]: JSON.parse(JSON.stringify(P)) }).catch(() => {
+      /* best-effort */
+    });
+  }, 200) as unknown as number;
+}
+
+/** Proxy settings + what Chromium actually has installed. */
+async function proxyState(): Promise<ProxyStateResult> {
+  const applied = await readApplied();
+  const entry = pickActiveEntry(P);
+  return { ok: true, settings: P, applied: { ...applied, proxyFor: applied.error ? null : (entry?.host ?? null) } };
+}
+
+/** Sanitize a stored scrobble backlog. */
+function normalizeScrobbleQueue(raw: unknown): ScrobbleQueueItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((x): x is ScrobbleQueueItem => {
+      const o = x as Partial<ScrobbleQueueItem> | null;
+      return (
+        !!o &&
+        typeof o.artist === 'string' &&
+        typeof o.title === 'string' &&
+        typeof o.startedAt === 'number' &&
+        o.artist.trim().length > 0 &&
+        o.title.trim().length > 0
+      );
+    })
+    .slice(-500)
+    .map((x) => ({
+      artist: x.artist,
+      title: x.title,
+      duration: typeof x.duration === 'number' ? x.duration : null,
+      startedAt: x.startedAt,
+    }));
+}
+
+/** True when Last.fm has everything needed to scrobble. */
+function lastfmReady(): boolean {
+  return isLinked(L);
+}
+
+/**
+ * Flush the scrobble backlog.
+ *
+ * Last.fm is commonly unreachable (it is blocked in the same networks that block
+ * VK), so failures keep the queue instead of dropping plays. A dead session key
+ * is different: retrying it forever would never succeed, so the backlog is kept
+ * but the session is surfaced as broken for the user to re-link.
+ */
+async function flushScrobbles(): Promise<{ ok: boolean; sent: number; pending: number; error?: string }> {
+  if (!lastfmReady() || !scrobbleQ.length) {
+    return { ok: true, sent: 0, pending: scrobbleQ.length };
+  }
+  let sent = 0;
+  while (scrobbleQ.length) {
+    const batch = scrobbleQ.slice(0, 50);
+    const r = await scrobbleBatch(batch, L);
+    if (!r.ok) {
+      const code = (r as { code?: number }).code;
+      if (isSessionInvalid(code)) {
+        // Session is dead: keep the backlog, but stop pretending it will work.
+        return { ok: false, sent, pending: scrobbleQ.length, error: r.error ?? 'сессия Last.fm недействительна' };
+      }
+      return { ok: false, sent, pending: scrobbleQ.length, error: r.error };
+    }
+    scrobbleQ.splice(0, batch.length);
+    sent += r.accepted ?? batch.length;
+    persistLastfm();
+  }
+  return { ok: true, sent, pending: 0 };
+}
+
+/** Queue a finished play and try to send it right away. */
+async function enqueueScrobble(item: ScrobbleQueueItem): Promise<void> {
+  const isDuplicate = scrobbleQ.some(
+    (q) => q.artist === item.artist && q.title === item.title && q.startedAt === item.startedAt,
+  );
+  if (isDuplicate) return;
+  scrobbleQ.push(item);
+  // Bound the backlog so a long offline stretch cannot grow it without limit.
+  if (scrobbleQ.length > 500) scrobbleQ = scrobbleQ.slice(-500);
+  persistLastfm();
+  await flushScrobbles();
+}
+
+async function journalEnsureAll(items: QueueItem[]): Promise<void> {
+  let changed = false;
+  const j = journal as unknown as { save: () => Promise<void> };
+  const origSave = j.save.bind(journal);
+  j.save = async () => {
+    changed = true;
+  };
+  try {
+    for (const item of items) {
+      await journal.ensure(item);
+    }
+  } finally {
+    j.save = origSave;
+  }
+  if (changed) {
+    await j.save();
+  }
 }
 
 function mergeAudio(a: AudioMeta): boolean {
@@ -82,6 +386,26 @@ function mergeAudio(a: AudioMeta): boolean {
   return ch;
 }
 
+/**
+ * Rebuild a playlist ref from its key (`<platform>:<owner>_<id>`).
+ *
+ * The access token is not part of the key, so a private playlist without one
+ * will fail at the provider; VK returns a key for every playlist it lists.
+ */
+function playlistRefFromKey(key: string): PlaylistRef | null {
+  const parsed = parseTrackKey(key);
+  const m = /^(-?\d+)_(\d+)$/.exec(parsed.nativeId);
+  if (!m) return null;
+  return {
+    key,
+    platform: parsed.platform,
+    nativeId: parsed.nativeId,
+    title: '',
+    trackCount: null,
+    cover: null,
+  };
+}
+
 function attachToPlaylist(name: string | undefined | null, key: string): void {
   if (!name) return;
   if (!S.playlists[name]) S.playlists[name] = [];
@@ -89,7 +413,46 @@ function attachToPlaylist(name: string | undefined | null, key: string): void {
   if (!arr.includes(key)) arr.push(key);
 }
 
-type HandlerResult = StateSnapshot | { ok: boolean } | { queued: number } | null;
+type HandlerResult =
+  | StateSnapshot
+  | { ok: boolean }
+  | { queued: number; skipped: number }
+  | JournalResponse
+  | StorageStateResult
+  | ProxyStateResult
+  | ProxyCheckResult
+  | { ok: boolean; ids: number[]; rules: number; error: string | null }
+  | VkAuthState
+  | VkCatalogResult<VkAudio>
+  | VkCatalogResult<VkPlaylist>
+  | { ok: boolean; queued: number; skipped: number; total: number }
+  | { ok: boolean; state: PlayerState | null; skipped?: number }
+  | { ok: boolean; urls: string[]; via?: string; restricted?: boolean; reason?: string }
+  | { ok: boolean; sections: VkCatalogSection[] }
+  | { ok: boolean; platforms: ReturnType<typeof platformStatus> }
+  | { ok: boolean; status?: unknown }
+  | { ok: boolean; tracks?: Track[]; playlists?: unknown[]; sections?: CatalogSection[] }
+  | { ok: boolean; streams: Record<string, StreamRef> }
+  | { ok: boolean; presets: Record<string, number[]> }
+  | { ok: boolean; clipped: string[] }
+  | { ok: boolean }
+  | { ok: boolean }
+  | { ok: boolean; queued: number; skipped: number; total?: number; reason?: string }
+  | { ok: boolean; blocks: VkCatalogBlock[] }
+  | { ok: boolean; rules: BlockRules; disliked?: boolean }
+  | { ok: boolean; lyrics: LyricsResult | null; error?: string }
+  | {
+      ok: boolean;
+      auth?: LastfmAuth;
+      enabled?: boolean;
+      pending?: number;
+      error?: string;
+      authorizeUrl?: string | null;
+      url?: string | null;
+      token?: string | null;
+      sent?: number;
+    }
+  | null;
 
 async function handle(m: RuntimeMessage): Promise<HandlerResult> {
   switch (m.t) {
@@ -112,7 +475,9 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
     }
     case 'ENQUEUE': {
       stopFlag = false;
+      paused = false;
       const names = m.names || [];
+      let skipped = 0;
       for (const name of names) {
         const arr = S.playlists[name] || [];
         const w = String(Math.max(1, arr.length)).length;
@@ -121,27 +486,614 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
           const doneKey = name + '/' + key;
           if (S.done[doneKey]) return;
           if (S.queue.some((q) => q.pl === name && q.key === key)) return;
+          // DOM-only finds have no playable URL yet (the network hook supplies it
+          // when the track is seen). Queueing them would fail instantly with
+          // "нет доступных ссылок" and pollute the journal with 100+ errors that
+          // can never succeed — report how many were left out instead.
+          if (!(S.audios[key]?.urls || []).length) {
+            skipped++;
+            return;
+          }
           S.queue.push({ key, pl: name, idx, w });
         });
       }
+      await journalEnsureAll(S.queue);
       persist();
       pump();
-      return { queued: S.queue.length };
+      return { queued: S.queue.length, skipped };
     }
     case 'CANCEL': {
       stopFlag = true;
+      paused = false;
       S.queue = [];
+      await journal.dropPending();
       persist();
       return { ok: true };
     }
+    case 'PAUSE': {
+      paused = true;
+      persist();
+      return { ok: true };
+    }
+    case 'RESUME': {
+      paused = false;
+      stopFlag = false;
+      await rehydrateQueueFromJournal();
+      persist();
+      pump();
+      return { ok: true };
+    }
+    case 'GET_JOURNAL': {
+      return journalSnap();
+    }
+    case 'GET_STORAGE_STATE': {
+      return await storageState();
+    }
+    // ---- Wave 1: proxy routing + header rules ----
+    case 'GET_PROXY_STATE': {
+      return await proxyState();
+    }
+    case 'SET_PROXY_ENTRIES': {
+      P = normalizeProxySettings({ ...P, entries: m.entries });
+      persistProxy();
+      await applyProxy(P);
+      return await proxyState();
+    }
+    case 'SET_PROXY_MODE': {
+      P = { ...P, mode: m.mode };
+      persistProxy();
+      await applyProxy(P);
+      return await proxyState();
+    }
+    case 'SET_PROXY_ACTIVE': {
+      P = { ...P, activeId: m.id };
+      persistProxy();
+      await applyProxy(P);
+      return await proxyState();
+    }
+    case 'CHECK_PROXY': {
+      const entry = m.id ? (P.entries.find((e) => e.id === m.id) ?? null) : pickActiveEntry(P);
+      const res = await checkProxy();
+      if (entry) {
+        P = {
+          ...P,
+          entries: P.entries.map((e) =>
+            e.id === entry.id ? { ...e, lastCheckTs: Date.now(), lastCheckOk: res.ok } : e,
+          ),
+        };
+        persistProxy();
+      }
+      return { ok: res.ok, status: res.status, latencyMs: res.latencyMs, error: res.error };
+    }
+    case 'GET_DNR_STATE': {
+      const r = await readDnrRules();
+      return { ok: r.ok, ids: r.ids, rules: toDnrRules().length, error: r.error };
+    }
+    case 'INSTALL_DNR': {
+      const r = await installDnrRules();
+      return { ok: r.ok, ids: r.ids, rules: toDnrRules().length, error: r.error };
+    }
+    // ---- Wave 2: VK session + catalog ----
+    case 'GET_VK_AUTH': {
+      return await authState();
+    }
+    case 'VK_LOGIN': {
+      await clearToken();
+      return await authState();
+    }
+    case 'VK_LOGOUT': {
+      await clearToken();
+      return await authState();
+    }
+    case 'VK_MY_AUDIOS': {
+      const s = await authState();
+      if (!s.signedIn || !s.userId) return { ok: false, items: [], reason: s.reason };
+      const items = await getMyAudios(s.userId, m.count ?? 50, m.offset ?? 0);
+      return { ok: true, items };
+    }
+    case 'VK_PLAYLISTS': {
+      const s = await authState();
+      if (!s.signedIn || !s.userId) return { ok: false, items: [], reason: s.reason };
+      return { ok: true, items: await getPlaylists(s.userId) };
+    }
+    case 'VK_PLAYLIST_AUDIOS': {
+      const items = await getPlaylistAudios(m.ownerId, m.playlistId, m.accessKey);
+      return { ok: true, items };
+    }
+    case 'VK_SEARCH': {
+      return { ok: true, items: await searchAudios(m.q) };
+    }
+    case 'VK_RECOMMENDATIONS': {
+      const s = await authState();
+      if (!s.signedIn || !s.userId) return { ok: false, items: [], reason: s.reason };
+      return { ok: true, items: await getRecommendations(s.userId) };
+    }
+    case 'VK_SECTIONS': {
+      const s = await authState();
+      if (!s.signedIn || !s.userId) return { ok: false, items: [], reason: s.reason };
+      return { ok: true, sections: await getCatalogSections(s.userId) };
+    }
+    case 'VK_SECTION': {
+      return { ok: true, blocks: await getCatalogSection(m.sectionId) };
+    }
+    case 'VK_MIX': {
+      const s = await authState();
+      if (!s.signedIn || !s.userId) return { ok: false, items: [], reason: s.reason };
+      return { ok: true, items: await getStreamMix(s.userId) };
+    }
+    // ---- Platform-neutral routing (any registered provider) ----
+    case 'P_PLATFORMS': {
+      return { ok: true, platforms: platformStatus() };
+    }
+    case 'P_AUTH': {
+      const p = provider(m.platform);
+      if (!p) return { ok: false, reason: PLATFORM_LABELS[m.platform] + ': ещё не поддерживается' };
+      return { ok: true, status: await p.auth() };
+    }
+    case 'P_LIST': {
+      // One entry point for every provider, so the popup never branches on the
+      // platform. `kind` selects which provider method answers.
+      const p = provider(m.platform ?? 'vk');
+      if (!p) return { ok: false, items: [], reason: 'платформа не поддерживается' };
+      switch (m.kind) {
+        case 'my-tracks':
+          return { ok: true, tracks: await p.myTracks() };
+        case 'playlists':
+          return { ok: true, playlists: await p.playlists() };
+        case 'playlist': {
+          // The ref is rebuilt from the key rather than looked up in the user's
+          // playlist list: that lookup cost a second API round-trip and failed
+          // for any playlist not in it (community playlists from search).
+          const ref = m.id ? playlistRefFromKey(m.id) : null;
+          if (!ref) return { ok: false, tracks: [], reason: 'плейлист не найден' };
+          const tracks = await p.playlistTracks(ref);
+          return { ok: true, tracks };
+        }
+        case 'recommendations':
+          return { ok: true, tracks: await p.recommendations() };
+        case 'sections':
+          return { ok: true, sections: await p.sections() };
+        case 'section':
+          return { ok: true, tracks: m.id ? await p.sectionTracks(m.id) : [] };
+        case 'search':
+          return { ok: true, tracks: (await p.search(m.id ?? '')).tracks };
+        default:
+          return { ok: false, tracks: [], reason: 'неизвестный запрос' };
+      }
+    }
+    case 'P_ENQUEUE': {
+      // Downloading a selection the user made in a list (my music, search,
+      // recommendations, a playlist). Entries go through the platform's
+      // catalogEntry so the downloader has the token it needs to re-resolve a
+      // stream later, which a bare Track does not carry.
+      stopFlag = false;
+      paused = false;
+      const name = (m.name || '').trim() || 'Загрузки';
+      let skipped = 0;
+      const usable: AudioMeta[] = [];
+      for (const t of m.tracks) {
+        if (t.restricted) {
+          skipped++;
+          continue;
+        }
+        const p = providerForKey(t.key);
+        const meta = p?.catalogEntry?.(t) ?? null;
+        if (!meta) {
+          skipped++;
+          continue;
+        }
+        mergeAudio(meta);
+        usable.push(meta);
+      }
+      if (!usable.length) {
+        return { ok: false, queued: 0, skipped, reason: skipped ? 'все выбранные треки недоступны' : 'ничего не выбрано' };
+      }
+      // The queue is keyed by the CATALOG key, not the UI's `Track.key`: the
+      // downloader looks entries up in `S.audios`, which stores them under the
+      // platform's own id (`<owner>_<id>`), so a `vk:`-prefixed key would never
+      // resolve and every item failed with "трек не найден в каталоге".
+      for (const meta of usable) attachToPlaylist(name, meta.key);
+      persist();
+      const width = String(Math.max(1, usable.length)).length;
+      let queued = 0;
+      const added: QueueItem[] = [];
+      usable.forEach((meta, i) => {
+        const doneKey = name + '/' + meta.key;
+        if (S.done[doneKey]) return;
+        if (S.queue.some((q) => q.pl === name && q.key === meta.key)) return;
+        const item: QueueItem = { key: meta.key, pl: name, idx: i + 1, w: width };
+        S.queue.push(item);
+        added.push(item);
+        queued++;
+      });
+      // Only the new items need a journal entry; re-ensuring the whole queue
+      // cost one IndexedDB round-trip per pending track on every enqueue.
+      for (const qj of added) await journal.ensure(qj);
+      persist();
+      pump();
+      return { ok: true, queued, skipped, total: m.tracks.length };
+    }
+    case 'P_LIKE': {
+      const p = providerForKey(m.key);
+      if (!p?.setLiked) {
+        return { ok: false, reason: PLATFORM_LABELS[parseTrackKey(m.key).platform] + ': лайки не поддерживаются' };
+      }
+      // The UI sends the full track, but a minimal one is enough: providers
+      // only need the platform and native id to call their library endpoint.
+      const parsed = parseTrackKey(m.key);
+      const track: Track = m.track ?? {
+        key: m.key,
+        platform: parsed.platform,
+        nativeId: parsed.nativeId,
+        artist: '',
+        title: '',
+        album: '',
+        duration: null,
+        cover: null,
+        restricted: false,
+      };
+      // VK distinguishes "already in the library" from a real failure, and a
+      // duplicate add is not an error worth showing the user.
+      try {
+        await p.setLiked(track, m.liked);
+      } catch (e) {
+        const msg = (e as Error).message || String(e);
+        if (/already/i.test(msg)) return { ok: true };
+        return { ok: false, reason: msg };
+      }
+      return { ok: true };
+    }
+    case 'GET_PRESETS': {
+      return { ok: true, presets: S.settings.eqPresets ?? {} };
+    }
+    case 'SAVE_PRESET': {
+      S.settings.eqPresets = { ...(S.settings.eqPresets ?? {}), [m.name]: m.gains };
+      persist();
+      return { ok: true, presets: S.settings.eqPresets };
+    }
+    case 'APPLY_PRESET': {
+      const gains = (S.settings.eqPresets ?? {})[m.name];
+      if (!gains) return { ok: false, state: playerSnapshot() };
+      S.settings.playerEqEnabled = true;
+      S.settings.playerEqGains = gains.slice();
+      persist();
+      const s = await sendToPlayer({ t: 'P_EQ_ENABLED', enabled: true });
+      let live = s;
+      if (gains.length) live = await sendToPlayer({ t: 'P_EQ_BANDS', gains });
+      if (live) rememberPlayerState(live as PlayerState);
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'P_RESOLVE': {
+      // Resolve keys across whatever providers own them, so a mixed queue works.
+      const out: Record<string, StreamRef> = {};
+      const byPlatform = new Map<PlatformId, Track[]>();
+      for (const key of m.keys) {
+        const p = providerForKey(key);
+        if (!p) continue;
+        const parsed = parseTrackKey(key);
+        const list = byPlatform.get(parsed.platform) ?? [];
+        list.push({ key, platform: parsed.platform, nativeId: parsed.nativeId, artist: '', title: '', album: '', duration: null, cover: null, restricted: false });
+        byPlatform.set(parsed.platform, list);
+      }
+      for (const [pid, tracks] of byPlatform) {
+        const p = provider(pid);
+        if (!p) continue;
+        Object.assign(out, await p.resolveMany(tracks));
+      }
+      return { ok: true, streams: out };
+    }
+    case 'VK_ENQUEUE': {
+      // Convert API tracks into catalog entries, then reuse the normal queue
+      // path so journal/rehydrate/pause semantics all stay identical.
+      const metas = audioMetaListFromVk(m.audios);
+      let ch = false;
+      for (const meta of metas) if (mergeAudio(meta)) ch = true;
+      if (ch) persist();
+      for (const meta of metas) attachToPlaylist(m.name, meta.key);
+      let skipped = 0;
+      const arr = S.playlists[m.name] || [];
+      const w = String(Math.max(1, arr.length)).length;
+      arr.forEach((key, i) => {
+        const doneKey = m.name + '/' + key;
+        if (S.done[doneKey]) return;
+        if (S.queue.some((q) => q.pl === m.name && q.key === key)) return;
+        const meta = S.audios[key];
+        // Restricted tracks have no URL anywhere — do not queue them at all.
+        if (!meta || (meta.restricted === 2 || meta.restricted === 3)) {
+          skipped++;
+          return;
+        }
+        S.queue.push({ key, pl: m.name, idx: i + 1, w });
+      });
+      await journalEnsureAll(S.queue);
+      persist();
+      pump();
+      return { ok: true, queued: S.queue.length, skipped, total: metas.length };
+    }
+    // ---- Wave 2: playback via the offscreen document ----
+    case 'PLAY_LIST': {
+      // Block list / dislikes are applied here so every entry point (catalog,
+      // playlist, search) gets the same behaviour without repeating the check.
+      const allowed = filterPlayable(m.tracks, R);
+      const skipped = m.tracks.length - allowed.length;
+      // `key` names the row the user pressed play on. Starting there is what
+      // makes "play track 20" play the rest of the list, and it must be resolved
+      // against the FILTERED list, or an earlier blocked track would shift it.
+      let startIndex = m.startIndex ?? 0;
+      if (m.key) {
+        const at = allowed.findIndex((t) => t.key === m.key);
+        if (at >= 0) startIndex = at;
+      }
+      const started = allowed.length
+        ? await sendToPlayer({ t: 'P_PLAY_QUEUE', tracks: allowed, startIndex })
+        : null;
+      if (started) rememberPlayerState(started as PlayerState);
+      persistPlayerQueue();
+      return { ok: started !== null, state: playerSnapshot(), skipped };
+    }
+    // ---- Queue control (popup -> offscreen) ----
+    case 'PLAY_SHUFFLE': {
+      const st = await sendToPlayer({ t: 'P_SHUFFLE', on: m.on });
+      if (st) rememberPlayerState(st as PlayerState);
+      persistPlayerQueue();
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_REPEAT': {
+      const st = await sendToPlayer({ t: 'P_REPEAT', mode: m.mode });
+      if (st) rememberPlayerState(st as PlayerState);
+      persistPlayerQueue();
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_INSERT': {
+      const st = await sendToPlayer({ t: 'P_INSERT', tracks: m.tracks, next: m.next });
+      if (st) rememberPlayerState(st as PlayerState);
+      persistPlayerQueue();
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_REMOVE': {
+      const st = await sendToPlayer({ t: 'P_REMOVE', index: m.index });
+      if (st) rememberPlayerState(st as PlayerState);
+      persistPlayerQueue();
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_MOVE': {
+      const st = await sendToPlayer({ t: 'P_MOVE', from: m.from, to: m.to });
+      if (st) rememberPlayerState(st as PlayerState);
+      persistPlayerQueue();
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_JUMP': {
+      const st = await sendToPlayer({ t: 'P_JUMP', index: m.index });
+      if (st) rememberPlayerState(st as PlayerState);
+      persistPlayerQueue();
+      return { ok: true, state: playerSnapshot() };
+    }
+    // ---- Sound processing ----
+    case 'PLAY_FX': {
+      S.settings.audioFx = { ...DEFAULT_AUDIO_FX, ...(S.settings.audioFx ?? {}), ...m.fx };
+      persist();
+      const st = await sendToPlayer({ t: 'P_FX', fx: S.settings.audioFx });
+      if (st) rememberPlayerState(st as PlayerState);
+      // The next track's normalisation depends on the new settings, so the
+      // current track is re-measured rather than left at the old gain.
+      void applyNormalisation();
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_OUTPUT': {
+      S.settings.outputDeviceId = m.deviceId;
+      persist();
+      const st = await sendToPlayer({ t: 'P_OUTPUT', deviceId: m.deviceId });
+      if (st) rememberPlayerState(st as PlayerState);
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'GET_DEVICES': {
+      const st = await sendToPlayer({ t: 'P_DEVICES' });
+      if (st) rememberPlayerState(st as PlayerState);
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_TOGGLE': {
+      // The offscreen document owns the authoritative playing flag; ask before
+      // deciding, otherwise the worker would guess from a possibly stale copy.
+      const now = (await sendToPlayer({ t: 'P_STATE' })) as PlayerState | null;
+      const cmd: PlayerCommand = now?.playing ? { t: 'P_PAUSE' } : { t: 'P_PLAY' };
+      const next = await sendToPlayer(cmd);
+      if (next) rememberPlayerState(next as PlayerState);
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_NEXT': {
+      const s = await sendToPlayer({ t: 'P_NEXT' });
+      if (s) rememberPlayerState(s as PlayerState);
+      persistPlayerQueue();
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_PREV': {
+      const s = await sendToPlayer({ t: 'P_PREV' });
+      if (s) rememberPlayerState(s as PlayerState);
+      persistPlayerQueue();
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_SEEK': {
+      const s = await sendToPlayer({ t: 'P_SEEK', seconds: m.seconds });
+      if (s) rememberPlayerState(s as PlayerState);
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_VOLUME': {
+      // Persisted so a recreated offscreen document does not jump back to full
+      // volume — the previous behaviour restarted playback at 100%.
+      S.settings.playerVolume = Math.max(0, Math.min(1, m.volume));
+      persist();
+      const s = await sendToPlayer({ t: 'P_VOLUME', volume: m.volume });
+      if (s) rememberPlayerState(s as PlayerState);
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'EQ_SET': {
+      S.settings.playerEqEnabled = m.enabled;
+      if (m.gains.length) S.settings.playerEqGains = m.gains.slice();
+      persist();
+      // Enabled must be applied BEFORE the curve: the player zeroes every filter
+      // while disabled, so sending only the bands would look like a no-op.
+      let s = await sendToPlayer({ t: 'P_EQ_ENABLED', enabled: m.enabled });
+      if (m.gains.length) s = await sendToPlayer({ t: 'P_EQ_BANDS', gains: m.gains });
+      if (s) rememberPlayerState(s as PlayerState);
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'PLAY_SPECTRUM': {
+      // Relay the request into the offscreen document, which owns the analyser.
+      await sendToPlayer({ t: 'P_SPECTRUM', on: m.on });
+      return { ok: true };
+    }
+    case 'GET_CLIPPED': {
+      return { ok: true, clipped: [...clipReported] };
+    }
+    case 'GET_PLAYER_STATE': {
+      const live = await sendToPlayer({ t: 'P_STATE' });
+      if (live) rememberPlayerState(live as PlayerState);
+      return { ok: true, state: playerSnapshot() };
+    }
+    case 'RESOLVE_TRACK': {
+      // One track, resolved on demand. Used by the player (which must not play a
+      // stale URL) and available to the downloader for the same reason.
+      try {
+        const outcome = await resolveTrackUrls({
+          key: m.key,
+          id: m.id,
+          owner: m.owner,
+          artist: m.artist,
+          title: m.title,
+          album: '',
+          year: null,
+          duration: m.duration,
+          urls: m.urls ?? [],
+          covers: m.cover ? [m.cover] : [],
+          access_key: m.accessKey,
+          restricted: m.restricted,
+        });
+        return { ok: true, urls: outcome.urls, via: outcome.via, restricted: outcome.restricted };
+      } catch (e) {
+        return {
+          ok: false,
+          urls: [],
+          reason: e instanceof Error ? e.message : String(e),
+          restricted: e instanceof RestrictedTrackError,
+        };
+      }
+    }
+    // ---- Wave 3: listening preferences + integrations ----
+    case 'GET_BLOCK_RULES': {
+      return { ok: true, rules: R };
+    }
+    case 'SET_BLOCKED_ARTISTS': {
+      R = { ...R, blockedArtists: m.artists.filter((a) => a.trim().length > 0) };
+      persistRules();
+      return { ok: true, rules: R };
+    }
+    case 'TOGGLE_DISLIKE': {
+      const key = `${m.owner}_${m.id}`;
+      const has = R.disliked.includes(key);
+      R = { ...R, disliked: has ? R.disliked.filter((k) => k !== key) : [...R.disliked, key] };
+      persistRules();
+      return { ok: true, rules: R, disliked: !has };
+    }
+    case 'GET_LYRICS': {
+      // VK's own endpoint is unreachable (it needs a lyrics_id VK no longer
+      // returns), so the fallback provider is the real path. The VK attempt is
+      // kept first so it resumes automatically if that field comes back.
+      if (m.lyricsId) {
+        const r = await vkCall<{ lyrics?: { text?: string; lyrics_id?: number } }>('audio.getLyrics', {
+          lyrics_id: m.lyricsId,
+        });
+        const parsed = r.ok ? parseLyricsResponse(r.data) : null;
+        if (parsed) return { ok: true, lyrics: parsed };
+      }
+      const meta = S.audios[`${m.owner}_${m.id}`];
+      const res = await fetchLyrics(meta?.artist ?? '', meta?.title ?? '');
+      return { ok: res.ok, lyrics: res.lyrics, error: res.error };
+    }
+    case 'GET_LASTFM': {
+      return {
+        ok: true,
+        auth: L,
+        enabled: lastfmReady(),
+        pending: scrobbleQ.length,
+        authorizeUrl: lfPendingToken ? authorizeUrl(L.apiKey, lfPendingToken) : null,
+      };
+    }
+    case 'SET_LASTFM': {
+      L = normalizeLastfm({
+        apiKey: m.apiKey,
+        secret: m.secret,
+        sessionKey: m.sessionKey ?? L.sessionKey,
+        username: m.username ?? L.username,
+      });
+      persistLastfm();
+      return { ok: true, auth: L, enabled: lastfmReady(), pending: scrobbleQ.length };
+    }
+    case 'LASTFM_GET_TOKEN': {
+      // Step 1 of desktop auth: mint a request token and hand back the URL the
+      // user must open. A redirect flow is impossible from an extension (no
+      // stable callback URL), so the token is exchanged explicitly afterwards.
+      if (!L.apiKey || !L.secret) {
+        return { ok: false, error: 'сначала сохрани API key и secret', url: null, token: null };
+      }
+      const r = await requestToken(L);
+      if (!r.ok || !r.token) return { ok: false, error: r.error ?? 'токен не получен', url: null, token: null };
+      lfPendingToken = r.token;
+      persistLastfm();
+      return { ok: true, url: authorizeUrl(L.apiKey, r.token), token: r.token };
+    }
+    case 'LASTFM_LINK': {
+      // Step 2: exchange the (now authorised) token for a session key.
+      const token = m.token?.trim() || lfPendingToken;
+      if (!token) return { ok: false, enabled: false, error: 'нет токена — начни вход заново' };
+      const r = await exchangeToken(token, L);
+      if (!r.ok || !r.sessionKey) {
+        return { ok: false, enabled: false, error: r.error ?? 'сессия не получена' };
+      }
+      L = { ...L, sessionKey: r.sessionKey, username: r.username ?? null };
+      lfPendingToken = null;
+      persistLastfm();
+      // A successful link is the natural moment to push any backlog.
+      const flushed = await flushScrobbles();
+      return { ok: true, enabled: true, auth: L, pending: flushed.pending };
+    }
+    case 'LASTFM_UNLINK': {
+      L = { ...L, sessionKey: null, username: null };
+      lfPendingToken = null;
+      persistLastfm();
+      return { ok: true, auth: L, enabled: false, pending: scrobbleQ.length };
+    }
+    case 'LASTFM_FLUSH': {
+      const f = await flushScrobbles();
+      return { ok: f.ok, sent: f.sent, pending: scrobbleQ.length, error: f.error };
+    }
+    case 'LASTFM_NOW_PLAYING': {
+      if (!lastfmReady()) return { ok: false, error: 'Last.fm не подключён' };
+      const r = await lastfmNowPlaying(m.track, L);
+      return { ok: r.ok, error: r.error };
+    }
+    case 'CLEAR_DIR': {
+      await clearRootHandle();
+      S.settings = { ...S.settings, rootName: undefined };
+      persist();
+      return await storageState();
+    }
+    case 'PICK_DIR_RESULT': {
+      if (m.ok && m.rootName) {
+        S.settings = { ...S.settings, rootName: m.rootName, storageMode: 'fsa' };
+      }
+      persist();
+      return await storageState();
+    }
     case 'RETRY_FAILED': {
       stopFlag = false;
+      paused = false;
       const f = S.failed.splice(0, S.failed.length);
       for (const it of f) {
         const doneKey = it.pl + '/' + it.key;
         delete S.done[doneKey];
         if (!S.queue.some((q) => q.pl === it.pl && q.key === it.key)) S.queue.push(it);
       }
+      for (const it of f) await journal.ensure(it);
       persist();
       pump();
       return { ok: true };
@@ -166,6 +1118,7 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
         done: {},
         settings: S.settings,
       };
+      await journal.clear();
       persist();
       return { ok: true };
     }
@@ -174,6 +1127,16 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
     }
   }
   return null;
+}
+
+function journalSnap(): JournalResponse {
+  return { ok: true, paused, counts: journal.counts(), entries: journal.list() };
+}
+
+async function storageState(): Promise<StorageStateResult> {
+  const h = await loadRootHandle();
+  const permission = h ? await ensurePermission(h, false) : 'none';
+  return { mode: S.settings.storageMode, rootName: S.settings.rootName ?? null, permission };
 }
 
 function snap(): StateSnapshot {
@@ -190,6 +1153,8 @@ function snap(): StateSnapshot {
     doneCount: Object.keys(S.done).length,
     settings: S.settings,
     totalAudios: Object.keys(S.audios).length,
+    journal: journal.counts(),
+    paused,
   };
 }
 
@@ -224,16 +1189,83 @@ async function pump(): Promise<void> {
   }
 }
 
+/** Rate limiter: keep >= minIntervalMs (+ anti-ban jitter) between download starts. */
+async function gateStart(): Promise<void> {
+  const wait = computeStartDelay(
+    lastStartAt,
+    Math.max(0, +S.settings.minIntervalMs || 0),
+    Math.max(0, +S.settings.jitterMs || 0),
+  );
+  if (wait > 0) await sleep(wait);
+  lastStartAt = Date.now();
+}
+
 async function workerLoop(): Promise<void> {
   while (true) {
-    if (stopFlag) break;
+    if (stopFlag || paused) break;
     const item = S.queue.shift();
     if (!item) break;
+    await gateStart();
+    if (stopFlag || paused) {
+      S.queue.unshift(item);
+      break;
+    }
     persist();
+    const id = journalId(item);
+    inFlight.add(id);
+    await journal.setStatus(id, 'downloading');
+    let attempts = journal.attemptCount(id);
+    const max = Math.max(1, Math.floor(+S.settings.maxAttempts || DEFAULT_SETTINGS.maxAttempts));
     try {
-      await runItem(item);
-    } catch (e) {
-      fail(item, e instanceof Error ? e.message : e);
+      for (;;) {
+        try {
+          await runItem(item);
+          await journal.setStatus(id, 'done');
+          break;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (e instanceof StoragePermissionError) {
+            // surface per-item, no silent downloads-fallback, no retry storm
+            await journal.noteError(id, msg);
+            await journal.setStatus(id, 'failed');
+            fail(item, msg);
+            break;
+          }
+          if (e instanceof RestrictedTrackError) {
+            // VK serves no URL for this track from any endpoint (measured), so
+            // retrying only burns time and pollutes the journal with a permanent
+            // error. Fail it once, immediately.
+            await journal.noteError(id, msg);
+            await journal.setStatus(id, 'failed');
+            fail(item, msg);
+            break;
+          }
+          attempts++;
+          await journal.bumpAttempt(id, msg);
+          if (attempts >= max) {
+            await journal.setStatus(id, 'failed');
+            fail(item, msg);
+            break;
+          }
+          await sleep(
+            computeBackoff(
+              attempts,
+              Math.max(0, +S.settings.baseBackoffMs || DEFAULT_SETTINGS.baseBackoffMs),
+              Math.max(0, +S.settings.maxBackoffMs || DEFAULT_SETTINGS.maxBackoffMs),
+              Math.max(0, +S.settings.jitterMs),
+            ),
+          );
+          if (stopFlag || paused) {
+            await journal.setStatus(id, 'queued');
+            S.queue.unshift(item);
+            break;
+          }
+        }
+      }
+    } finally {
+      // requeued items leave the set with the line already back to 'queued',
+      // so rehydration may pick them up; finished ones stay out of it forever
+      inFlight.delete(id);
     }
     await sleep(+S.settings.gapMs || 400);
   }
@@ -249,22 +1281,48 @@ async function runItem(item: QueueItem): Promise<void> {
 
   let body = await getAudioBytes(a);
   const ext = sniffExt(body);
-
-  if (ext === 'mp3') {
+  // MPEG-TS and MP3 both accept a leading ID3v2 tag (and players skip it); the
+  // AAC/ADTS container does not, so those stay untagged.
+  if (ext === 'mp3' || ext === 'ts') {
     body = stripTag(body);
     const cover = await getCover(a);
     const lyrics = S.lyrics[String(a.id)] || '';
     const tag = buildTag(
-      { title: a.title, artist: a.artist, album: a.album, year: a.year, track: item.idx },
+      {
+        title: a.title,
+        artist: a.artist,
+        album: a.album,
+        year: a.year,
+        track: item.idx,
+        // Written only if this track has actually been measured. A guessed value
+        // would be worse than none: every other player would act on it.
+        replayGain: replayGainFor(a),
+      },
       cover,
       lyrics,
     );
     if (tag) body = concatBytes([tag, body]);
   }
 
-  const base = sanitizePath(S.settings.baseDir) || 'VK Music';
-  const fname = `${base}/${sanitize(item.pl)}/${pad(item.idx, item.w)} ${sanitize(`${a.artist} - ${a.title}`)}.${ext}`;
-  await saveBlob(body, fname);
+  const label = `${pad(item.idx, item.w)} ${sanitize(`${a.artist} - ${a.title}`)}.${ext}`;
+  if (S.settings.storageMode === 'fsa') {
+    // Write straight into the user-picked folder: <Playlist>/NN Artist - Title.ext
+    const root = await loadRootHandle();
+    if (!root) throw new StoragePermissionError();
+    const perm = await ensurePermission(root, false);
+    if (perm !== 'granted') {
+      throw new StoragePermissionError(`storage-permission-needed (${perm})`);
+    }
+    await writeToRoot(root, `${sanitize(item.pl)}/${label}`, body);
+  } else {
+    const base = sanitizePath(S.settings.baseDir) || 'VK Music';
+    await saveBlob(body, `${base}/${sanitize(item.pl)}/${label}`);
+  }
+
+  // A cancel that arrived while this track was in flight already cleared the
+  // queue and journal; recording completion now would resurrect it as a
+  // phantom "already downloaded" entry.
+  if (stopFlag) return;
 
   S.done[doneKey] = Date.now();
   const fi = S.failed.findIndex((f) => f.key === item.key && f.pl === item.pl);
@@ -278,18 +1336,95 @@ async function rawFetch(url: string): Promise<Uint8Array> {
   return new Uint8Array(await r.arrayBuffer());
 }
 
+/**
+ * Fetch a track's bytes, resolving a fresh stream URL first.
+ *
+ * VK stream URLs expire, so the catalog's copy is a fallback, not the primary
+ * source: `resolveTrackUrls` asks the API (via `access_key`) and only then falls
+ * back to whatever the page hook captured. A track VK marks restricted throws
+ * `RestrictedTrackError`, which the queue treats as terminal.
+ */
 async function getAudioBytes(a: AudioMeta): Promise<Uint8Array> {
-  const direct = (a.urls || []).find((u) => !/\.m3u8/i.test(u));
-  if (direct) {
-    const b = await rawFetch(direct);
-    if (!(b[0] === 0x23 && b[1] === 0x45 && b[2] === 0x58)) return b;
-    const txt = new TextDecoder().decode(b);
-    return assembleHls(txt, direct);
+  const outcome = await resolveTrackUrls(a);
+  let lastErr: Error | null = null;
+  for (const url of outcome.urls) {
+    try {
+      return await fetchStream(url);
+    } catch (e) {
+      lastErr = e instanceof Error ? e : new Error(String(e));
+    }
   }
-  const hls = (a.urls || []).find((u) => /\.m3u8/i.test(u)) || (a.urls || [])[0];
-  if (!hls) throw new Error('нет доступных ссылок');
-  const txt = await (await fetch(hls)).text();
-  return assembleHls(txt, hls);
+  throw lastErr ?? new Error('нет доступных ссылок');
+}
+
+/** Fetch one resolved URL, assembling HLS when the payload is a playlist. */
+async function fetchStream(url: string): Promise<Uint8Array> {
+  const direct = !/\.m3u8/i.test(url);
+  if (direct) {
+    const b = await rawFetch(url);
+    // An .m3u8 can also arrive at a non-.m3u8 URL; EXT-X magic means playlist.
+    if (!(b[0] === 0x23 && b[1] === 0x45 && b[2] === 0x58)) return b;
+    return assembleHls(new TextDecoder().decode(b), url);
+  }
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return assembleHls(await r.text(), url);
+}
+
+/**
+ * AES-128-CBC HLS segment decryption (RFC 8216 §5.2).
+ *
+ * VK switched its audio CDN to encrypted HLS: `#EXT-X-KEY:METHOD=AES-128` with a
+ * 16-byte key URL and no explicit IV, so the IV is the segment's media sequence
+ * number as a big-endian 128-bit integer. Without this the segments were
+ * concatenated still encrypted and every file landed as unsniffable garbage.
+ */
+async function fetchSegmentWithRetry(url: string, maxRetries = 2): Promise<Uint8Array> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await rawFetch(url);
+    } catch (err) {
+      if (attempt >= maxRetries) throw err;
+      attempt++;
+      const baseMs = S.settings?.baseBackoffMs ?? 200;
+      const maxMs = S.settings?.maxBackoffMs ?? 2000;
+      const jitterMs = S.settings?.jitterMs ?? 50;
+      const delay = computeBackoff(attempt, baseMs, maxMs, jitterMs);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
+async function hlsKeyBytes(uri: string): Promise<Uint8Array> {
+  const b = await fetchSegmentWithRetry(uri);
+  if (b.length !== 16) throw new Error(`ожидался 16-байтный ключ, получено ${b.length}`);
+  return b;
+}
+
+function sequenceIv(seq: number): Uint8Array {
+  const iv = new Uint8Array(16);
+  new DataView(iv.buffer).setUint32(12, seq >>> 0, false);
+  return iv;
+}
+
+async function decryptAes128(
+  seg: Uint8Array,
+  keyBytes: Uint8Array,
+  iv: Uint8Array,
+): Promise<Uint8Array> {
+  if (iv.length !== 16) {
+    throw new Error(`Недопустимая длина IV: ${iv.length} (ожидается 16)`);
+  }
+  const key = await crypto.subtle.importKey('raw', keyBytes as BufferSource, 'AES-CBC', false, [
+    'decrypt',
+  ]);
+  const plain = await crypto.subtle.decrypt(
+    { name: 'AES-CBC', iv: iv as BufferSource },
+    key,
+    seg as BufferSource,
+  );
+  return new Uint8Array(plain);
 }
 
 async function assembleHls(txt: string, baseUrl: string): Promise<Uint8Array> {
@@ -301,13 +1436,22 @@ async function assembleHls(txt: string, baseUrl: string): Promise<Uint8Array> {
   }
   if (!p.segments.length) throw new Error('плейлист без сегментов');
   const parts: Uint8Array[] = [];
-  if (p.init) parts.push(await rawFetch(p.init));
+  if (p.init) parts.push(await fetchSegmentWithRetry(p.init));
+  const keys = new Map<string, Uint8Array>();
   let i = 0;
   for (const s of p.segments) {
-    if (i > 5000) break;
-    let seg = await rawFetch(s);
+    if (i >= 5000) break;
+    let seg = await fetchSegmentWithRetry(s.url);
+    if (s.key?.method === 'AES-128' && s.key.uri) {
+      let kb = keys.get(s.key.uri);
+      if (!kb) {
+        kb = await hlsKeyBytes(s.key.uri);
+        keys.set(s.key.uri, kb);
+      }
+      seg = await decryptAes128(seg, kb, s.key.iv ?? sequenceIv(s.seq));
+    }
     if (seg[0] === 0x23 && seg[1] === 0x45 && seg[2] === 0x58) {
-      seg = await assembleHls(new TextDecoder().decode(seg), s);
+      seg = await assembleHls(new TextDecoder().decode(seg), s.url);
     }
     parts.push(seg);
     i++;
@@ -354,10 +1498,48 @@ function waitDone(id: number, timeoutMs?: number): Promise<void> {
   });
 }
 
+/**
+ * Hand bytes to chrome.downloads as a `data:` URL.
+ *
+ * MV3 service workers have no `URL.createObjectURL` — it is a Window/Dedicated-
+ * Worker API and is `undefined` here, so the old blob-URL path threw
+ * "URL.createObjectURL is not a function" on every download. `FileReader` IS
+ * available in workers, so it does the base64 encoding natively.
+ *
+ * Cost: the payload lives once as bytes and once as a ~1.33x base64 string.
+ * VK tracks are single-digit MB; verified working to 30 MB in real Chromium.
+ */
+function bytesToDataUrl(bytes: Uint8Array, mime: string): string {
+  const CHUNK_SIZE = 0x6000;
+  const chunks: string[] = [`data:${mime};base64,`];
+  const useBuffer = typeof Buffer !== 'undefined';
+  for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+    const end = Math.min(i + CHUNK_SIZE, bytes.length);
+    const sub = bytes.subarray(i, end);
+    if (useBuffer) {
+      chunks.push(Buffer.from(sub.buffer, sub.byteOffset, sub.byteLength).toString('base64'));
+    } else {
+      let s = '';
+      for (let j = 0; j < sub.length; j++) {
+        s += String.fromCharCode(sub[j]!);
+      }
+      chunks.push(btoa(s));
+    }
+  }
+  return chunks.join('');
+}
+
 async function saveBlob(bytes: Uint8Array, fname: string): Promise<void> {
-  // runtime value is always a Uint8Array backed by a plain ArrayBuffer here
-  const blob = new Blob([bytes as unknown as BlobPart]);
-  const url = URL.createObjectURL(blob);
+  const mime = fname.endsWith('.mp3') ? 'audio/mpeg' : 'audio/aac';
+  let url: string;
+  let revoke: (() => void) | null = null;
+  if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+    const blob = new Blob([bytes as unknown as BlobPart], { type: mime });
+    url = URL.createObjectURL(blob);
+    revoke = () => URL.revokeObjectURL(url);
+  } else {
+    url = bytesToDataUrl(bytes, mime);
+  }
   try {
     const id = await chrome.downloads.download({
       url,
@@ -366,15 +1548,364 @@ async function saveBlob(bytes: Uint8Array, fname: string): Promise<void> {
     });
     await waitDone(id);
   } finally {
-    try {
-      URL.revokeObjectURL(url);
-    } catch {
-      /* ignore */
-    }
+    revoke?.();
   }
 }
 
+/**
+ * Gain for the current track, pushed into the player.
+ *
+ * Loudness is measured while the track plays, from the analyser already in the
+ * audio graph (see `src/lib/loudness.ts`), so this only applies a value that has
+ * already been learned. A track that has not been measured yet plays unmodified
+ * and is corrected on its next play — a one-time cost per track.
+ *
+ * Kept as one function so every path that changes the track or the settings
+ * goes through the same calculation.
+ */
+async function applyNormalisation(): Promise<void> {
+  const st = playerSnapshot();
+  const fx = { ...DEFAULT_AUDIO_FX, ...(S.settings.audioFx ?? {}) };
+  if (!st?.track || fx.normalize === 'off') {
+    await sendToPlayer({ t: 'P_GAIN', gainDb: 0 });
+    return;
+  }
+  const entry = S.settings.loudness?.[st.track.key];
+  const album = st.track ? albumFor(st.track) : null;
+  if (!entry) {
+    // Unknown yet: play as-is, and the measurement collected during playback
+    // will be applied the next time this track starts.
+    await sendToPlayer({ t: 'P_GAIN', gainDb: 0 });
+    return;
+  }
+  const db = modeGain(entry.lufs, entry.truePeakDb, album, fx.normalizeTargetDb, fx.normalize);
+  const live = await sendToPlayer({ t: 'P_GAIN', gainDb: db });
+  if (live) rememberPlayerState(live as PlayerState);
+  // Echo the figures back so the UI can show what was measured for this track.
+  const echo = await sendToPlayer({
+    t: 'P_LOUDNESS',
+    lufs: entry.lufs,
+    peakDb: entry.truePeakDb,
+    albumLufs: album?.lufs ?? null,
+  });
+  if (echo) rememberPlayerState(echo as PlayerState);
+}
+
+/**
+ * ReplayGain tags for a track, from its measured loudness.
+ *
+ * The measurement is already cached, so this costs nothing; if the track has
+ * never been played the tags are simply omitted rather than filled with a guess
+ * that other players would then act on.
+ */
+function replayGainFor(a: AudioMeta): Id3Meta['replayGain'] {
+  const entry = S.settings.loudness?.[a.key];
+  if (!entry) return null;
+  const gain = replayGainDb(entry.lufs, REPLAYGAIN_REFERENCE_LUFS);
+  const albumValues: number[] = [];
+  const albumKey = (a.album ?? '').trim().toLowerCase();
+  let albumPeak: number | null = null;
+  if (albumKey) {
+    for (const [k, meta] of Object.entries(S.audios)) {
+      if ((meta.album ?? '').trim().toLowerCase() !== albumKey) continue;
+      const e = S.settings.loudness?.[k];
+      if (e) {
+        albumValues.push(e.lufs);
+        // The album peak is the loudest track's peak: it is what limits the
+        // album gain, so it must be a maximum, not an average.
+        if (albumPeak === null || e.truePeakDb > albumPeak) albumPeak = e.truePeakDb;
+      }
+    }
+  }
+  const album = albumLufs(albumValues);
+  return {
+    trackGainDb: gain,
+    trackPeak: replayGainPeak(entry.truePeakDb),
+    albumGainDb: album === null ? null : replayGainDb(album, REPLAYGAIN_REFERENCE_LUFS),
+    albumPeak: albumPeak === null ? null : replayGainPeak(albumPeak),
+  };
+}
+
+/** Album key for a track: title plus artist, the pair that identifies a release. */
+function albumKeyOf(track: PlayerTrack): string | null {
+  const meta = S.audios[track.key];
+  const album = (meta?.album ?? '').trim();
+  if (!album) return null;
+  // VK returns a compilation's tracks under different artists, so the artist is
+  // part of the key only when it is consistent; the title alone groups better.
+  return album.toLowerCase();
+}
+
+/**
+ * Album loudness from the tracks of that album which have been measured.
+ *
+ * Recomputed from the cache rather than stored when measured, so it improves as
+ * more of the album is played instead of being fixed by whichever track happened
+ * to be heard first.
+ */
+function albumFor(track: PlayerTrack): { lufs: number; peakDb: number } | null {
+  const key = albumKeyOf(track);
+  if (!key) return null;
+  const loud: number[] = [];
+  let peakDb = -120;
+  for (const [k, meta] of Object.entries(S.audios)) {
+    if ((meta.album ?? '').trim().toLowerCase() !== key) continue;
+    const entry = S.settings.loudness?.[k];
+    if (!entry) continue;
+    loud.push(entry.lufs);
+    // The album peak is the loudest track's peak: it is what limits a single
+    // album gain, so it must be a maximum rather than an average.
+    if (entry.truePeakDb > peakDb) peakDb = entry.truePeakDb;
+  }
+  const lufs = albumLufs(loud);
+  if (lufs === null) return null;
+  S.settings.albums = { ...(S.settings.albums ?? {}), [key]: { key, lufs, tracks: loud.length } };
+  return { lufs, peakDb };
+}
+
+/**
+ * Record what a finished stretch of playback measured.
+ *
+ * Only accepted once the estimate has settled, and only for the track that is
+ * currently playing, so a value from the previous track cannot be attributed to
+ * the next one during a transition.
+ */
+function recordLoudness(key: string, lufs: number, peakDb: number, drDb: number | null): void {
+  // Only reject a measurement that cannot be right. A true peak of exactly
+  // 0 dBFS is normal — it is what a fully limited master looks like — so the
+  // guard is on the loudness, not the peak. Rejecting peak == 0 would skip
+  // normalisation for precisely the loudest tracks.
+  if (!Number.isFinite(lufs) || lufs <= GATE_ABSOLUTE_LUFS) return;
+  const prev = S.settings.loudness?.[key];
+  // Keep the first stable measurement: re-measuring a quiet intro on a later
+  // play would drag the average around.
+  if (prev) return;
+  S.settings.loudness = {
+    ...(S.settings.loudness ?? {}),
+    [key]: { lufs, truePeakDb: peakDb, drDb, measuredAt: Date.now() },
+  };
+  persist();
+}
+
+/** Resolve a fresh stream URL for a track, or null when it cannot be played. */
+async function resolveForPlayback(owner: string, id: string, key: string): Promise<string | null> {
+  const entry = S.audios[key];
+  try {
+    const outcome = await resolveTrackUrls({
+      key,
+      id,
+      owner,
+      artist: entry?.artist ?? '',
+      title: entry?.title ?? '',
+      album: entry?.album ?? '',
+      year: null,
+      duration: entry?.duration ?? null,
+      urls: entry?.urls ?? [],
+      covers: entry?.covers ?? [],
+      access_key: entry?.access_key,
+      restricted: entry?.restricted,
+    });
+    return outcome.urls[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The play queue, mirrored into settings so it survives the offscreen document
+ * being torn down (it is recreated whenever playback goes idle).
+ *
+ * Only identity and position are stored: the stream URLs are deliberately not
+ * persisted, because VK's links expire. A track restored from here needs a
+ * fresh resolve before it can play.
+ */
+function persistPlayerQueue(): void {
+  const st = playerSnapshot();
+  if (!st) return;
+  S.settings.playerQueue = st.queue.map((t) => ({ key: t.key, id: t.id, owner: t.owner, artist: t.artist, title: t.title, duration: t.duration, cover: t.cover }));
+  S.settings.playerQueueIndex = st.index;
+  S.settings.playerShuffle = st.shuffle;
+  S.settings.playerRepeat = st.repeat;
+  persist();
+}
+
+/** Reuse the one cold-start hydration for all four boot triggers below. */
+const boot = (): Promise<void> => (booted ??= load());
+
+// Answer proxy credential challenges for the configured entries. Registered at
+// module scope (not inside boot()) because MV3 requires listeners to exist
+// synchronously on every worker start, even when it only wakes for an event.
+installProxyAuth(() => P);
+
+/**
+ * Cap on how many links one refresh request may resolve.
+ *
+ * A seek across a playlist can ask for several at once; resolving them all
+ * serially would keep the worker busy for links that may never be played.
+ */
+const PRELOAD_MAX = 4;
+
+/** Tracks whose master was measured at full scale, for the UI to report. */
+const clipReported = new Set<string>();
+
+/** Track the offscreen document is currently playing, for scrobbling (declared above). */
+
+chrome.commands?.onCommand.addListener((cmd) => {
+  void (async () => {
+    switch (cmd) {
+      case 'play-pause':
+        await handle({ t: 'PLAY_TOGGLE' } as RuntimeMessage);
+        break;
+      case 'next':
+        await handle({ t: 'PLAY_NEXT' } as RuntimeMessage);
+        break;
+      case 'prev':
+        await handle({ t: 'PLAY_PREV' } as RuntimeMessage);
+        break;
+      case 'volume-up':
+      case 'volume-down': {
+        const s = playerSnapshot();
+        const delta = cmd === 'volume-up' ? 0.1 : -0.1;
+        const next = Math.max(0, Math.min(1, (s?.volume ?? 1) + delta));
+        await handle({ t: 'PLAY_VOLUME', volume: next } as RuntimeMessage);
+        break;
+      }
+    }
+  })();
+});
+
 chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
+  const msg = m as { t?: string };
+  // Messages the OFFSCREEN document pushes to us. These must not go through
+  // handle(), which is typed for popup-originated commands.
+  if (msg?.t === 'PLAYER_STATE') {
+    const state = (m as { state: PlayerState }).state;
+    rememberPlayerState(state);
+    // A new track starts our scrobble window; the offscreen document owns
+    // advancing, so we only observe here.
+    if (state.track && state.track.key !== nowPlaying?.track.key) {
+      nowPlaying = { track: state.track, startedAt: Date.now(), scrobbled: false };
+      S.settings.nowPlaying = nowPlaying;
+      persist();
+      if (lastfmReady()) void lastfmNowPlaying(state.track, L);
+      // Normalisation follows the track, so it is recomputed on every change.
+      void applyNormalisation();
+    } else if (!state.track && nowPlaying) {
+      nowPlaying = null;
+      S.settings.nowPlaying = null;
+      persist();
+    }
+    // Scrobble once the play qualifies, without waiting for the track to end
+    // (Last.fm's rule is about elapsed play time, not completion). The play goes
+    // through the queue so a Last.fm outage does not lose it.
+    if (
+      nowPlaying &&
+      !nowPlaying.scrobbled &&
+      shouldScrobble(state.currentTime, state.duration || nowPlaying.track.duration, lastfmReady())
+    ) {
+      nowPlaying.scrobbled = true;
+      S.settings.nowPlaying = nowPlaying;
+      persist();
+      void enqueueScrobble({
+        artist: nowPlaying.track.artist,
+        title: nowPlaying.track.title,
+        duration: nowPlaying.track.duration,
+        startedAt: nowPlaying.startedAt,
+      });
+    }
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg?.t === 'PLAYER_LOUDNESS') {
+    // A measurement settled during playback; cache it so the next play of this
+    // track can be normalised.
+    const m2 = m as { key: string; lufs: number; peakDb: number; drDb: number | null };
+    recordLoudness(m2.key, m2.lufs, m2.peakDb, m2.drDb);
+    // Apply it immediately when the measured track is the one still playing.
+    // Waiting for the next play would leave every track uncorrected on its
+    // first hearing, which for an album means the whole album is uncorrected.
+    const live = playerSnapshot();
+    if (live?.track?.key === m2.key) {
+      const fx = { ...DEFAULT_AUDIO_FX, ...(S.settings.audioFx ?? {}) };
+      if (fx.normalize !== 'off') {
+        const db = normalisationGain(m2.lufs, m2.peakDb, fx.normalizeTargetDb);
+        void sendToPlayer({ t: 'P_GAIN', gainDb: db });
+      }
+      // Echo the figures so the panel can show them for this track.
+      void sendToPlayer({ t: 'P_LOUDNESS', lufs: m2.lufs, peakDb: m2.peakDb });
+    }
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg?.t === 'PLAYER_NEED_URLS') {
+    // The queue was built with links that are now ageing; refresh the ones the
+    // player is about to reach and push them back, so a long queue keeps working
+    // without being rebuilt.
+    const m2 = m as { keys: string[] };
+    void (async () => {
+      for (const key of m2.keys.slice(0, PRELOAD_MAX)) {
+        const entry = S.audios[key];
+        if (!entry) continue;
+        const url = await resolveForPlayback(entry.owner, entry.id, key);
+        if (url) await sendToPlayer({ t: 'P_URL', key, url });
+      }
+    })();
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg?.t === 'PLAYER_CLIP') {
+    // The master itself is at full scale. Nothing the player can do about it —
+    // but the listener deserves to know it is the recording, not the player.
+    const m2 = m as { key: string };
+    clipReported.add(m2.key);
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg?.t === 'PLAYER_ENDED') {
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg?.t === 'PLAYER_READY') {
+    // A fresh offscreen document starts at full volume with a flat equalizer,
+    // so the saved preferences are pushed back in before anything plays.
+    void (async () => {
+      const vol = S.settings.playerVolume;
+      if (typeof vol === 'number') await sendToPlayer({ t: 'P_VOLUME', volume: vol });
+      if (S.settings.playerEqEnabled) {
+        await sendToPlayer({ t: 'P_EQ_ENABLED', enabled: true });
+        const gains = S.settings.playerEqGains;
+        if (gains?.length) await sendToPlayer({ t: 'P_EQ_BANDS', gains });
+      }
+      // Restore the queue itself. The tracks are re-resolved first: the stored
+      // URLs would be expired, so only identity is persisted.
+      const saved = S.settings.playerQueue;
+      if (saved?.length) {
+        const restored: PlayerTrack[] = [];
+        for (const t of saved) {
+          const nativeId = t.key.includes(':') ? t.key.slice(t.key.indexOf(':') + 1) : t.key;
+          const [owner, id] = nativeId.split('_');
+          const url = await resolveForPlayback(owner ?? '', id ?? '', t.key);
+          // The album comes from the catalog: it is not stored in the saved
+          // queue, and gapless needs it to recognise a continuous album.
+          const album = S.audios[t.key]?.album ?? '';
+          if (url) restored.push({ ...t, url, album } as PlayerTrack);
+        }
+        if (restored.length) {
+          await sendToPlayer({
+            t: 'P_PLAY_QUEUE',
+            tracks: restored,
+            startIndex: Math.max(0, Math.min(S.settings.playerQueueIndex ?? 0, restored.length - 1)),
+          });
+          if (S.settings.playerShuffle) await sendToPlayer({ t: 'P_SHUFFLE', on: true });
+          if (S.settings.playerRepeat && S.settings.playerRepeat !== 'off') {
+            await sendToPlayer({ t: 'P_REPEAT', mode: S.settings.playerRepeat });
+          }
+        }
+      }
+    })();
+    sendResponse({ ok: true });
+    return false;
+  }
   handle(m as RuntimeMessage)
     .then((r) => sendResponse(r))
     .catch((e) => sendResponse({ error: String(e) }));
@@ -384,14 +1915,16 @@ chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
 chrome.alarms.create('vmf-pump', { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener((al) => {
   if (al.name === 'vmf-pump') {
-    void load().then(pump);
+    void boot().then(pump);
   }
 });
 chrome.runtime.onStartup.addListener(() => {
-  void load().then(pump);
+  stopFlag = false;
+  paused = false;
+  void boot().then(pump);
 });
 chrome.runtime.onInstalled.addListener(() => {
-  void load().then(pump);
+  void boot().then(pump);
 });
 
-void load().then(pump);
+void boot().then(pump);

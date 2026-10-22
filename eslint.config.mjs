@@ -10,6 +10,7 @@ export default tseslint.config(
       '.opencode/**',
       'coverage/**',
       'test-results/**',
+      '.worktrees/**',
       '*.zip',
     ],
   },
@@ -32,6 +33,9 @@ export default tseslint.config(
       '@typescript-eslint/no-non-null-assertion': 'off',
       // Hard contract: the typed surface may cast via `unknown` but never `any`.
       '@typescript-eslint/no-explicit-any': 'error',
+      // `no-useless-escape` flags the escaped `[` inside a character class, but
+      // the unescaped form breaks the class on some parsers — keep it readable.
+      'no-useless-escape': 'off',
     },
   },
   {

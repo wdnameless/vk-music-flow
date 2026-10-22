@@ -3,75 +3,462 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="stylesheet" href="popup.css" />
+    <title>Universal player</title>
   </head>
   <body>
-    <header>
-      <div class="logo">VK Music Flow</div>
-      <nav>
-        <button class="tab active" data-tab="scan">Скан</button>
-        <button class="tab" data-tab="lib">Плейлисты</button>
-        <button class="tab" data-tab="dl">Загрузки</button>
-        <button class="tab" data-tab="set">⚙</button>
-      </nav>
-    </header>
+    <!-- Icon sprite: one definition, referenced with <use>. Stroke icons are
+         drawn on a 24px grid so they align optically with the type. -->
+    <svg class="sprite" aria-hidden="true">
+      <defs>
+        <g id="i-home"><path d="M4.5 10.8 12 4.4l7.5 6.4v8.2a1 1 0 0 1-1 1h-3.7v-5.5H9.2V20H5.5a1 1 0 0 1-1-1z"/></g>
+        <g id="i-note"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></g>
+        <g id="i-compass"><circle cx="12" cy="12" r="8"/><path d="m15 9-1.7 4.3L9 15l1.7-4.3z"/></g>
+        <g id="i-search"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></g>
+        <g id="i-radio"><circle cx="12" cy="12" r="2"/><path d="M8.6 15.4a5 5 0 0 1 0-6.8M15.4 8.6a5 5 0 0 1 0 6.8M6.2 17.8a9 9 0 0 1 0-11.6M17.8 6.2a9 9 0 0 1 0 11.6"/></g>
+        <g id="i-sparkle"><path d="M12 4v4M12 16v4M4 12h4M16 12h4M6.5 6.5l2.5 2.5M15 15l2.5 2.5M17.5 6.5 15 9M9 15l-2.5 2.5"/></g>
+        <g id="i-download"><path d="M12 4v11m0 0 4-4m-4 4-4-4M5 19h14"/></g>
+        <g id="i-settings"><path d="M4 8h9M17 8h3M4 16h3M11 16h9"/><circle cx="15" cy="8" r="2"/><circle cx="9" cy="16" r="2"/></g>
+        <g id="i-play"><path d="M7 4.8v14.4L19.5 12z" fill="currentColor" stroke="none"/></g>
+        <g id="i-pause"><path d="M8.5 4.5h3v15h-3zM12.5 4.5h3v15h-3z" fill="currentColor" stroke="none"/></g>
+        <g id="i-prev"><path d="M18 5.5v13L8.5 12z" fill="currentColor" stroke="none"/><path d="M6 5v14"/></g>
+        <g id="i-next"><path d="M6 5.5v13L15.5 12z" fill="currentColor" stroke="none"/><path d="M18 5v14"/></g>
+        <g id="i-heart"><path d="M12 19.4C8.4 17 4.8 14.2 4.8 10.8a3.7 3.7 0 0 1 7.2-1.4 3.7 3.7 0 0 1 7.2 1.4c0 3.4-3.6 6.2-7.2 8.6z"/></g>
+        <g id="i-cross"><path d="m7 7 10 10M17 7 7 17"/></g>
+        <g id="i-eq"><path d="M6 19V9M12 19V5M18 19v-6"/><circle cx="6" cy="7" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="3" r="1.6" fill="currentColor" stroke="none"/><circle cx="18" cy="11" r="1.6" fill="currentColor" stroke="none"/></g>
+        <g id="i-volume"><path d="M5 9.5h3L12 6v12l-4-3.5H5z"/><path d="M15.5 9.5a3.5 3.5 0 0 1 0 5"/><path d="M18 7a7 7 0 0 1 0 10"/></g>
+        <g id="i-check"><path d="m5 12.5 4.5 4.5L19 7"/></g>
+        <g id="i-shuffle"><path d="M4 6h3.5l8 12H20M4 18h3.5l2.2-3.3M14 6h6M17.5 3.5 20 6l-2.5 2.5M17.5 15.5 20 18l-2.5 2.5"/></g>
+        <g id="i-repeat"><path d="M5 9a5 5 0 0 1 5-5h9M17 2.5 19.5 5 17 7.5M19 15a5 5 0 0 1-5 5H5M7 21.5 4.5 19 7 16.5"/></g>
+        <g id="i-grip"><path d="M9 6h.01M9 12h.01M9 18h.01M15 6h.01M15 12h.01M15 18h.01"/></g>
+        <g id="i-window"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18"/></g>
+        <g id="i-panel"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M15 5v14"/></g>
+        <g id="i-wave"><path d="M3 12h2M7 8v8M11 5v14M15 9v6M19 11v2"/></g>
+      </defs>
+    </svg>
 
-    <section id="tab-scan" class="pane active">
-      <p class="hint">
-        Открой страницу плейлиста или «Моя музыка» на vk.com и нажми кнопку. Расширение само
-        пролистает список и соберёт треки.
-      </p>
-      <label>Имя плейлиста (пусто = взять со страницы)</label>
-      <input id="scanName" type="text" placeholder="Например: Мой рок" />
-      <button id="btnScan" class="primary">Сканировать текущую страницу</button>
-      <div class="row" style="margin-top: 8px">
-        <button id="btnDiag">Диагностика: скопировать ответы</button>
-      </div>
-      <div id="scanResult" class="result"></div>
-      <div id="diagResult" class="conn"></div>
-      <div id="connState" class="conn"></div>
-    </section>
+    <div class="app">
+      <aside class="side">
+        <div class="side-logo"><svg class="ic"><use href="#i-note" /></svg></div>
+        <nav class="side-nav">
+          <button class="nav-item active" data-view="home"><svg class="ic"><use href="#i-home" /></svg><span>Главная</span></button>
+          <button class="nav-item" data-view="my"><svg class="ic"><use href="#i-note" /></svg><span>Моя музыка</span></button>
+          <button class="nav-item" data-view="explore"><svg class="ic"><use href="#i-compass" /></svg><span>Обзор</span></button>
+          <button class="nav-item" data-view="search"><svg class="ic"><use href="#i-search" /></svg><span>Поиск</span></button>
+          <button class="nav-item" data-view="radio"><svg class="ic"><use href="#i-radio" /></svg><span>Радио</span></button>
+          <button class="nav-item" data-view="updates"><svg class="ic"><use href="#i-sparkle" /></svg><span>Обновления</span></button>
+        </nav>
 
-    <section id="tab-lib" class="pane">
-      <div class="row">
-        <button id="btnAll">Выбрать все</button>
-        <button id="btnNone">Снять</button>
-        <span id="libTotal" class="muted"></span>
-      </div>
-      <ul id="plList"></ul>
-      <button id="btnDownload" class="primary">Скачать выбранное</button>
-    </section>
+        <nav class="side-nav side-bottom">
+          <button class="nav-item" data-view="downloads"><svg class="ic"><use href="#i-download" /></svg><span>Загрузки</span></button>
+          <button class="nav-item" data-view="settings"><svg class="ic"><use href="#i-settings" /></svg><span>Настройки</span></button>
+        </nav>
 
-    <section id="tab-dl" class="pane">
-      <div class="stats">
-        <span>В очереди: <b id="qCount">0</b></span>
-        <span>Готово всего: <b id="dCount">0</b></span>
-        <span>Ошибки: <b id="fCount">0</b></span>
-      </div>
-      <div class="row">
-        <button id="btnRetry">Повторить ошибки</button>
-        <button id="btnCancel">Стоп</button>
-      </div>
-      <h3>Очередь</h3>
-      <ul id="qList" class="list"></ul>
-      <h3>Неудачные</h3>
-      <ul id="fList" class="list err"></ul>
-    </section>
+        <div class="side-source">
+          <span class="label">Источник</span>
+          <select id="platformPick"></select>
+          <span id="platformState" class="meta"></span>
+          <div class="host-actions">
+            <button id="btnOpenWindow" title="Открыть в отдельном окне">
+              <svg class="ic"><use href="#i-window"/></svg><span>В окне</span>
+            </button>
+            <button id="btnOpenPanel" title="Открыть в боковой панели">
+              <svg class="ic"><use href="#i-panel"/></svg><span>В панели</span>
+            </button>
+          </div>
+        </div>
+      </aside>
 
-    <section id="tab-set" class="pane">
-      <label>Папка внутри «Загрузок»</label>
-      <input id="baseDir" type="text" placeholder="VK Music" spellcheck="false" />
-      <div id="pathExample" class="hint small mono"></div>
-      <p class="hint small">
-        Браузер разрешает расширениям сохранять только внутри папки «Загрузки» — выбрать диск/папку
-        вне её Chrome не даст. Вложенность поддерживается: <code>Music/VK</code>.
-      </p>
-      <label>Параллельных загрузок: <b id="concVal">2</b></label>
-      <input id="conc" type="range" min="1" max="5" value="2" />
-      <label>Пауза между запусками, мс</label>
-      <input id="gap" type="number" min="100" max="5000" step="50" value="450" />
-      <hr />
-      <button id="btnReset" class="danger">Сбросить каталог</button>
-    </section>
+      <main class="content">
+        <section class="view active" id="view-home">
+          <header class="page-head">
+            <h1>Главная</h1>
+            <p class="meta">Собрано из вашей музыки ВКонтакте</p>
+          </header>
+          <p class="view-notice meta" hidden></p>
+          <div id="homeHero" class="featured"></div>
+          <div class="list-head">
+            <h2>Недавние</h2>
+            <span id="homeCount" class="meta"></span>
+          </div>
+          <ul id="homeTracks" class="tracks"></ul>
+        </section>
+
+        <section class="view" id="view-my">
+          <header class="page-head">
+            <h1>Моя музыка</h1>
+            <p class="meta">Треки и плейлисты вашего аккаунта</p>
+          </header>
+          <p class="view-notice meta" hidden></p>
+          <div class="row">
+            <button id="btnMyTracks" class="chip active">Треки</button>
+            <button id="btnMyPlaylists" class="chip">Плейлисты</button>
+          </div>
+          <ul id="myTracks" class="tracks"></ul>
+          <ul id="myPlaylists" class="pl-grid" hidden></ul>
+        </section>
+
+        <section class="view" id="view-explore">
+          <header class="page-head">
+            <h1>Обзор</h1>
+            <p class="meta">Разделы каталога</p>
+          </header>
+          <p class="view-notice meta" hidden></p>
+          <div id="exploreSections" class="row"></div>
+          <ul id="exploreTracks" class="tracks"></ul>
+        </section>
+
+        <section class="view" id="view-search">
+          <header class="page-head">
+            <h1>Поиск</h1>
+            <p class="meta">Найдётся всё, что есть во ВКонтакте</p>
+          </header>
+          <p class="view-notice meta" hidden></p>
+          <div class="row">
+            <input id="q" type="search" placeholder="Название трека или исполнитель" spellcheck="false" />
+            <button id="btnSearch" class="btn-primary">Найти</button>
+          </div>
+          <ul id="searchResults" class="tracks"></ul>
+        </section>
+
+        <section class="view" id="view-radio">
+          <header class="page-head">
+            <h1>Радио</h1>
+            <p class="meta">Персональная волна на основе ваших прослушиваний</p>
+          </header>
+          <p class="view-notice meta" hidden></p>
+          <div class="row">
+            <button id="btnMix" class="chip active">Волна</button>
+            <button id="btnRecs" class="chip">Рекомендации</button>
+          </div>
+          <ul id="radioTracks" class="tracks"></ul>
+        </section>
+
+        <section class="view" id="view-updates">
+          <header class="page-head">
+            <h1>Обновления</h1>
+            <p class="meta">Что появилось в плеере</p>
+          </header>
+          <p class="view-notice meta" hidden></p>
+          <ul id="updatesBody" class="notes">
+            <li><b>Universal player</b><span>Плеер, эквалайзер, скачивание и Last.fm в одном окне.</span></li>
+            <li><b>Несколько сервисов</b><span>Сейчас работает ВКонтакте. Spotify и YouTube — следующими.</span></li>
+          </ul>
+        </section>
+
+        <section class="view" id="view-downloads">
+          <header class="page-head">
+            <h1>Загрузки</h1>
+            <p class="meta">Файлы сохраняются с тегами и обложками</p>
+          </header>
+          <p class="view-notice meta" hidden></p>
+
+          <div class="stats">
+            <div class="stat"><span id="qCount">0</span><label>в очереди</label></div>
+            <div class="stat"><span id="zCount">0</span><label>идёт</label></div>
+            <div class="stat"><span id="dCount">0</span><label>готово</label></div>
+            <div class="stat"><span id="fCount">0</span><label>ошибок</label></div>
+          </div>
+          <div class="row">
+            <button id="btnPause">Пауза</button>
+            <button id="btnResume">Продолжить</button>
+            <button id="btnRetry">Повторить ошибки</button>
+            <button id="btnCancel">Стоп</button>
+            <span id="pausedFlag" class="meta"></span>
+          </div>
+
+          <div class="list-head"><h2>Очередь</h2><span id="dlNote" class="meta"></span></div>
+          <ul id="qList" class="tracks"></ul>
+
+          <div class="list-head"><h2>Неудачные</h2></div>
+          <ul id="fList" class="tracks"></ul>
+
+          <h2 class="sect">Сохранение</h2>
+          <div class="row">
+            <button id="btnPickDir">Выбрать папку</button>
+            <button id="btnClearDir">Сбросить</button>
+          </div>
+          <p id="dirState" class="meta"></p>
+          <div class="field">
+            <span class="label">Куда сохранять</span>
+            <select id="storageMode">
+              <option value="downloads">В «Загрузки»</option>
+              <option value="fsa">В выбранную папку</option>
+            </select>
+          </div>
+          <div class="field">
+            <span class="label">Папка внутри «Загрузок»</span>
+            <input id="baseDir" type="text" placeholder="VK Music" spellcheck="false" />
+          </div>
+          <p id="pathExample" class="meta"></p>
+          <div class="field">
+            <span class="label">Параллельных загрузок — <b id="concVal">2</b></span>
+            <input id="conc" type="range" min="1" max="5" value="2" />
+          </div>
+          <div class="field">
+            <span class="label">Пауза между запусками, мс</span>
+            <input id="gap" type="number" min="100" max="5000" step="50" value="450" />
+          </div>
+
+          <h2 class="sect">Плейлисты страницы</h2>
+          <div class="row">
+            <input id="scanName" type="text" placeholder="Имя плейлиста" spellcheck="false" />
+            <button id="btnScan" class="btn-primary">Сканировать вкладку</button>
+          </div>
+          <p id="scanResult" class="meta"></p>
+          <button id="btnDiag" class="chip">Диагностика</button>
+          <p id="diagResult" class="meta"></p>
+          <ul id="plList" class="tracks"></ul>
+          <div class="row">
+            <button id="btnAll">Выбрать все</button>
+            <button id="btnNone">Снять</button>
+            <span id="libTotal" class="meta"></span>
+          </div>
+          <button id="btnDownload" class="btn-primary">Скачать выбранное</button>
+        </section>
+
+        <section class="view" id="view-settings">
+          <header class="page-head">
+            <h1>Настройки</h1>
+            <p class="meta">Сеть, интеграции и правила</p>
+          </header>
+          <p class="view-notice meta" hidden></p>
+
+          <h2 class="sect">Прокси для ВКонтакте</h2>
+          <p class="meta">В режиме «только VK» через прокси идут лишь домены ВКонтакте, остальной браузер — напрямую.</p>
+          <div class="field">
+            <span class="label">Режим</span>
+            <select id="proxyMode">
+              <option value="vk-only">Только VK (рекомендуется)</option>
+              <option value="all">Весь браузер</option>
+              <option value="off">Выключен</option>
+            </select>
+          </div>
+          <p id="proxyApplied" class="meta"></p>
+          <ul id="proxyList" class="tracks"></ul>
+
+          <div class="field">
+            <span class="label">Вставить строку прокси</span>
+            <input id="proxyPaste" type="text" spellcheck="false"
+              placeholder="socks5://user:pass@1.2.3.4:1080" />
+          </div>
+          <p class="meta">Понимает `host:port`, `scheme://host:port` и строку с логином и паролем.</p>
+
+          <div class="proxy-form">
+            <div class="field">
+              <span class="label">Схема</span>
+              <select id="proxyScheme">
+                <option value="socks5">socks5</option>
+                <option value="socks4">socks4</option>
+                <option value="http">http</option>
+                <option value="https">https</option>
+              </select>
+            </div>
+            <div class="field">
+              <span class="label">Хост</span>
+              <input id="proxyHost" type="text" spellcheck="false" placeholder="1.2.3.4" />
+            </div>
+            <div class="field">
+              <span class="label">Порт</span>
+              <input id="proxyPort" type="number" min="1" max="65535" placeholder="1080" />
+            </div>
+            <div class="field">
+              <span class="label">Логин</span>
+              <input id="proxyUser" type="text" spellcheck="false" />
+            </div>
+            <div class="field">
+              <span class="label">Пароль</span>
+              <input id="proxyPass" type="password" />
+            </div>
+          </div>
+          <p id="proxyErr" class="meta bad" hidden></p>
+          <div class="row">
+            <button id="btnProxyAdd" class="btn-primary">Добавить</button>
+            <button id="btnProxyPaste" class="chip">Разобрать строку</button>
+            <button id="btnProxyCheck" class="chip">Проверить</button>
+          </div>
+
+          <h2 class="sect">Правила заголовков</h2>
+          <p id="dnrState" class="meta"></p>
+          <button id="btnDnrInstall">Переустановить правила</button>
+
+          <h2 class="sect">Пропуск треков</h2>
+          <div class="field">
+            <span class="label">Артисты через запятую</span>
+            <input id="blockedArtists" type="text" placeholder="Кино, AC/DC" spellcheck="false" />
+          </div>
+          <p id="blockedState" class="meta"></p>
+
+          <h2 class="sect">Last.fm</h2>
+          <p class="meta">Ключи — на <a href="https://www.last.fm/api/account/create" target="_blank">last.fm/api</a>. Затем «Войти» → авторизация → «Готово».</p>
+          <div class="field">
+            <span class="label">API key</span>
+            <input id="lfApiKey" type="text" spellcheck="false" />
+          </div>
+          <div class="field">
+            <span class="label">Shared secret</span>
+            <input id="lfSecret" type="text" spellcheck="false" />
+          </div>
+          <div class="row">
+            <button id="btnLfSave">Сохранить ключи</button>
+            <button id="btnLfLogin" class="btn-primary">Войти</button>
+            <button id="btnLfDone" hidden>Готово</button>
+            <button id="btnLfUnlink" hidden>Отключить</button>
+          </div>
+          <p id="lfState" class="meta"></p>
+          <p id="lfPending" class="meta"></p>
+          <button id="btnLfFlush" hidden>Отправить отложенные</button>
+
+          <h2 class="sect">Данные</h2>
+          <button id="btnReset" class="btn-danger">Сбросить каталог</button>
+        </section>
+      </main>
+
+      <div id="fxPanel" class="fx-overlay" hidden>
+        <div class="q-head">
+          <span>Звук</span>
+          <button id="fxClose" class="icon" title="Закрыть"><svg class="ic"><use href="#i-cross"/></svg></button>
+        </div>
+
+        <div class="fx-body">
+          <!-- Spectrum: the one visual the ear cannot verify for itself. -->
+          <!-- Two views of the same frames: bars for level, waterfall for the
+               shape of the recording over time. -->
+          <div class="fx-spectrum">
+            <canvas id="fxCanvas" width="640" height="176"></canvas>
+            <div class="fx-spec-labels mono"><span id="fxSpecL">60</span><span>250</span><span>1k</span><span>4k</span><span id="fxSpecR">16k</span></div>
+          </div>
+          <div class="row fx-spec-modes">
+            <button id="fxModeBars" class="chip active">Спектр</button>
+            <button id="fxModeFall" class="chip">Водопад</button>
+          </div>
+          <div id="fxReadout" class="fx-readout mono"></div>
+
+          <div class="field">
+            <span class="label">Выравнивание громкости</span>
+            <select id="fxNormMode">
+              <option value="off">Выключено</option>
+              <option value="track">По треку</option>
+              <option value="album">По альбому</option>
+            </select>
+          </div>
+          <p class="meta">Треки ВК отличаются по громкости больше чем на 12 дБ. Плеер измеряет каждый трек во время прослушивания и выравнивает до −14 LUFS. Режим «по альбому» сохраняет разницу между тихой балладой и громким открывающим треком — так задумано при мастеринге.</p>
+
+          <label class="fx-row">
+            <span>Ночной режим</span>
+            <span class="switch"><input id="fxNight" type="checkbox" /><span></span></span>
+          </label>
+          <div class="field">
+            <span class="label">Сила — <b id="fxNightVal">50</b>%</span>
+            <input id="fxNightAmount" type="range" min="0" max="100" value="50" />
+          </div>
+
+          <div class="field">
+            <span class="label">Бас — <b id="fxBassVal">0</b> дБ</span>
+            <input id="fxBass" type="range" min="0" max="12" step="1" value="0" />
+          </div>
+          <div class="field">
+            <span class="label">Предусиление — <b id="fxPreampVal">0</b> дБ</span>
+            <input id="fxPreamp" type="range" min="-6" max="12" step="1" value="0" />
+          </div>
+          <div class="field">
+            <span class="label">Кроссфейд — <b id="fxCrossVal">выкл</b></span>
+            <input id="fxCross" type="range" min="0" max="12" step="1" value="0" />
+          </div>
+
+          <label class="fx-row">
+            <span>Бесшовно внутри альбома</span>
+            <span class="switch"><input id="fxGapless" type="checkbox" /><span></span></span>
+          </label>
+          <p class="meta">Альбомы, сведённые как одно целое (живые записи, миксы, электроника), не имеют паузы между треками. Режим сшивает их без разрыва и отменяет кроссфейд внутри альбома.</p>
+
+          <div class="field">
+            <span class="label">Аудиовыход</span>
+            <select id="fxOutput"></select>
+          </div>
+
+          <button id="fxReset" class="chip">Сбросить звук</button>
+        </div>
+      </div>
+
+      <div id="queuePanel" class="q-overlay" hidden>
+        <div class="q-head">
+          <span>Очередь</span>
+          <div class="q-head-actions">
+            <button id="qShuffle" class="icon" title="Перемешать"
+              ><svg class="ic"><use href="#i-shuffle"/></svg></button>
+            <button id="qRepeat" class="icon" title="Повтор"
+              ><svg class="ic"><use href="#i-repeat"/></svg><span id="qRepeatOne" class="q-one" hidden>1</span></button>
+            <button id="qClose" class="icon" title="Закрыть"><svg class="ic"><use href="#i-cross"/></svg></button>
+          </div>
+        </div>
+        <div id="qEmpty" class="meta" hidden>Очередь пуста. Включи трек — и он появится здесь.</div>
+        <ul id="qItems" class="q-list"></ul>
+      </div>
+
+      <div id="eqPanel" class="eq-overlay" hidden>
+        <div class="eq-head">
+          <span>Эквалайзер</span>
+          <label class="switch"><input id="eqOn" type="checkbox" /><span></span></label>
+        </div>
+        <div id="eqBands" class="eq-bands"></div>
+        <div class="eq-foot">
+          <select id="eqPreset"><option value="">Пресеты</option></select>
+          <button id="eqSave">Сохранить</button>
+          <button id="eqReset">Сбросить</button>
+        </div>
+      </div>
+
+      <div id="selTray" class="sel-tray" hidden>
+        <span id="selCount" class="sel-count"></span>
+        <div class="sel-actions">
+          <button id="selPlay">Играть</button>
+          <button id="selDownload" class="btn-primary">Скачать</button>
+          <button id="selClear">Снять</button>
+        </div>
+      </div>
+
+      <footer class="player">
+        <div class="p-left">
+          <div class="p-cover-wrap">
+            <div id="pCover" class="p-cover"></div>
+            <!-- Level ring: the loudest thing on screen is the music itself. -->
+            <div id="pLevel" class="p-level"></div>
+            <div class="p-meters">
+              <span class="p-meter"><i id="pMeterL"></i></span>
+              <span class="p-meter"><i id="pMeterR"></i></span>
+            </div>
+            <span id="pClip" class="p-clip" title="Мастер записан с перегрузкой" hidden>CLIP</span>
+          </div>
+          <div class="p-meta">
+            <span id="pTitle" class="p-title">Ничего не играет</span>
+            <span id="pArtist" class="p-artist"></span>
+          </div>
+        </div>
+
+        <div class="p-center">
+          <div class="p-row">
+            <button id="pPrev" class="icon" title="Предыдущий"><svg class="ic"><use href="#i-prev" /></svg></button>
+            <button id="pToggle" class="icon play" title="Пуск / пауза"><svg class="ic"><use href="#i-play" /></svg></button>
+            <button id="pNext" class="icon" title="Следующий"><svg class="ic"><use href="#i-next" /></svg></button>
+          </div>
+          <div class="p-row p-progress">
+            <span id="pTime" class="mono">0:00</span>
+            <input id="pSeek" type="range" min="0" max="1000" value="0" />
+            <span id="pDur" class="mono">0:00</span>
+          </div>
+        </div>
+
+        <div class="p-right">
+          <button id="pLike" class="icon" title="Нравится"><svg class="ic"><use href="#i-heart" /></svg></button>
+          <button id="pDislike" class="icon" title="Не нравится"><svg class="ic"><use href="#i-cross" /></svg></button>
+          <button id="pFx" class="icon" title="Звук"><svg class="ic"><use href="#i-wave" /></svg></button>
+          <button id="pQueue" class="icon" title="Очередь"><svg class="ic"><use href="#i-grip" /></svg></button>
+          <button id="pEq" class="icon" title="Эквалайзер"><svg class="ic"><use href="#i-eq" /></svg></button>
+          <svg class="ic small"><use href="#i-volume" /></svg>
+          <input id="pVolume" type="range" min="0" max="100" value="100" />
+        </div>
+      </footer>
+    </div>
 
     <script type="module" src="popup.ts"></script>
   </body>

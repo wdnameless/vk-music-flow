@@ -1,41 +1,109 @@
 {
   "manifest_version": 3,
-  "name": "VK Music Flow",
-  "version": "0.2.2",
-  "description": "Выгрузка музыки из ВКонтакте: плейлисты -> папки, ID3-теги, обложки, тексты.",
-  "minimum_chrome_version": "111",
-  "permissions": ["downloads", "storage", "scripting", "alarms"],
+  "name": "Universal player: VK, Spotify, YouTube",
+  "version": "0.16.0",
+  "description": "Единый музыкальный плеер: ВКонтакте, Spotify и YouTube. Слушай без вкладки, качай плейлисты, свои прокси.",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "alarms",
+    "declarativeNetRequestWithHostAccess",
+    "downloads",
+    "offscreen",
+    "proxy",
+    "scripting",
+    "sidePanel",
+    "storage",
+    "unlimitedStorage",
+    "webRequest",
+    "webRequestAuthProvider"
+  ],
   "host_permissions": [
     "https://vk.com/*",
     "https://*.vk.com/*",
     "https://vk.ru/*",
     "https://*.vk.ru/*",
+    "https://login.vk.ru/*",
+    "https://api.vk.ru/*",
+    "https://web.api.vk.ru/*",
     "https://*.vk-cdn.net/*",
     "https://*.userapi.com/*",
     "https://*.mycdn.me/*",
     "https://*.vkuser.net/*",
     "https://*.vkuservideo.net/*",
-    "https://*.vkusercontent.ru/*"
+    "https://*.vkusercontent.ru/*",
+    "https://*.vkuseraudio.ru/*",
+    "https://*.vkuserphoto.ru/*",
+    "https://api.lyrics.ovh/*"
   ],
   "background": {
     "service_worker": "src/background/sw.ts",
     "type": "module"
   },
   "action": {
-    "default_title": "VK Music Flow",
+    "default_title": "Universal player",
     "default_popup": "src/popup/popup.html"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/offscreen/offscreen.html"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
+  "commands": {
+    "play-pause": {
+      "description": "Воспроизвести / Пауза",
+      "global": true
+    },
+    "next": {
+      "description": "Следующий трек",
+      "global": true
+    },
+    "prev": {
+      "description": "Предыдущий трек",
+      "global": true
+    },
+    "volume-up": {
+      "description": "Громче",
+      "global": true
+    },
+    "volume-down": {
+      "description": "Тише",
+      "global": true
+    }
   },
   "content_scripts": [
     {
-      "matches": ["https://vk.com/*", "https://*.vk.com/*", "https://vk.ru/*", "https://*.vk.ru/*"],
-      "js": ["src/content/hook-main.ts"],
+      "matches": [
+        "https://vk.com/*",
+        "https://*.vk.com/*",
+        "https://vk.ru/*",
+        "https://*.vk.ru/*"
+      ],
+      "js": [
+        "src/content/hook-main.ts"
+      ],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
-      "matches": ["https://vk.com/*", "https://*.vk.com/*", "https://vk.ru/*", "https://*.vk.ru/*"],
-      "js": ["src/content/collector.ts"],
+      "matches": [
+        "https://vk.com/*",
+        "https://*.vk.com/*",
+        "https://vk.ru/*",
+        "https://*.vk.ru/*"
+      ],
+      "js": [
+        "src/content/collector.ts"
+      ],
       "run_at": "document_start"
     }
-  ]
+  ],
+  "short_name": "Universal player",
+  "side_panel": {
+    "default_path": "src/popup/popup.html"
+  }
 }
