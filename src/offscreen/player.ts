@@ -413,7 +413,7 @@ export class Player {
    * panel and headset buttons are all driven by MediaSession instead.
    */
   private publishMediaSession(track: PlayerTrack): void {
-    const ms = navigator.mediaSession;
+    const ms = typeof navigator === 'undefined' ? undefined : navigator.mediaSession;
     if (!ms) return;
     try {
       ms.metadata = new MediaMetadata({
@@ -443,7 +443,7 @@ export class Player {
 
   /** Reflect the transport state so the OS shows the right button. */
   private syncMediaSessionState(playing: boolean): void {
-    const ms = navigator.mediaSession;
+    const ms = typeof navigator === 'undefined' ? undefined : navigator.mediaSession;
     if (ms) ms.playbackState = playing ? 'playing' : 'paused';
   }
 
@@ -861,6 +861,7 @@ export class Player {
   /** Refresh the list of audio output devices. */
   async refreshDevices(): Promise<void> {
     try {
+      if (typeof navigator === 'undefined') throw new Error('no navigator');
       const devs = await navigator.mediaDevices.enumerateDevices();
       this.outputDevices = devs
         .filter((d) => d.kind === 'audiooutput')
@@ -876,6 +877,7 @@ export class Player {
   /** Route audio to a specific output device. */
   async setOutputDevice(deviceId: string): Promise<void> {
     try {
+      // SAFETY: setSinkId on AudioContext exists in Chrome 110+ but is missing from TS DOM lib.
       const ctx = this.ctx as unknown as { setSinkId?: (id: string) => Promise<void> };
       if (typeof ctx.setSinkId === 'function') {
         await ctx.setSinkId(deviceId);
