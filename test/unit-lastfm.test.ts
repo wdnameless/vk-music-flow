@@ -21,10 +21,7 @@ describe('lastfm: md5', () => {
     assert.equal(md5Hex('a'), '0cc175b9c0f1b6a831c399e269772661');
     assert.equal(md5Hex('abc'), '900150983cd24fb0d6963f7d28e17f72');
     assert.equal(md5Hex('message digest'), 'f96b697d7cb7938d525a2f31aaf161d0');
-    assert.equal(
-      md5Hex('abcdefghijklmnopqrstuvwxyz'),
-      'c3fcd3d76192e4007dfb496cca67e13b',
-    );
+    assert.equal(md5Hex('abcdefghijklmnopqrstuvwxyz'), 'c3fcd3d76192e4007dfb496cca67e13b');
   });
 
   it('переводит кириллицу в UTF-8 перед хешированием', () => {
@@ -113,7 +110,10 @@ describe('lastfm: пакетный скробблинг и очередь (scrob
       globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
         void input;
         bodyText = String(init?.body ?? '');
-        return new Response(JSON.stringify({ scrobbles: { '@attr': { accepted: 50, ignored: 0 } } }), { status: 200 });
+        return new Response(
+          JSON.stringify({ scrobbles: { '@attr': { accepted: 50, ignored: 0 } } }),
+          { status: 200 },
+        );
       }) as typeof fetch;
       const res = await scrobbleBatch(items, creds);
       assert.equal(res.ok, true);
@@ -135,7 +135,9 @@ describe('lastfm: пакетный скробблинг и очередь (scrob
     const originalFetch = globalThis.fetch;
     try {
       globalThis.fetch = async () =>
-        new Response(JSON.stringify({ error: 16, message: 'There was a temporary error' }), { status: 200 });
+        new Response(JSON.stringify({ error: 16, message: 'There was a temporary error' }), {
+          status: 200,
+        });
       const res = await scrobbleBatch(items, creds);
       assert.equal(res.ok, false);
       assert.equal(res.code, 16);
@@ -154,10 +156,15 @@ describe('lastfm: пакетный скробблинг и очередь (scrob
         callCount++;
         if (callCount <= 2) {
           // First 2 batches (50 + 50) succeed
-          return new Response(JSON.stringify({ scrobbles: { '@attr': { accepted: 50, ignored: 0 } } }), { status: 200 });
+          return new Response(
+            JSON.stringify({ scrobbles: { '@attr': { accepted: 50, ignored: 0 } } }),
+            { status: 200 },
+          );
         }
         // Third batch fails
-        return new Response(JSON.stringify({ error: 16, message: 'Temporary failure' }), { status: 200 });
+        return new Response(JSON.stringify({ error: 16, message: 'Temporary failure' }), {
+          status: 200,
+        });
       }) as typeof fetch;
 
       const res = await flushScrobbles(queue, creds);

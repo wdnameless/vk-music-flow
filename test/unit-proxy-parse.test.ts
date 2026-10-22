@@ -10,7 +10,13 @@ import { parseProxyLine } from '../src/lib/proxy.js';
 describe('прокси: разбор строки', () => {
   it('понимает host:port и подставляет схему по умолчанию', () => {
     const p = parseProxyLine('1.2.3.4:1080');
-    assert.deepEqual(p, { scheme: 'socks5', host: '1.2.3.4', port: 1080, username: undefined, password: undefined });
+    assert.deepEqual(p, {
+      scheme: 'socks5',
+      host: '1.2.3.4',
+      port: 1080,
+      username: undefined,
+      password: undefined,
+    });
   });
 
   it('понимает строку со схемой', () => {

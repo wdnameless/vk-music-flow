@@ -17,11 +17,7 @@ const OFFSCREEN_PATH = 'src/offscreen/offscreen.html';
 const MESSAGE_TIMEOUT_MS = 20000;
 
 type OffscreenApi = {
-  createDocument(opts: {
-    url: string;
-    reasons: string[];
-    justification: string;
-  }): Promise<void>;
+  createDocument(opts: { url: string; reasons: string[]; justification: string }): Promise<void>;
   closeDocument(): Promise<void>;
   hasDocument?(): Promise<boolean>;
 };
@@ -35,7 +31,8 @@ const offscreenApi = (): OffscreenApi | null => {
   return c?.offscreen ?? null;
 };
 
-const runtimeCtx = (): RuntimeCtx => (globalThis.chrome as unknown as { runtime?: RuntimeCtx }).runtime ?? {};
+const runtimeCtx = (): RuntimeCtx =>
+  (globalThis.chrome as unknown as { runtime?: RuntimeCtx }).runtime ?? {};
 
 /** True when the offscreen document already exists. */
 async function hasOffscreen(): Promise<boolean> {

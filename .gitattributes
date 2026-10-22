@@ -1,0 +1,7 @@
+# Unix line endings everywhere: CI runs format:check on LF checkouts,
+# and Prettier flags CRLF as a style violation.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.mp3 binary
+*.db binary

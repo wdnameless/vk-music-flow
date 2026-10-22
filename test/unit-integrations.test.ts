@@ -3,7 +3,8 @@ import { afterEach, describe, it, vi } from 'vitest';
 
 // chrome.*/fetch are stubbed per test.
 
-import { fetchLyrics,
+import {
+  fetchLyrics,
   filterPlayable,
   isArtistBlocked,
   isDisliked,
@@ -124,8 +125,9 @@ describe('integrations: разбор текста и настроек', () => {
 
 describe('integrations: резервный источник текстов', () => {
   it('найденный текст возвращается', async () => {
-    vi.stubGlobal('fetch', async () =>
-      new Response(JSON.stringify({ lyrics: '  Первый куплет…  ' }), { status: 200 }),
+    vi.stubGlobal(
+      'fetch',
+      async () => new Response(JSON.stringify({ lyrics: '  Первый куплет…  ' }), { status: 200 }),
     );
     const r = await fetchLyrics('Кино', 'Группа крови');
     assert.equal(r.ok, true);
@@ -141,7 +143,10 @@ describe('integrations: резервный источник текстов', () 
   });
 
   it('пустой текст не считается найденным', async () => {
-    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ lyrics: '   ' }), { status: 200 }));
+    vi.stubGlobal(
+      'fetch',
+      async () => new Response(JSON.stringify({ lyrics: '   ' }), { status: 200 }),
+    );
     const r = await fetchLyrics('A', 'B');
     assert.equal(r.ok, false);
   });

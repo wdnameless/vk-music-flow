@@ -28,7 +28,11 @@ const seedToken = (): void => {
       local: {
         async get(key: string) {
           return {
-            [key]: { access_token: 'tok', user_id: 1, expires: Math.floor(Date.now() / 1000) + 3600 },
+            [key]: {
+              access_token: 'tok',
+              user_id: 1,
+              expires: Math.floor(Date.now() / 1000) + 3600,
+            },
           };
         },
         async set() {},
@@ -46,13 +50,17 @@ afterEach(() => {
 describe('resolve: порядок источников ссылки', () => {
   it('API отдаёт свежую ссылку — она и используется', async () => {
     seedToken();
-    vi.stubGlobal('fetch', async () =>
-      new Response(
-        JSON.stringify({
-          response: [{ owner_id: 1, id: 10, artist: 'A', title: 'T', url: 'https://cdn/fresh.m3u8' }],
-        }),
-        { status: 200 },
-      ),
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(
+          JSON.stringify({
+            response: [
+              { owner_id: 1, id: 10, artist: 'A', title: 'T', url: 'https://cdn/fresh.m3u8' },
+            ],
+          }),
+          { status: 200 },
+        ),
     );
     const r = await resolveTrackUrls({ ...META, urls: ['https://cdn/stale.mp3'] });
     assert.deepEqual(r.urls, ['https://cdn/fresh.m3u8']);
@@ -78,10 +86,15 @@ describe('resolve: порядок источников ссылки', () => {
 
   it('API пусто, но есть ссылка хука — используем её', async () => {
     seedToken();
-    vi.stubGlobal('fetch', async () =>
-      new Response(JSON.stringify({ response: [{ owner_id: 1, id: 10, artist: 'A', title: 'T', url: '' }] }), {
-        status: 200,
-      }),
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(
+          JSON.stringify({ response: [{ owner_id: 1, id: 10, artist: 'A', title: 'T', url: '' }] }),
+          {
+            status: 200,
+          },
+        ),
     );
     const r = await resolveTrackUrls({ ...META, urls: ['https://cdn/from-hook.m3u8'] });
     assert.deepEqual(r.urls, ['https://cdn/from-hook.m3u8']);
@@ -90,14 +103,22 @@ describe('resolve: порядок источников ссылки', () => {
 
   it('ссылки хука фильтруются от обложек', async () => {
     seedToken();
-    vi.stubGlobal('fetch', async () =>
-      new Response(JSON.stringify({ response: [{ owner_id: 1, id: 10, artist: 'A', title: 'T', url: '' }] }), {
-        status: 200,
-      }),
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(
+          JSON.stringify({ response: [{ owner_id: 1, id: 10, artist: 'A', title: 'T', url: '' }] }),
+          {
+            status: 200,
+          },
+        ),
     );
     const r = await resolveTrackUrls({
       ...META,
-      urls: ['https://sun1-24.vkuserphoto.ru/impg/x/cover.jpg?size=300x300', 'https://cdn/track.m3u8'],
+      urls: [
+        'https://sun1-24.vkuserphoto.ru/impg/x/cover.jpg?size=300x300',
+        'https://cdn/track.m3u8',
+      ],
     });
     assert.deepEqual(r.urls, ['https://cdn/track.m3u8']);
   });
@@ -106,8 +127,9 @@ describe('resolve: порядок источников ссылки', () => {
 describe('resolve: недоступные треки', () => {
   it('restricted + нет ссылок → терминальная ошибка', async () => {
     seedToken();
-    vi.stubGlobal('fetch', async () =>
-      new Response(JSON.stringify({ response: [] }), { status: 200 }),
+    vi.stubGlobal(
+      'fetch',
+      async () => new Response(JSON.stringify({ response: [] }), { status: 200 }),
     );
     await assert.rejects(
       () => resolveTrackUrls({ ...META, restricted: 2 }),
@@ -117,15 +139,17 @@ describe('resolve: недоступные треки', () => {
 
   it('restricted, но ссылка хука есть → скачиваем (трек реально играется)', async () => {
     seedToken();
-    vi.stubGlobal('fetch', async () =>
-      new Response(
-        JSON.stringify({
-          response: [
-            { owner_id: 1, id: 10, artist: 'A', title: 'T', url: '', content_restricted: 2 },
-          ],
-        }),
-        { status: 200 },
-      ),
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(
+          JSON.stringify({
+            response: [
+              { owner_id: 1, id: 10, artist: 'A', title: 'T', url: '', content_restricted: 2 },
+            ],
+          }),
+          { status: 200 },
+        ),
     );
     const r = await resolveTrackUrls({ ...META, restricted: 2, urls: ['https://cdn/hook.m3u8'] });
     assert.deepEqual(r.urls, ['https://cdn/hook.m3u8']);
@@ -134,7 +158,10 @@ describe('resolve: недоступные треки', () => {
 
   it('НЕ restricted и ссылок нет → обычная (повторяемая) ошибка, не терминальная', async () => {
     seedToken();
-    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ response: [] }), { status: 200 }));
+    vi.stubGlobal(
+      'fetch',
+      async () => new Response(JSON.stringify({ response: [] }), { status: 200 }),
+    );
     await assert.rejects(
       () => resolveTrackUrls(META),
       (e: Error) => !(e instanceof RestrictedTrackError) && /ссылку/i.test(e.message),

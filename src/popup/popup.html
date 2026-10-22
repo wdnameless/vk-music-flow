@@ -10,47 +10,127 @@
          drawn on a 24px grid so they align optically with the type. -->
     <svg class="sprite" aria-hidden="true">
       <defs>
-        <g id="i-home"><path d="M4.5 10.8 12 4.4l7.5 6.4v8.2a1 1 0 0 1-1 1h-3.7v-5.5H9.2V20H5.5a1 1 0 0 1-1-1z"/></g>
-        <g id="i-note"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></g>
-        <g id="i-compass"><circle cx="12" cy="12" r="8"/><path d="m15 9-1.7 4.3L9 15l1.7-4.3z"/></g>
-        <g id="i-search"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></g>
-        <g id="i-radio"><circle cx="12" cy="12" r="2"/><path d="M8.6 15.4a5 5 0 0 1 0-6.8M15.4 8.6a5 5 0 0 1 0 6.8M6.2 17.8a9 9 0 0 1 0-11.6M17.8 6.2a9 9 0 0 1 0 11.6"/></g>
-        <g id="i-sparkle"><path d="M12 4v4M12 16v4M4 12h4M16 12h4M6.5 6.5l2.5 2.5M15 15l2.5 2.5M17.5 6.5 15 9M9 15l-2.5 2.5"/></g>
-        <g id="i-download"><path d="M12 4v11m0 0 4-4m-4 4-4-4M5 19h14"/></g>
-        <g id="i-settings"><path d="M4 8h9M17 8h3M4 16h3M11 16h9"/><circle cx="15" cy="8" r="2"/><circle cx="9" cy="16" r="2"/></g>
-        <g id="i-play"><path d="M7 4.8v14.4L19.5 12z" fill="currentColor" stroke="none"/></g>
-        <g id="i-pause"><path d="M8.5 4.5h3v15h-3zM12.5 4.5h3v15h-3z" fill="currentColor" stroke="none"/></g>
-        <g id="i-prev"><path d="M18 5.5v13L8.5 12z" fill="currentColor" stroke="none"/><path d="M6 5v14"/></g>
-        <g id="i-next"><path d="M6 5.5v13L15.5 12z" fill="currentColor" stroke="none"/><path d="M18 5v14"/></g>
-        <g id="i-heart"><path d="M12 19.4C8.4 17 4.8 14.2 4.8 10.8a3.7 3.7 0 0 1 7.2-1.4 3.7 3.7 0 0 1 7.2 1.4c0 3.4-3.6 6.2-7.2 8.6z"/></g>
-        <g id="i-cross"><path d="m7 7 10 10M17 7 7 17"/></g>
-        <g id="i-eq"><path d="M6 19V9M12 19V5M18 19v-6"/><circle cx="6" cy="7" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="3" r="1.6" fill="currentColor" stroke="none"/><circle cx="18" cy="11" r="1.6" fill="currentColor" stroke="none"/></g>
-        <g id="i-volume"><path d="M5 9.5h3L12 6v12l-4-3.5H5z"/><path d="M15.5 9.5a3.5 3.5 0 0 1 0 5"/><path d="M18 7a7 7 0 0 1 0 10"/></g>
-        <g id="i-check"><path d="m5 12.5 4.5 4.5L19 7"/></g>
-        <g id="i-shuffle"><path d="M4 6h3.5l8 12H20M4 18h3.5l2.2-3.3M14 6h6M17.5 3.5 20 6l-2.5 2.5M17.5 15.5 20 18l-2.5 2.5"/></g>
-        <g id="i-repeat"><path d="M5 9a5 5 0 0 1 5-5h9M17 2.5 19.5 5 17 7.5M19 15a5 5 0 0 1-5 5H5M7 21.5 4.5 19 7 16.5"/></g>
-        <g id="i-grip"><path d="M9 6h.01M9 12h.01M9 18h.01M15 6h.01M15 12h.01M15 18h.01"/></g>
-        <g id="i-window"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18"/></g>
-        <g id="i-panel"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M15 5v14"/></g>
-        <g id="i-wave"><path d="M3 12h2M7 8v8M11 5v14M15 9v6M19 11v2"/></g>
+        <g id="i-home">
+          <path
+            d="M4.5 10.8 12 4.4l7.5 6.4v8.2a1 1 0 0 1-1 1h-3.7v-5.5H9.2V20H5.5a1 1 0 0 1-1-1z"
+          />
+        </g>
+        <g id="i-note">
+          <path d="M9 18V6l10-2v12" />
+          <circle cx="6.5" cy="18" r="2.5" />
+          <circle cx="16.5" cy="16" r="2.5" />
+        </g>
+        <g id="i-compass">
+          <circle cx="12" cy="12" r="8" />
+          <path d="m15 9-1.7 4.3L9 15l1.7-4.3z" />
+        </g>
+        <g id="i-search">
+          <circle cx="11" cy="11" r="6.5" />
+          <path d="m16 16 4 4" />
+        </g>
+        <g id="i-radio">
+          <circle cx="12" cy="12" r="2" />
+          <path
+            d="M8.6 15.4a5 5 0 0 1 0-6.8M15.4 8.6a5 5 0 0 1 0 6.8M6.2 17.8a9 9 0 0 1 0-11.6M17.8 6.2a9 9 0 0 1 0 11.6"
+          />
+        </g>
+        <g id="i-sparkle">
+          <path
+            d="M12 4v4M12 16v4M4 12h4M16 12h4M6.5 6.5l2.5 2.5M15 15l2.5 2.5M17.5 6.5 15 9M9 15l-2.5 2.5"
+          />
+        </g>
+        <g id="i-download"><path d="M12 4v11m0 0 4-4m-4 4-4-4M5 19h14" /></g>
+        <g id="i-settings">
+          <path d="M4 8h9M17 8h3M4 16h3M11 16h9" />
+          <circle cx="15" cy="8" r="2" />
+          <circle cx="9" cy="16" r="2" />
+        </g>
+        <g id="i-play"><path d="M7 4.8v14.4L19.5 12z" fill="currentColor" stroke="none" /></g>
+        <g id="i-pause">
+          <path d="M8.5 4.5h3v15h-3zM12.5 4.5h3v15h-3z" fill="currentColor" stroke="none" />
+        </g>
+        <g id="i-prev">
+          <path d="M18 5.5v13L8.5 12z" fill="currentColor" stroke="none" />
+          <path d="M6 5v14" />
+        </g>
+        <g id="i-next">
+          <path d="M6 5.5v13L15.5 12z" fill="currentColor" stroke="none" />
+          <path d="M18 5v14" />
+        </g>
+        <g id="i-heart">
+          <path
+            d="M12 19.4C8.4 17 4.8 14.2 4.8 10.8a3.7 3.7 0 0 1 7.2-1.4 3.7 3.7 0 0 1 7.2 1.4c0 3.4-3.6 6.2-7.2 8.6z"
+          />
+        </g>
+        <g id="i-cross"><path d="m7 7 10 10M17 7 7 17" /></g>
+        <g id="i-eq">
+          <path d="M6 19V9M12 19V5M18 19v-6" />
+          <circle cx="6" cy="7" r="1.6" fill="currentColor" stroke="none" />
+          <circle cx="12" cy="3" r="1.6" fill="currentColor" stroke="none" />
+          <circle cx="18" cy="11" r="1.6" fill="currentColor" stroke="none" />
+        </g>
+        <g id="i-volume">
+          <path d="M5 9.5h3L12 6v12l-4-3.5H5z" />
+          <path d="M15.5 9.5a3.5 3.5 0 0 1 0 5" />
+          <path d="M18 7a7 7 0 0 1 0 10" />
+        </g>
+        <g id="i-check"><path d="m5 12.5 4.5 4.5L19 7" /></g>
+        <g id="i-shuffle">
+          <path
+            d="M4 6h3.5l8 12H20M4 18h3.5l2.2-3.3M14 6h6M17.5 3.5 20 6l-2.5 2.5M17.5 15.5 20 18l-2.5 2.5"
+          />
+        </g>
+        <g id="i-repeat">
+          <path
+            d="M5 9a5 5 0 0 1 5-5h9M17 2.5 19.5 5 17 7.5M19 15a5 5 0 0 1-5 5H5M7 21.5 4.5 19 7 16.5"
+          />
+        </g>
+        <g id="i-grip"><path d="M9 6h.01M9 12h.01M9 18h.01M15 6h.01M15 12h.01M15 18h.01" /></g>
+        <g id="i-window">
+          <rect x="3" y="5" width="18" height="14" rx="2" />
+          <path d="M3 9h18" />
+        </g>
+        <g id="i-panel">
+          <rect x="3" y="5" width="18" height="14" rx="2" />
+          <path d="M15 5v14" />
+        </g>
+        <g id="i-wave"><path d="M3 12h2M7 8v8M11 5v14M15 9v6M19 11v2" /></g>
       </defs>
     </svg>
 
     <div class="app">
       <aside class="side">
-        <div class="side-logo"><svg class="ic"><use href="#i-note" /></svg></div>
+        <div class="side-logo">
+          <svg class="ic"><use href="#i-note" /></svg>
+        </div>
         <nav class="side-nav">
-          <button class="nav-item active" data-view="home"><svg class="ic"><use href="#i-home" /></svg><span>Главная</span></button>
-          <button class="nav-item" data-view="my"><svg class="ic"><use href="#i-note" /></svg><span>Моя музыка</span></button>
-          <button class="nav-item" data-view="explore"><svg class="ic"><use href="#i-compass" /></svg><span>Обзор</span></button>
-          <button class="nav-item" data-view="search"><svg class="ic"><use href="#i-search" /></svg><span>Поиск</span></button>
-          <button class="nav-item" data-view="radio"><svg class="ic"><use href="#i-radio" /></svg><span>Радио</span></button>
-          <button class="nav-item" data-view="updates"><svg class="ic"><use href="#i-sparkle" /></svg><span>Обновления</span></button>
+          <button class="nav-item active" data-view="home">
+            <svg class="ic"><use href="#i-home" /></svg><span>Главная</span>
+          </button>
+          <button class="nav-item" data-view="my">
+            <svg class="ic"><use href="#i-note" /></svg><span>Моя музыка</span>
+          </button>
+          <button class="nav-item" data-view="explore">
+            <svg class="ic"><use href="#i-compass" /></svg><span>Обзор</span>
+          </button>
+          <button class="nav-item" data-view="search">
+            <svg class="ic"><use href="#i-search" /></svg><span>Поиск</span>
+          </button>
+          <button class="nav-item" data-view="radio">
+            <svg class="ic"><use href="#i-radio" /></svg><span>Радио</span>
+          </button>
+          <button class="nav-item" data-view="updates">
+            <svg class="ic"><use href="#i-sparkle" /></svg><span>Обновления</span>
+          </button>
         </nav>
 
         <nav class="side-nav side-bottom">
-          <button class="nav-item" data-view="downloads"><svg class="ic"><use href="#i-download" /></svg><span>Загрузки</span></button>
-          <button class="nav-item" data-view="settings"><svg class="ic"><use href="#i-settings" /></svg><span>Настройки</span></button>
+          <button class="nav-item" data-view="downloads">
+            <svg class="ic"><use href="#i-download" /></svg><span>Загрузки</span>
+          </button>
+          <button class="nav-item" data-view="settings">
+            <svg class="ic"><use href="#i-settings" /></svg><span>Настройки</span>
+          </button>
         </nav>
 
         <div class="side-source">
@@ -59,10 +139,10 @@
           <span id="platformState" class="meta"></span>
           <div class="host-actions">
             <button id="btnOpenWindow" title="Открыть в отдельном окне">
-              <svg class="ic"><use href="#i-window"/></svg><span>В окне</span>
+              <svg class="ic"><use href="#i-window" /></svg><span>В окне</span>
             </button>
             <button id="btnOpenPanel" title="Открыть в боковой панели">
-              <svg class="ic"><use href="#i-panel"/></svg><span>В панели</span>
+              <svg class="ic"><use href="#i-panel" /></svg><span>В панели</span>
             </button>
           </div>
         </div>
@@ -114,7 +194,12 @@
           </header>
           <p class="view-notice meta" hidden></p>
           <div class="row">
-            <input id="q" type="search" placeholder="Название трека или исполнитель" spellcheck="false" />
+            <input
+              id="q"
+              type="search"
+              placeholder="Название трека или исполнитель"
+              spellcheck="false"
+            />
             <button id="btnSearch" class="btn-primary">Найти</button>
           </div>
           <ul id="searchResults" class="tracks"></ul>
@@ -140,8 +225,14 @@
           </header>
           <p class="view-notice meta" hidden></p>
           <ul id="updatesBody" class="notes">
-            <li><b>Universal player</b><span>Плеер, эквалайзер, скачивание и Last.fm в одном окне.</span></li>
-            <li><b>Несколько сервисов</b><span>Сейчас работает ВКонтакте. Spotify и YouTube — следующими.</span></li>
+            <li>
+              <b>Universal player</b
+              ><span>Плеер, эквалайзер, скачивание и Last.fm в одном окне.</span>
+            </li>
+            <li>
+              <b>Несколько сервисов</b
+              ><span>Сейчас работает ВКонтакте. Spotify и YouTube — следующими.</span>
+            </li>
           </ul>
         </section>
 
@@ -166,7 +257,10 @@
             <span id="pausedFlag" class="meta"></span>
           </div>
 
-          <div class="list-head"><h2>Очередь</h2><span id="dlNote" class="meta"></span></div>
+          <div class="list-head">
+            <h2>Очередь</h2>
+            <span id="dlNote" class="meta"></span>
+          </div>
           <ul id="qList" class="tracks"></ul>
 
           <div class="list-head"><h2>Неудачные</h2></div>
@@ -224,7 +318,10 @@
           <p class="view-notice meta" hidden></p>
 
           <h2 class="sect">Прокси для ВКонтакте</h2>
-          <p class="meta">В режиме «только VK» через прокси идут лишь домены ВКонтакте, остальной браузер — напрямую.</p>
+          <p class="meta">
+            В режиме «только VK» через прокси идут лишь домены ВКонтакте, остальной браузер —
+            напрямую.
+          </p>
           <div class="field">
             <span class="label">Режим</span>
             <select id="proxyMode">
@@ -238,10 +335,16 @@
 
           <div class="field">
             <span class="label">Вставить строку прокси</span>
-            <input id="proxyPaste" type="text" spellcheck="false"
-              placeholder="socks5://user:pass@1.2.3.4:1080" />
+            <input
+              id="proxyPaste"
+              type="text"
+              spellcheck="false"
+              placeholder="socks5://user:pass@1.2.3.4:1080"
+            />
           </div>
-          <p class="meta">Понимает `host:port`, `scheme://host:port` и строку с логином и паролем.</p>
+          <p class="meta">
+            Понимает `host:port`, `scheme://host:port` и строку с логином и паролем.
+          </p>
 
           <div class="proxy-form">
             <div class="field">
@@ -289,7 +392,11 @@
           <p id="blockedState" class="meta"></p>
 
           <h2 class="sect">Last.fm</h2>
-          <p class="meta">Ключи — на <a href="https://www.last.fm/api/account/create" target="_blank">last.fm/api</a>. Затем «Войти» → авторизация → «Готово».</p>
+          <p class="meta">
+            Ключи — на
+            <a href="https://www.last.fm/api/account/create" target="_blank">last.fm/api</a>. Затем
+            «Войти» → авторизация → «Готово».
+          </p>
           <div class="field">
             <span class="label">API key</span>
             <input id="lfApiKey" type="text" spellcheck="false" />
@@ -316,7 +423,9 @@
       <div id="fxPanel" class="fx-overlay" hidden>
         <div class="q-head">
           <span>Звук</span>
-          <button id="fxClose" class="icon" title="Закрыть"><svg class="ic"><use href="#i-cross"/></svg></button>
+          <button id="fxClose" class="icon" title="Закрыть">
+            <svg class="ic"><use href="#i-cross" /></svg>
+          </button>
         </div>
 
         <div class="fx-body">
@@ -325,7 +434,10 @@
                shape of the recording over time. -->
           <div class="fx-spectrum">
             <canvas id="fxCanvas" width="640" height="176"></canvas>
-            <div class="fx-spec-labels mono"><span id="fxSpecL">60</span><span>250</span><span>1k</span><span>4k</span><span id="fxSpecR">16k</span></div>
+            <div class="fx-spec-labels mono">
+              <span id="fxSpecL">60</span><span>250</span><span>1k</span><span>4k</span
+              ><span id="fxSpecR">16k</span>
+            </div>
           </div>
           <div class="row fx-spec-modes">
             <button id="fxModeBars" class="chip active">Спектр</button>
@@ -341,7 +453,11 @@
               <option value="album">По альбому</option>
             </select>
           </div>
-          <p class="meta">Треки ВК отличаются по громкости больше чем на 12 дБ. Плеер измеряет каждый трек во время прослушивания и выравнивает до −14 LUFS. Режим «по альбому» сохраняет разницу между тихой балладой и громким открывающим треком — так задумано при мастеринге.</p>
+          <p class="meta">
+            Треки ВК отличаются по громкости больше чем на 12 дБ. Плеер измеряет каждый трек во
+            время прослушивания и выравнивает до −14 LUFS. Режим «по альбому» сохраняет разницу
+            между тихой балладой и громким открывающим треком — так задумано при мастеринге.
+          </p>
 
           <label class="fx-row">
             <span>Ночной режим</span>
@@ -369,7 +485,10 @@
             <span>Бесшовно внутри альбома</span>
             <span class="switch"><input id="fxGapless" type="checkbox" /><span></span></span>
           </label>
-          <p class="meta">Альбомы, сведённые как одно целое (живые записи, миксы, электроника), не имеют паузы между треками. Режим сшивает их без разрыва и отменяет кроссфейд внутри альбома.</p>
+          <p class="meta">
+            Альбомы, сведённые как одно целое (живые записи, миксы, электроника), не имеют паузы
+            между треками. Режим сшивает их без разрыва и отменяет кроссфейд внутри альбома.
+          </p>
 
           <div class="field">
             <span class="label">Аудиовыход</span>
@@ -384,11 +503,16 @@
         <div class="q-head">
           <span>Очередь</span>
           <div class="q-head-actions">
-            <button id="qShuffle" class="icon" title="Перемешать"
-              ><svg class="ic"><use href="#i-shuffle"/></svg></button>
-            <button id="qRepeat" class="icon" title="Повтор"
-              ><svg class="ic"><use href="#i-repeat"/></svg><span id="qRepeatOne" class="q-one" hidden>1</span></button>
-            <button id="qClose" class="icon" title="Закрыть"><svg class="ic"><use href="#i-cross"/></svg></button>
+            <button id="qShuffle" class="icon" title="Перемешать">
+              <svg class="ic"><use href="#i-shuffle" /></svg>
+            </button>
+            <button id="qRepeat" class="icon" title="Повтор">
+              <svg class="ic"><use href="#i-repeat" /></svg
+              ><span id="qRepeatOne" class="q-one" hidden>1</span>
+            </button>
+            <button id="qClose" class="icon" title="Закрыть">
+              <svg class="ic"><use href="#i-cross" /></svg>
+            </button>
           </div>
         </div>
         <div id="qEmpty" class="meta" hidden>Очередь пуста. Включи трек — и он появится здесь.</div>
@@ -402,7 +526,9 @@
         </div>
         <div id="eqBands" class="eq-bands"></div>
         <div class="eq-foot">
-          <select id="eqPreset"><option value="">Пресеты</option></select>
+          <select id="eqPreset">
+            <option value="">Пресеты</option>
+          </select>
           <button id="eqSave">Сохранить</button>
           <button id="eqReset">Сбросить</button>
         </div>
@@ -437,9 +563,15 @@
 
         <div class="p-center">
           <div class="p-row">
-            <button id="pPrev" class="icon" title="Предыдущий"><svg class="ic"><use href="#i-prev" /></svg></button>
-            <button id="pToggle" class="icon play" title="Пуск / пауза"><svg class="ic"><use href="#i-play" /></svg></button>
-            <button id="pNext" class="icon" title="Следующий"><svg class="ic"><use href="#i-next" /></svg></button>
+            <button id="pPrev" class="icon" title="Предыдущий">
+              <svg class="ic"><use href="#i-prev" /></svg>
+            </button>
+            <button id="pToggle" class="icon play" title="Пуск / пауза">
+              <svg class="ic"><use href="#i-play" /></svg>
+            </button>
+            <button id="pNext" class="icon" title="Следующий">
+              <svg class="ic"><use href="#i-next" /></svg>
+            </button>
           </div>
           <div class="p-row p-progress">
             <span id="pTime" class="mono">0:00</span>
@@ -449,11 +581,21 @@
         </div>
 
         <div class="p-right">
-          <button id="pLike" class="icon" title="Нравится"><svg class="ic"><use href="#i-heart" /></svg></button>
-          <button id="pDislike" class="icon" title="Не нравится"><svg class="ic"><use href="#i-cross" /></svg></button>
-          <button id="pFx" class="icon" title="Звук"><svg class="ic"><use href="#i-wave" /></svg></button>
-          <button id="pQueue" class="icon" title="Очередь"><svg class="ic"><use href="#i-grip" /></svg></button>
-          <button id="pEq" class="icon" title="Эквалайзер"><svg class="ic"><use href="#i-eq" /></svg></button>
+          <button id="pLike" class="icon" title="Нравится">
+            <svg class="ic"><use href="#i-heart" /></svg>
+          </button>
+          <button id="pDislike" class="icon" title="Не нравится">
+            <svg class="ic"><use href="#i-cross" /></svg>
+          </button>
+          <button id="pFx" class="icon" title="Звук">
+            <svg class="ic"><use href="#i-wave" /></svg>
+          </button>
+          <button id="pQueue" class="icon" title="Очередь">
+            <svg class="ic"><use href="#i-grip" /></svg>
+          </button>
+          <button id="pEq" class="icon" title="Эквалайзер">
+            <svg class="ic"><use href="#i-eq" /></svg>
+          </button>
           <svg class="ic small"><use href="#i-volume" /></svg>
           <input id="pVolume" type="range" min="0" max="100" value="100" />
         </div>

@@ -83,7 +83,12 @@ export function createMeter(): LoudnessMeter {
  *
  * `lufs` is the momentary loudness of the block; `peakDb` its true peak.
  */
-export function addBlock(meter: LoudnessMeter, lufs: number | null, peakDb: number, blockSeconds: number): void {
+export function addBlock(
+  meter: LoudnessMeter,
+  lufs: number | null,
+  peakDb: number,
+  blockSeconds: number,
+): void {
   meter.seconds += blockSeconds;
   if (Number.isFinite(peakDb) && peakDb > meter.truePeakDb) meter.truePeakDb = peakDb;
   if (lufs === null || !Number.isFinite(lufs)) return;

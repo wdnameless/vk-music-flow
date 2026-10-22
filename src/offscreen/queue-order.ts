@@ -12,7 +12,12 @@
  */
 
 /** A permutation of `0..length-1`, shuffled in place, current track first. */
-export function buildOrder(length: number, shuffle: boolean, current: number, random: () => number = Math.random): number[] {
+export function buildOrder(
+  length: number,
+  shuffle: boolean,
+  current: number,
+  random: () => number = Math.random,
+): number[] {
   const idx = Array.from({ length }, (_, i) => i);
   if (!shuffle) return idx;
   for (let i = idx.length - 1; i > 0; i--) {
@@ -76,7 +81,12 @@ export function moveInOrder(order: number[], from: number, to: number): number[]
  * `all` wraps; `off` reports `null` at the edge so the caller can stop without
  * clearing the current track, which would blank the player.
  */
-export function advancePos(pos: number, length: number, delta: number, repeatAll: boolean): number | null {
+export function advancePos(
+  pos: number,
+  length: number,
+  delta: number,
+  repeatAll: boolean,
+): number | null {
   if (length <= 0) return null;
   const next = pos + delta;
   if (next >= 0 && next < length) return next;

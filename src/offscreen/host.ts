@@ -14,7 +14,9 @@ const player = new Player({
     void chrome.runtime.sendMessage({ t: 'PLAYER_STATE', state }).catch(() => undefined);
   },
   onLoudness: (key, lufs, peakDb, drDb) => {
-    void chrome.runtime.sendMessage({ t: 'PLAYER_LOUDNESS', key, lufs, peakDb, drDb }).catch(() => undefined);
+    void chrome.runtime
+      .sendMessage({ t: 'PLAYER_LOUDNESS', key, lufs, peakDb, drDb })
+      .catch(() => undefined);
   },
   onSpectrum: (left, right) => {
     // Fire-and-forget, and deliberately uncaught: if no popup is open the
@@ -38,7 +40,9 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, reply) => {
   switch (m.t) {
     case 'P_PLAY_QUEUE': {
       const c = m as Extract<PlayerCommand, { t: 'P_PLAY_QUEUE' }>;
-      void player.setQueue(c.tracks as PlayerTrack[], c.startIndex ?? 0).then(() => reply(player.state()));
+      void player
+        .setQueue(c.tracks as PlayerTrack[], c.startIndex ?? 0)
+        .then(() => reply(player.state()));
       return true;
     }
     case 'P_PLAY':
@@ -140,7 +144,9 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, reply) => {
       return false;
     }
     case 'P_OUTPUT': {
-      void player.setOutputDevice((m as Extract<PlayerCommand, { t: 'P_OUTPUT' }>).deviceId).then(() => reply(player.state()));
+      void player
+        .setOutputDevice((m as Extract<PlayerCommand, { t: 'P_OUTPUT' }>).deviceId)
+        .then(() => reply(player.state()));
       return true;
     }
     case 'P_DEVICES': {

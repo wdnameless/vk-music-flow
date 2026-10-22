@@ -44,7 +44,9 @@ export interface ResolveOutcome {
  */
 export async function resolveTrackUrls(a: AudioMeta): Promise<ResolveOutcome> {
   const restricted = isRestricted({ content_restricted: a.restricted });
-  const cached = (a.urls || []).filter((u) => /^https?:\/\//i.test(u) && !/vkuserphoto|\.jpe?g/i.test(u));
+  const cached = (a.urls || []).filter(
+    (u) => /^https?:\/\//i.test(u) && !/vkuserphoto|\.jpe?g/i.test(u),
+  );
 
   // Without an access_key VK will not return a usable URL for most tracks, so
   // asking anyway just adds a failed round trip per download. Prefer what the

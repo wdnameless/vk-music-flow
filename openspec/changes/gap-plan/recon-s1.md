@@ -12,6 +12,7 @@ DNR/PAC (`src/lib/dnr.ts`, `src/lib/proxy.ts`), journal codec, `src/types.ts`
 shape changes (extend only if unavoidable, then flag in return contract).
 
 Acceptance (verbatim from tasks.md):
+
 - T1.1: my/radio views issue exactly one default-list request; empty state
   only on empty data.
 - T1.2: Mix/Recs are distinct queries + active chip; homeHero single listener

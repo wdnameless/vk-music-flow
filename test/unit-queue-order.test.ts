@@ -30,7 +30,10 @@ describe('queue: порядок воспроизведения', () => {
   it('шафл даёт перестановку, а не потерю или дубликат элементов', () => {
     const order = buildOrder(20, true, -1, seeded(7));
     assert.ok(isPermutation(order, 20), 'порядок должен быть перестановкой 0..19');
-    assert.notDeepEqual(order, Array.from({ length: 20 }, (_, i) => i));
+    assert.notDeepEqual(
+      order,
+      Array.from({ length: 20 }, (_, i) => i),
+    );
   });
 
   it('шафл не уносит играющий трек в конец — он остаётся первым', () => {

@@ -72,7 +72,9 @@ export function filterPlayable<T extends { owner: string; id: string; artist: st
 export function normalizeBlockRules(raw: unknown): BlockRules {
   const o = (raw ?? {}) as Partial<BlockRules>;
   const strings = (v: unknown): string[] =>
-    Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.trim().length > 0) : [];
+    Array.isArray(v)
+      ? v.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+      : [];
   return { blockedArtists: strings(o.blockedArtists), disliked: strings(o.disliked) };
 }
 
@@ -115,7 +117,8 @@ export interface LyricsFetchResult {
 
 /** Fetch lyrics for one track from the fallback provider. */
 export async function fetchLyrics(artist: string, title: string): Promise<LyricsFetchResult> {
-  if (!artist.trim() || !title.trim()) return { ok: false, lyrics: null, error: 'нет исполнителя или названия' };
+  if (!artist.trim() || !title.trim())
+    return { ok: false, lyrics: null, error: 'нет исполнителя или названия' };
   const url = `${LYRICS_ENDPOINT}/${encodeURIComponent(artist)}/${encodeURIComponent(title)}`;
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 15000);

@@ -152,7 +152,10 @@ describe('звук: нормализация', () => {
     for (const lufs of [-30, -20, -14, -8, -3]) {
       for (const peak of [-12, -6, -1, 0]) {
         const g = normalisationGain(lufs, peak, DEFAULT_TARGET_DB);
-        assert.ok(peak + g <= PEAK_CEILING_DB + 1e-9, `lufs ${lufs} peak ${peak}: пик вышел за шкалу`);
+        assert.ok(
+          peak + g <= PEAK_CEILING_DB + 1e-9,
+          `lufs ${lufs} peak ${peak}: пик вышел за шкалу`,
+        );
       }
     }
   });

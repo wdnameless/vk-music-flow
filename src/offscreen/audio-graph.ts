@@ -50,7 +50,12 @@ export function gainToDb(gain: number): number {
  * The peak limit matters: a track with a quiet average but loud transients
  * (classical, most electronic music) would clip if only the RMS were matched.
  */
-export function normalisationGain(rmsDb: number, peakDb: number, targetDb: number, headroomDb = 1): number {
+export function normalisationGain(
+  rmsDb: number,
+  peakDb: number,
+  targetDb: number,
+  headroomDb = 1,
+): number {
   if (!Number.isFinite(rmsDb) || rmsDb <= -120) return 0;
   const byRms = targetDb - rmsDb;
   // Leave `headroomDb` below full scale: the limiter catches what is left, but
@@ -60,7 +65,11 @@ export function normalisationGain(rmsDb: number, peakDb: number, targetDb: numbe
 }
 
 /** Night mode shape from the strength slider, so the UI has one control. */
-export function nightSettings(amount: number): { threshold: number; ratio: number; release: number } {
+export function nightSettings(amount: number): {
+  threshold: number;
+  ratio: number;
+  release: number;
+} {
   const a = Math.min(1, Math.max(0, amount));
   return {
     // A lower threshold and a higher ratio as the strength rises.

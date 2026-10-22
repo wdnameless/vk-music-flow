@@ -69,7 +69,12 @@ function textPayload(value: string | number): Uint8Array {
  */
 function txxxPayload(description: string, value: string): Uint8Array {
   const enc = new TextEncoder();
-  return concat([new Uint8Array([3]), enc.encode(description), new Uint8Array([0]), enc.encode(value)]);
+  return concat([
+    new Uint8Array([3]),
+    enc.encode(description),
+    new Uint8Array([0]),
+    enc.encode(value),
+  ]);
 }
 
 function usltPayload(lyrics: string): Uint8Array {
@@ -83,7 +88,12 @@ function usltPayload(lyrics: string): Uint8Array {
 
 export function apicPayload(imgBytes: Uint8Array): Uint8Array {
   let mime = 'image/jpeg';
-  if (imgBytes[0] === 0x89 && imgBytes[1] === 0x50 && imgBytes[2] === 0x4e && imgBytes[3] === 0x47) {
+  if (
+    imgBytes[0] === 0x89 &&
+    imgBytes[1] === 0x50 &&
+    imgBytes[2] === 0x4e &&
+    imgBytes[3] === 0x47
+  ) {
     mime = 'image/png';
   } else if (
     imgBytes.length >= 12 &&
@@ -128,7 +138,9 @@ function buildFrameList(
     f.push(frame('TXXX', txxxPayload('REPLAYGAIN_TRACK_GAIN', `${rg.trackGainDb.toFixed(2)} dB`)));
     f.push(frame('TXXX', txxxPayload('REPLAYGAIN_TRACK_PEAK', rg.trackPeak.toFixed(6))));
     if (typeof rg.albumGainDb === 'number') {
-      f.push(frame('TXXX', txxxPayload('REPLAYGAIN_ALBUM_GAIN', `${rg.albumGainDb.toFixed(2)} dB`)));
+      f.push(
+        frame('TXXX', txxxPayload('REPLAYGAIN_ALBUM_GAIN', `${rg.albumGainDb.toFixed(2)} dB`)),
+      );
     }
     if (typeof rg.albumPeak === 'number') {
       f.push(frame('TXXX', txxxPayload('REPLAYGAIN_ALBUM_PEAK', rg.albumPeak.toFixed(6))));

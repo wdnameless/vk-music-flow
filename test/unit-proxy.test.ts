@@ -12,7 +12,12 @@ import {
   resetProxyAuthFailures,
 } from '../src/lib/proxy.js';
 import { toDnrRules } from '../src/lib/dnr.js';
-import { DEFAULT_PROXY_SETTINGS, VK_PROXY_HOSTS, type ProxyEntry, type ProxySettings } from '../src/types.js';
+import {
+  DEFAULT_PROXY_SETTINGS,
+  VK_PROXY_HOSTS,
+  type ProxyEntry,
+  type ProxySettings,
+} from '../src/types.js';
 
 // Wave 1 unit tests: proxy config logic, plus the contracts it hands to chrome.*.
 
@@ -85,10 +90,16 @@ describe('proxy: PAC-скрипт', () => {
   it('PAC-скрипт синтаксически исполним и матчит поддомены', () => {
     const pac = buildPacScript(settings({ mode: 'vk-only' }))!;
     // evaluate the generated script with a stub FindProxyForURL consumer
-    const run = new Function(`${pac}; return FindProxyForURL;`)() as (u: string, h: string) => string;
+    const run = new Function(`${pac}; return FindProxyForURL;`)() as (
+      u: string,
+      h: string,
+    ) => string;
     const viaProxy = run('https://api.vk.ru/method/x', 'api.vk.ru');
     const viaProxyDeep = run('https://web.api.vk.ru/method/x', 'web.api.vk.ru');
-    const viaProxyCdn = run('https://cs9-3v4.vkuseraudio.ru/s/v1/ac/x/index.m3u8', 'cs9-3v4.vkuseraudio.ru');
+    const viaProxyCdn = run(
+      'https://cs9-3v4.vkuseraudio.ru/s/v1/ac/x/index.m3u8',
+      'cs9-3v4.vkuseraudio.ru',
+    );
     const direct = run('https://example.com/', 'example.com');
     // suffix matching must not leak to lookalike domains
     const lookalike = run('https://notvk.ru/', 'notvk.ru');
@@ -136,7 +147,9 @@ describe('proxy: нормализация сохранённых настрое�
 
   it('credentials и схема сохраняются, дефолты подставляются', () => {
     const s = normalizeProxySettings({
-      entries: [{ id: 'x', host: 'proxy.local', port: 8080, username: 'u', password: 'p', scheme: 'https' }],
+      entries: [
+        { id: 'x', host: 'proxy.local', port: 8080, username: 'u', password: 'p', scheme: 'https' },
+      ],
     });
     const e = s.entries[0]!;
     assert.equal(e.username, 'u');
@@ -151,7 +164,10 @@ describe('proxy: нормализация сохранённых настрое�
   });
 
   it('нечисловой порт отбрасывается, числовая строка принимается', () => {
-    assert.equal(normalizeProxySettings({ entries: [{ host: 'h', port: 'abc' }] }).entries.length, 0);
+    assert.equal(
+      normalizeProxySettings({ entries: [{ host: 'h', port: 'abc' }] }).entries.length,
+      0,
+    );
     // chrome.storage round-trips can hand back numeric strings
     const s = normalizeProxySettings({ entries: [{ host: 'h', port: '1080' }] });
     assert.equal(s.entries.length, 1);
@@ -160,11 +176,16 @@ describe('proxy: нормализация сохранённых настрое�
 
   it('порт вне диапазона отбрасывается', () => {
     assert.equal(normalizeProxySettings({ entries: [{ host: 'h', port: 0 }] }).entries.length, 0);
-    assert.equal(normalizeProxySettings({ entries: [{ host: 'h', port: 70000 }] }).entries.length, 0);
-    assert.equal(normalizeProxySettings({ entries: [{ host: 'h', port: 65535 }] }).entries.length, 1);
+    assert.equal(
+      normalizeProxySettings({ entries: [{ host: 'h', port: 70000 }] }).entries.length,
+      0,
+    );
+    assert.equal(
+      normalizeProxySettings({ entries: [{ host: 'h', port: 65535 }] }).entries.length,
+      1,
+    );
   });
 });
-
 
 describe('proxy: ответ на запрос авторизации', () => {
   /** Capture the listener the module registers with chrome.webRequest. */
@@ -217,8 +238,20 @@ describe('proxy: ответ на запрос авторизации', () => {
 
   it('сверяет авторизацию с details.challenger (host и port) (R13)', () => {
     resetProxyAuthFailures();
-    const targetEntry = entry({ id: 'p_corp', host: 'proxy.corp.internal', port: 8080, username: 'user_corp', password: 'pwd' });
-    const fallbackEntry = entry({ id: 'p_def', host: 'default.proxy', port: 1080, username: 'user_def', password: 'def' });
+    const targetEntry = entry({
+      id: 'p_corp',
+      host: 'proxy.corp.internal',
+      port: 8080,
+      username: 'user_corp',
+      password: 'pwd',
+    });
+    const fallbackEntry = entry({
+      id: 'p_def',
+      host: 'default.proxy',
+      port: 1080,
+      username: 'user_def',
+      password: 'def',
+    });
     const handler = capture(() => settings({ entries: [targetEntry, fallbackEntry] }));
 
     // details.host is the destination web server, details.challenger is the proxy challenge
@@ -235,7 +268,13 @@ describe('proxy: ответ на запрос авторизации', () => {
 
   it('счётчик подряд отклонённых авторизаций (407) останавливается на пороге и помечает lastCheckOk=false (R14)', () => {
     resetProxyAuthFailures();
-    const badEntry = entry({ id: 'p_bad', host: 'bad.proxy', port: 1080, username: 'u', password: 'wrong' });
+    const badEntry = entry({
+      id: 'p_bad',
+      host: 'bad.proxy',
+      port: 1080,
+      username: 'u',
+      password: 'wrong',
+    });
     const handler = capture(() => settings({ entries: [badEntry] }));
 
     for (let i = 0; i < MAX_PROXY_AUTH_RETRIES; i++) {
@@ -275,7 +314,11 @@ describe('proxy: liveness probe (checkProxy)', () => {
 
 describe('dnr: перенос ссылок vk.com на vk.ru', () => {
   it('сохраняет поддомен при редиректе', () => {
-    type Rule = { id: number; action: { redirect?: { regexSubstitution?: string } }; condition: { regexFilter?: string } };
+    type Rule = {
+      id: number;
+      action: { redirect?: { regexSubstitution?: string } };
+      condition: { regexFilter?: string };
+    };
     const rule = (toDnrRules('someextensionid') as Rule[]).find((r) => r.id === 7);
     assert.ok(rule, 'правило 7 должно устанавливаться');
     const re = new RegExp(rule.condition.regexFilter!);
@@ -284,7 +327,10 @@ describe('dnr: перенос ссылок vk.com на vk.ru', () => {
     const rewrite = (u: string) => u.replace(re, sub);
     // The API client lives on api.vk.ru, so collapsing the subdomain turns every
     // API call into a request to the wrong host.
-    assert.equal(rewrite('https://api.vk.com/method/users.get?v=5.199'), 'https://api.vk.ru/method/users.get?v=5.199');
+    assert.equal(
+      rewrite('https://api.vk.com/method/users.get?v=5.199'),
+      'https://api.vk.ru/method/users.get?v=5.199',
+    );
     assert.equal(rewrite('https://login.vk.com/?act=login'), 'https://login.vk.ru/?act=login');
     assert.equal(rewrite('https://vk.com/feed'), 'https://vk.ru/feed');
     assert.equal(rewrite('https://notvk.com/x'), 'https://notvk.com/x');

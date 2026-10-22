@@ -18,7 +18,10 @@ interface MockEvent {
 class FakeClassList {
   private classes = new Set<string>();
   constructor(initial = '') {
-    initial.split(/\s+/).filter(Boolean).forEach((c) => this.classes.add(c));
+    initial
+      .split(/\s+/)
+      .filter(Boolean)
+      .forEach((c) => this.classes.add(c));
   }
   add(...names: string[]) {
     names.forEach((n) => this.classes.add(n));
@@ -53,7 +56,10 @@ class FakeElement {
   className = '';
   classList: FakeClassList;
   dataset: Record<string, string> = {};
-  style: { setProperty: (k: string, v: string) => void; [k: string]: string | ((k: string, v: string) => void) } = {
+  style: {
+    setProperty: (k: string, v: string) => void;
+    [k: string]: string | ((k: string, v: string) => void);
+  } = {
     setProperty: (k: string, v: string) => {
       (this.style as Record<string, string>)[k] = v;
     },
@@ -154,7 +160,7 @@ class FakeElement {
   get nextSibling(): FakeElement | null {
     if (!this.parentNode) return null;
     const idx = this.parentNode.children.indexOf(this);
-    return idx >= 0 ? this.parentNode.children[idx + 1] ?? null : null;
+    return idx >= 0 ? (this.parentNode.children[idx + 1] ?? null) : null;
   }
 
   closest(selector: string): FakeElement | null {
@@ -163,7 +169,11 @@ class FakeElement {
       if (this.classList.contains(cls)) return this;
     } else if (selector.startsWith('[')) {
       const attr = selector.replace(/[[\]]/g, '').split('=')[0]!;
-      if (this.attributes[attr] !== undefined || this.dataset[attr.replace(/^data-/, '')] !== undefined) return this;
+      if (
+        this.attributes[attr] !== undefined ||
+        this.dataset[attr.replace(/^data-/, '')] !== undefined
+      )
+        return this;
     }
     return this.parentNode ? this.parentNode.closest(selector) : null;
   }
@@ -183,7 +193,11 @@ class FakeElement {
         if (parts.every((p) => el.classList.contains(p))) result.push(el);
       } else if (selector.startsWith('[')) {
         const attr = selector.replace(/[[\]]/g, '').split('=')[0]!;
-        if (el.attributes[attr] !== undefined || el.dataset[attr.replace(/^data-/, '')] !== undefined) result.push(el);
+        if (
+          el.attributes[attr] !== undefined ||
+          el.dataset[attr.replace(/^data-/, '')] !== undefined
+        )
+          result.push(el);
       } else if (el.tagName.toLowerCase() === selector.toLowerCase()) {
         result.push(el);
       }
@@ -276,7 +290,10 @@ g.chrome = {
     sendMessage: (msg: SentMessage) => {
       sentMessages.push(msg);
       if (msg.t === 'P_PLATFORMS') {
-        return Promise.resolve({ ok: true, platforms: [{ id: 'vk', label: 'ВКонтакте', available: true }] });
+        return Promise.resolve({
+          ok: true,
+          platforms: [{ id: 'vk', label: 'ВКонтакте', available: true }],
+        });
       }
       if (msg.t === 'P_AUTH') {
         return Promise.resolve({ ok: true, status: { signedIn: true, userId: 123456 } });
@@ -294,10 +311,21 @@ g.chrome = {
         return Promise.resolve({ ok: true, disliked: true });
       }
       if (msg.t === 'GET_STORAGE_STATE') {
-        return Promise.resolve({ ok: true, journal: { queued: 0, downloading: 0 }, doneCount: 0, queue: [], failed: [], playlists: {} });
+        return Promise.resolve({
+          ok: true,
+          journal: { queued: 0, downloading: 0 },
+          doneCount: 0,
+          queue: [],
+          failed: [],
+          playlists: {},
+        });
       }
       if (msg.t === 'GET_PROXY_STATE') {
-        return Promise.resolve({ ok: true, settings: { mode: 'off', entries: [], activeId: null }, applied: { mode: 'off', proxyFor: null, error: null } });
+        return Promise.resolve({
+          ok: true,
+          settings: { mode: 'off', entries: [], activeId: null },
+          applied: { mode: 'off', proxyFor: null, error: null },
+        });
       }
     },
     onMessage: { addListener: () => {} },
@@ -337,14 +365,21 @@ describe('S1 UI-Honesty (T1.1 - T1.4)', () => {
 
     const listRequests = sentMessages.filter((m) => m.t === 'P_LIST');
     assert.equal(listRequests.length, 1, 'openView("radio") must issue exactly one list request');
-    assert.equal(listRequests[0]?.kind, 'recommendations', 'default list for radio is recommendations');
+    assert.equal(
+      listRequests[0]?.kind,
+      'recommendations',
+      'default list for radio is recommendations',
+    );
     assert.equal(listRequests[0]?.id, 'mix', 'default radio query is mix');
 
     const viewRadio = elementsMap.get('view-radio');
     assert.ok(viewRadio?.classList.contains('active'), 'view-radio is active');
 
     const radioTracks = elementsMap.get('radioTracks');
-    assert.ok(radioTracks?.innerHTML.includes('meta'), 'empty radio tracks render empty state meta message');
+    assert.ok(
+      radioTracks?.innerHTML.includes('meta'),
+      'empty radio tracks render empty state meta message',
+    );
   });
 
   it('T1.2: Mix and Recs buttons make distinct queries and toggle active chip [R04]', async () => {
@@ -382,7 +417,11 @@ describe('S1 UI-Honesty (T1.1 - T1.4)', () => {
     await popup.loadHome();
 
     const afterListeners = hero.listeners['click']?.length || 0;
-    assert.equal(afterListeners, beforeListeners, 'loadHome does not accumulate click listeners on homeHero');
+    assert.equal(
+      afterListeners,
+      beforeListeners,
+      'loadHome does not accumulate click listeners on homeHero',
+    );
   });
 
   it('T1.3: showNotice displays error in active view and leaves #dlNote untouched [R05]', () => {
@@ -395,7 +434,11 @@ describe('S1 UI-Honesty (T1.1 - T1.4)', () => {
     assert.ok(noticeHome, 'view-home has a notice element');
     assert.equal(noticeHome?.textContent, 'Ошибка сети');
     assert.equal(noticeHome?.hidden, false, 'notice is visible');
-    assert.equal(dlNote.textContent, 'download-specific note', '#dlNote is preserved for downloads only');
+    assert.equal(
+      dlNote.textContent,
+      'download-specific note',
+      '#dlNote is preserved for downloads only',
+    );
 
     popup.showNotice('my', 'Трек недоступен');
     const viewMy = elementsMap.get('view-my')!;

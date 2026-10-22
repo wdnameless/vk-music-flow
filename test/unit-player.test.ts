@@ -71,15 +71,23 @@ describe('T4.5 R32: parseIv и валидация 16 байт', () => {
   });
 });
 
-
 describe('T4.5 R33: apicPayload распознаёт WebP', () => {
   it('WebP с RIFF....WEBP получает mime image/webp', async () => {
     const { apicPayload } = await import('../src/lib/id3.js');
     // RIFF (4 bytes) + len (4 bytes) + WEBP (4 bytes) + payload
     const webpBytes = new Uint8Array([
-      0x52, 0x49, 0x46, 0x46,
-      0x20, 0x00, 0x00, 0x00,
-      0x57, 0x45, 0x42, 0x50,
+      0x52,
+      0x49,
+      0x46,
+      0x46,
+      0x20,
+      0x00,
+      0x00,
+      0x00,
+      0x57,
+      0x45,
+      0x42,
+      0x50,
       ...new Array(100).fill(0),
     ]);
     const payload = apicPayload(webpBytes);
@@ -206,18 +214,57 @@ describe('player: удаление треков и подсветка при ш�
       });
 
       const tracks: PlayerTrack[] = [
-        { key: '0_1', id: '1', owner: '0', artist: 'Artist 0', title: 'Track 0', url: 'http://0', duration: 100, cover: null },
-        { key: '0_2', id: '2', owner: '0', artist: 'Artist 1', title: 'Track 1', url: 'http://1', duration: 100, cover: null },
-        { key: '0_3', id: '3', owner: '0', artist: 'Artist 2', title: 'Track 2', url: 'http://2', duration: 100, cover: null },
+        {
+          key: '0_1',
+          id: '1',
+          owner: '0',
+          artist: 'Artist 0',
+          title: 'Track 0',
+          url: 'http://0',
+          duration: 100,
+          cover: null,
+        },
+        {
+          key: '0_2',
+          id: '2',
+          owner: '0',
+          artist: 'Artist 1',
+          title: 'Track 1',
+          url: 'http://1',
+          duration: 100,
+          cover: null,
+        },
+        {
+          key: '0_3',
+          id: '3',
+          owner: '0',
+          artist: 'Artist 2',
+          title: 'Track 2',
+          url: 'http://2',
+          duration: 100,
+          cover: null,
+        },
       ];
 
       // Начинаем с трека 1 (Track 1)
-      await p.setQueue(tracks, 1); const st1 = { ...p.state(), track: p.state().track ? { ...p.state().track! } : null, queue: p.state().queue.slice(), order: p.state().order.slice() };
+      await p.setQueue(tracks, 1);
+      const st1 = {
+        ...p.state(),
+        track: p.state().track ? { ...p.state().track! } : null,
+        queue: p.state().queue.slice(),
+        order: p.state().order.slice(),
+      };
       assert.equal(st1.track?.title, 'Track 1');
       assert.equal(st1.index, 1);
 
       // Удаляем трек 0 (находится перед текущим треком в очереди)
-      p.remove(0); const st1b = { ...p.state(), track: p.state().track ? { ...p.state().track! } : null, queue: p.state().queue.slice(), order: p.state().order.slice() };
+      p.remove(0);
+      const st1b = {
+        ...p.state(),
+        track: p.state().track ? { ...p.state().track! } : null,
+        queue: p.state().queue.slice(),
+        order: p.state().order.slice(),
+      };
 
       // Должен продолжать играть Track 1, а не перескочить на Track 2
       assert.equal(st1.track?.title, 'Track 1');
@@ -243,10 +290,46 @@ describe('player: удаление треков и подсветка при ш�
       });
 
       const tracks: PlayerTrack[] = [
-        { key: '0_1', id: '1', owner: '0', artist: 'A', title: 'Track 0', url: 'http://0', duration: 100, cover: null },
-        { key: '0_2', id: '2', owner: '0', artist: 'B', title: 'Track 1', url: 'http://1', duration: 100, cover: null },
-        { key: '0_3', id: '3', owner: '0', artist: 'C', title: 'Track 2', url: 'http://2', duration: 100, cover: null },
-        { key: '0_4', id: '4', owner: '0', artist: 'D', title: 'Track 3', url: 'http://3', duration: 100, cover: null },
+        {
+          key: '0_1',
+          id: '1',
+          owner: '0',
+          artist: 'A',
+          title: 'Track 0',
+          url: 'http://0',
+          duration: 100,
+          cover: null,
+        },
+        {
+          key: '0_2',
+          id: '2',
+          owner: '0',
+          artist: 'B',
+          title: 'Track 1',
+          url: 'http://1',
+          duration: 100,
+          cover: null,
+        },
+        {
+          key: '0_3',
+          id: '3',
+          owner: '0',
+          artist: 'C',
+          title: 'Track 2',
+          url: 'http://2',
+          duration: 100,
+          cover: null,
+        },
+        {
+          key: '0_4',
+          id: '4',
+          owner: '0',
+          artist: 'D',
+          title: 'Track 3',
+          url: 'http://3',
+          duration: 100,
+          cover: null,
+        },
       ];
 
       await p.setQueue(tracks, 0);
@@ -255,11 +338,22 @@ describe('player: удаление треков и подсветка при ш�
       // Индекс играющего трека в порядке воспроизведения: lastState.index
       // В очереди: lastState.order[lastState.index]
       // Проверяем, что играющий трек соответствует позиции
-      const st = { ...p.state(), track: p.state().track ? { ...p.state().track! } : null, queue: p.state().queue.slice(), order: p.state().order.slice() };
+      const st = {
+        ...p.state(),
+        track: p.state().track ? { ...p.state().track! } : null,
+        queue: p.state().queue.slice(),
+        order: p.state().order.slice(),
+      };
       assert.equal(st.track?.title, st.queue[st.order[st.index]!]?.title);
 
       // Прыжок на слот 2 в порядке воспроизведения
-      await p.jump(2); const stJ = { ...p.state(), track: p.state().track ? { ...p.state().track! } : null, queue: p.state().queue.slice(), order: p.state().order.slice() };
+      await p.jump(2);
+      const stJ = {
+        ...p.state(),
+        track: p.state().track ? { ...p.state().track! } : null,
+        queue: p.state().queue.slice(),
+        order: p.state().order.slice(),
+      };
       assert.equal(stJ.index, 2);
       assert.equal(stJ.track?.title, stJ.queue[stJ.order[stJ.index]!]?.title);
 

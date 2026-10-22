@@ -87,7 +87,9 @@ export function buildPacScript(s: ProxySettings): string | null {
 export function normalizeProxySettings(raw: unknown): ProxySettings {
   const o = (raw ?? {}) as Partial<ProxySettings>;
   const mode: ProxyRoutingMode =
-    o.mode === 'off' || o.mode === 'all' || o.mode === 'vk-only' ? o.mode : DEFAULT_PROXY_SETTINGS.mode;
+    o.mode === 'off' || o.mode === 'all' || o.mode === 'vk-only'
+      ? o.mode
+      : DEFAULT_PROXY_SETTINGS.mode;
   const toPort = (v: unknown): number => {
     const n = typeof v === 'number' ? v : parseInt(String(v ?? ''), 10);
     return Number.isFinite(n) && n > 0 && n < 65536 ? Math.trunc(n) : 0;
@@ -95,14 +97,19 @@ export function normalizeProxySettings(raw: unknown): ProxySettings {
   const entries: ProxyEntry[] = Array.isArray(o.entries)
     ? o.entries
         .map((e) => e as Partial<ProxyEntry> | null | undefined)
-        .filter((e): e is Partial<ProxyEntry> => !!e && typeof e.host === 'string' && e.host.length > 0)
+        .filter(
+          (e): e is Partial<ProxyEntry> => !!e && typeof e.host === 'string' && e.host.length > 0,
+        )
         // A usable entry needs a real port; storage may hand back a numeric string.
         .map((e) => ({ ...e, port: toPort(e.port) }))
         .filter((e) => e.port > 0)
         .map((e) => ({
           id: String(e.id || crypto.randomUUID()),
           label: String(e.label || e.host),
-          scheme: e.scheme === 'https' || e.scheme === 'socks4' || e.scheme === 'socks5' ? e.scheme : 'http',
+          scheme:
+            e.scheme === 'https' || e.scheme === 'socks4' || e.scheme === 'socks5'
+              ? e.scheme
+              : 'http',
           host: String(e.host),
           port: e.port,
           username: e.username ? String(e.username) : undefined,
@@ -136,7 +143,11 @@ export async function applyProxy(s: ProxySettings): Promise<ProxyAppliedState> {
   const api = proxyApi();
   const entry = pickActiveEntry(s);
   if (!api) {
-    return { mode: s.mode, proxyFor: null, error: 'chrome.proxy недоступен (нет разрешения "proxy")' };
+    return {
+      mode: s.mode,
+      proxyFor: null,
+      error: 'chrome.proxy недоступен (нет разрешения "proxy")',
+    };
   }
   const pac = buildPacScript(s);
   if (!pac) {
@@ -147,13 +158,18 @@ export async function applyProxy(s: ProxySettings): Promise<ProxyAppliedState> {
     const timer = setTimeout(() => res('таймаут применения прокси'), PROXY_APPLY_TIMEOUT_MS);
     api.set({ value: { mode: 'pac_script', pacScript: { data: pac } }, scope: 'regular' }, () => {
       clearTimeout(timer);
-      const last = (globalThis.chrome as unknown as { runtime?: { lastError?: { message?: string } } })
-        .runtime?.lastError;
+      const last = (
+        globalThis.chrome as unknown as { runtime?: { lastError?: { message?: string } } }
+      ).runtime?.lastError;
       res(last?.message ?? null);
     });
   });
   const applied = await readApplied();
-  return { mode: err ? 'off' : s.mode, proxyFor: err ? null : (entry?.host ?? null), error: err ?? applied.error };
+  return {
+    mode: err ? 'off' : s.mode,
+    proxyFor: err ? null : (entry?.host ?? null),
+    error: err ?? applied.error,
+  };
 }
 
 /** Read back Chromium's current proxy mode. */
@@ -185,7 +201,10 @@ type AuthDetails = {
   port: number;
   challenger?: { host?: string; port?: number };
 };
-type AuthCallback = (result?: { authCredentials?: { username: string; password: string }; cancel?: boolean }) => void;
+type AuthCallback = (result?: {
+  authCredentials?: { username: string; password: string };
+  cancel?: boolean;
+}) => void;
 
 const proxyAuthFailures = new Map<string, number>();
 
@@ -207,7 +226,11 @@ export function installProxyAuth(getSettings: () => ProxySettings): () => void {
   const c = globalThis.chrome as unknown as {
     webRequest?: {
       onAuthRequired?: {
-        addListener: (cb: (d: AuthDetails, cb: AuthCallback) => void, filter: unknown, opts: string[]) => void;
+        addListener: (
+          cb: (d: AuthDetails, cb: AuthCallback) => void,
+          filter: unknown,
+          opts: string[],
+        ) => void;
         removeListener: (cb: (d: AuthDetails, cb: AuthCallback) => void) => void;
       };
     };
@@ -220,8 +243,7 @@ export function installProxyAuth(getSettings: () => ProxySettings): () => void {
     const host = details.challenger?.host ?? details.host;
     const port = details.challenger?.port ?? details.port;
     const entry =
-      s.entries.find((e) => e.enabled && e.host === host && e.port === port) ??
-      pickActiveEntry(s);
+      s.entries.find((e) => e.enabled && e.host === host && e.port === port) ?? pickActiveEntry(s);
     if (!entry?.username) return cb();
 
     const key = entry.id || `${host}:${port}`;
@@ -265,17 +287,25 @@ export async function checkProxy(): Promise<ProxyCheckResult> {
       body: new URLSearchParams({ v: '5.251' }),
     });
     if (r.status === 407 || r.status === 502) {
-      return { ok: false, status: r.status, latencyMs: Date.now() - started, error: `HTTP ${r.status}` };
+      return {
+        ok: false,
+        status: r.status,
+        latencyMs: Date.now() - started,
+        error: `HTTP ${r.status}`,
+      };
     }
     return { ok: true, status: r.status, latencyMs: Date.now() - started };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return { ok: false, latencyMs: Date.now() - started, error: /abort/i.test(msg) ? 'таймаут' : msg };
+    return {
+      ok: false,
+      latencyMs: Date.now() - started,
+      error: /abort/i.test(msg) ? 'таймаут' : msg,
+    };
   } finally {
     clearTimeout(timer);
   }
 }
-
 
 /** The proxy schemes Chromium accepts, in the order the UI offers them. */
 export const PROXY_SCHEMES = ['socks5', 'socks4', 'http', 'https'] as const;

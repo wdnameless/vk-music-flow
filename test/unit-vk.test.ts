@@ -57,12 +57,20 @@ describe('vk-auth: срок жизни токена', () => {
 });
 
 describe('vk-api: обёртка вызовов', () => {
-  const token: VkToken = { access_token: 'tok', user_id: 42, expires: Math.floor(Date.now() / 1000) + 3600 };
+  const token: VkToken = {
+    access_token: 'tok',
+    user_id: 42,
+    expires: Math.floor(Date.now() / 1000) + 3600,
+  };
 
   it('успешный ответ отдаётся как есть', async () => {
     installChrome({ store: {} });
-    vi.stubGlobal('fetch', async () =>
-      new Response(JSON.stringify({ response: { count: 1, items: [{ id: 7 }] } }), { status: 200 }),
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(JSON.stringify({ response: { count: 1, items: [{ id: 7 }] } }), {
+          status: 200,
+        }),
     );
     const r = await vkCall<{ count: number }>('audio.get', {}, { token });
     assert.equal(r.ok, true);
@@ -98,8 +106,12 @@ describe('vk-api: обёртка вызовов', () => {
 
   it('ошибка VK приходит с HTTP 200 и распознаётся как ошибка', async () => {
     installChrome({ store: {} });
-    vi.stubGlobal('fetch', async () =>
-      new Response(JSON.stringify({ error: { error_code: 15, error_msg: 'Access denied' } }), { status: 200 }),
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(JSON.stringify({ error: { error_code: 15, error_msg: 'Access denied' } }), {
+          status: 200,
+        }),
     );
     const r = await vkCall('audio.get', {}, { token });
     assert.equal(r.ok, false);
@@ -113,9 +125,12 @@ describe('vk-api: обёртка вызовов', () => {
     let calls = 0;
     vi.stubGlobal('fetch', async () => {
       calls++;
-      return new Response(JSON.stringify({ error: { error_code: 5, error_msg: 'User authorization failed' } }), {
-        status: 200,
-      });
+      return new Response(
+        JSON.stringify({ error: { error_code: 5, error_msg: 'User authorization failed' } }),
+        {
+          status: 200,
+        },
+      );
     });
     const r = await vkCall('audio.get', {}, { token });
     assert.equal(r.authFailure, true);
@@ -130,7 +145,13 @@ describe('vk-api: обёртка вызовов', () => {
       calls++;
       if (String(url).includes('web_token') || String(url).includes('auth')) {
         mintCalled = true;
-        return new Response(JSON.stringify({ type: 'okay', data: { access_token: 'fresh_tok', user_id: 42, expires: 9999999999 } }), { status: 200 });
+        return new Response(
+          JSON.stringify({
+            type: 'okay',
+            data: { access_token: 'fresh_tok', user_id: 42, expires: 9999999999 },
+          }),
+          { status: 200 },
+        );
       }
       if (calls === 1) {
         // Attempt 0: network transport failure
@@ -138,9 +159,12 @@ describe('vk-api: обёртка вызовов', () => {
       }
       if (calls === 2) {
         // Attempt 1: expired token code 5
-        return new Response(JSON.stringify({ error: { error_code: 5, error_msg: 'User authorization failed' } }), {
-          status: 200,
-        });
+        return new Response(
+          JSON.stringify({ error: { error_code: 5, error_msg: 'User authorization failed' } }),
+          {
+            status: 200,
+          },
+        );
       }
       // Attempt 2: success with fresh token
       return new Response(JSON.stringify({ response: { count: 1, items: [] } }), { status: 200 });
@@ -153,18 +177,20 @@ describe('vk-api: обёртка вызовов', () => {
 
   it('код 14 возвращает явный флаг needsCaptcha (R12)', async () => {
     installChrome({ store: {} });
-    vi.stubGlobal('fetch', async () =>
-      new Response(
-        JSON.stringify({
-          error: {
-            error_code: 14,
-            error_msg: 'Captcha needed',
-            captcha_sid: '98765',
-            captcha_img: 'https://api.vk.ru/captcha.php?sid=98765',
-          },
-        }),
-        { status: 200 },
-      ),
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              error_code: 14,
+              error_msg: 'Captcha needed',
+              captcha_sid: '98765',
+              captcha_img: 'https://api.vk.ru/captcha.php?sid=98765',
+            },
+          }),
+          { status: 200 },
+        ),
     );
     const r = await vkCall('audio.get', {}, { token });
     assert.equal(r.ok, false);
@@ -175,17 +201,19 @@ describe('vk-api: обёртка вызовов', () => {
 
   it('код 17 возвращает явный флаг needsValidation (R12)', async () => {
     installChrome({ store: {} });
-    vi.stubGlobal('fetch', async () =>
-      new Response(
-        JSON.stringify({
-          error: {
-            error_code: 17,
-            error_msg: 'Validation required',
-            redirect_uri: 'https://m.vk.ru/login?act=security_check',
-          },
-        }),
-        { status: 200 },
-      ),
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              error_code: 17,
+              error_msg: 'Validation required',
+              redirect_uri: 'https://m.vk.ru/login?act=security_check',
+            },
+          }),
+          { status: 200 },
+        ),
     );
     const r = await vkCall('audio.get', {}, { token });
     assert.equal(r.ok, false);
@@ -200,7 +228,9 @@ describe('vk-api: обёртка вызовов', () => {
     vi.stubGlobal('fetch', async (u: string) => {
       called.push(String(u));
       // the token endpoint rejects the session; nothing else must be tried
-      return new Response(JSON.stringify({ type: 'error', error_info: 'unauthorized' }), { status: 200 });
+      return new Response(JSON.stringify({ type: 'error', error_info: 'unauthorized' }), {
+        status: 200,
+      });
     });
     const r = await vkCall('audio.get', {}, { token: null });
     assert.equal(r.authFailure, true);
@@ -222,18 +252,27 @@ describe('vk-api: разрешение ссылок (resolveStreamUrls)', () => 
 
   it('ограниченные треки отделяются от ненайденных', async () => {
     seed();
-    vi.stubGlobal('fetch', async () =>
-      new Response(
-        JSON.stringify({
-          response: [
-            { owner_id: 1, id: 10, artist: 'A', title: 'ok', url: 'https://cdn/a.m3u8' },
-            { owner_id: 1, id: 11, artist: 'B', title: 'locked', url: '', content_restricted: 2 },
-            { owner_id: 1, id: 12, artist: 'C', title: 'also locked', url: '', content_restricted: 3 },
-            { owner_id: 1, id: 13, artist: 'D', title: 'no url, no flag', url: '' },
-          ],
-        }),
-        { status: 200 },
-      ),
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(
+          JSON.stringify({
+            response: [
+              { owner_id: 1, id: 10, artist: 'A', title: 'ok', url: 'https://cdn/a.m3u8' },
+              { owner_id: 1, id: 11, artist: 'B', title: 'locked', url: '', content_restricted: 2 },
+              {
+                owner_id: 1,
+                id: 12,
+                artist: 'C',
+                title: 'also locked',
+                url: '',
+                content_restricted: 3,
+              },
+              { owner_id: 1, id: 13, artist: 'D', title: 'no url, no flag', url: '' },
+            ],
+          }),
+          { status: 200 },
+        ),
     );
     const r = await resolveStreamUrls([
       { owner_id: 1, id: 10 },

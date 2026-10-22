@@ -46,7 +46,10 @@ const storage = (): StorageArea | null => {
 };
 
 /** True when the cached token is still usable (with the refresh margin). */
-export function tokenUsable(t: Pick<VkToken, 'expires'>, nowSec = Math.floor(Date.now() / 1000)): boolean {
+export function tokenUsable(
+  t: Pick<VkToken, 'expires'>,
+  nowSec = Math.floor(Date.now() / 1000),
+): boolean {
   return !!t.expires && t.expires - nowSec > EXPIRY_MARGIN_S;
 }
 

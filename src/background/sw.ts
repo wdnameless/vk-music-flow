@@ -46,16 +46,19 @@ import {
   type VkCatalogSection,
   type VkPlaylist,
 } from '../types.js';
-import { applyProxy, checkProxy, installProxyAuth, normalizeProxySettings, pickActiveEntry, readApplied } from '../lib/proxy.js';
+import {
+  applyProxy,
+  checkProxy,
+  installProxyAuth,
+  normalizeProxySettings,
+  pickActiveEntry,
+  readApplied,
+} from '../lib/proxy.js';
 import { installDnrRules, readDnrRules, toDnrRules } from '../lib/dnr.js';
 import { provider, providerForKey, platformStatus } from '../platforms/registry.js';
 import { parseTrackKey } from '../platforms/provider.js';
 import { RestrictedTrackError, resolveTrackUrls } from '../lib/resolve.js';
-import {
-  playerSnapshot,
-  rememberPlayerState,
-  sendToPlayer,
-} from '../lib/player-bridge.js';
+import { playerSnapshot, rememberPlayerState, sendToPlayer } from '../lib/player-bridge.js';
 import {
   fetchLyrics,
   filterPlayable,
@@ -255,7 +258,11 @@ function persistProxy(): void {
 async function proxyState(): Promise<ProxyStateResult> {
   const applied = await readApplied();
   const entry = pickActiveEntry(P);
-  return { ok: true, settings: P, applied: { ...applied, proxyFor: applied.error ? null : (entry?.host ?? null) } };
+  return {
+    ok: true,
+    settings: P,
+    applied: { ...applied, proxyFor: applied.error ? null : (entry?.host ?? null) },
+  };
 }
 
 /** Sanitize a stored scrobble backlog. */
@@ -295,7 +302,12 @@ function lastfmReady(): boolean {
  * is different: retrying it forever would never succeed, so the backlog is kept
  * but the session is surfaced as broken for the user to re-link.
  */
-async function flushScrobbles(): Promise<{ ok: boolean; sent: number; pending: number; error?: string }> {
+async function flushScrobbles(): Promise<{
+  ok: boolean;
+  sent: number;
+  pending: number;
+  error?: string;
+}> {
   if (!lastfmReady() || !scrobbleQ.length) {
     return { ok: true, sent: 0, pending: scrobbleQ.length };
   }
@@ -307,7 +319,12 @@ async function flushScrobbles(): Promise<{ ok: boolean; sent: number; pending: n
       const code = (r as { code?: number }).code;
       if (isSessionInvalid(code)) {
         // Session is dead: keep the backlog, but stop pretending it will work.
-        return { ok: false, sent, pending: scrobbleQ.length, error: r.error ?? 'сессия Last.fm недействительна' };
+        return {
+          ok: false,
+          sent,
+          pending: scrobbleQ.length,
+          error: r.error ?? 'сессия Last.fm недействительна',
+        };
       }
       return { ok: false, sent, pending: scrobbleQ.length, error: r.error };
     }
@@ -686,7 +703,12 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
         usable.push(meta);
       }
       if (!usable.length) {
-        return { ok: false, queued: 0, skipped, reason: skipped ? 'все выбранные треки недоступны' : 'ничего не выбрано' };
+        return {
+          ok: false,
+          queued: 0,
+          skipped,
+          reason: skipped ? 'все выбранные треки недоступны' : 'ничего не выбрано',
+        };
       }
       // The queue is keyed by the CATALOG key, not the UI's `Track.key`: the
       // downloader looks entries up in `S.audios`, which stores them under the
@@ -716,7 +738,10 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
     case 'P_LIKE': {
       const p = providerForKey(m.key);
       if (!p?.setLiked) {
-        return { ok: false, reason: PLATFORM_LABELS[parseTrackKey(m.key).platform] + ': лайки не поддерживаются' };
+        return {
+          ok: false,
+          reason: PLATFORM_LABELS[parseTrackKey(m.key).platform] + ': лайки не поддерживаются',
+        };
       }
       // The UI sends the full track, but a minimal one is enough: providers
       // only need the platform and native id to call their library endpoint.
@@ -772,7 +797,17 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
         if (!p) continue;
         const parsed = parseTrackKey(key);
         const list = byPlatform.get(parsed.platform) ?? [];
-        list.push({ key, platform: parsed.platform, nativeId: parsed.nativeId, artist: '', title: '', album: '', duration: null, cover: null, restricted: false });
+        list.push({
+          key,
+          platform: parsed.platform,
+          nativeId: parsed.nativeId,
+          artist: '',
+          title: '',
+          album: '',
+          duration: null,
+          cover: null,
+          restricted: false,
+        });
         byPlatform.set(parsed.platform, list);
       }
       for (const [pid, tracks] of byPlatform) {
@@ -799,7 +834,7 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
         if (S.queue.some((q) => q.pl === m.name && q.key === key)) return;
         const meta = S.audios[key];
         // Restricted tracks have no URL anywhere — do not queue them at all.
-        if (!meta || (meta.restricted === 2 || meta.restricted === 3)) {
+        if (!meta || meta.restricted === 2 || meta.restricted === 3) {
           skipped++;
           return;
         }
@@ -999,9 +1034,12 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
       // returns), so the fallback provider is the real path. The VK attempt is
       // kept first so it resumes automatically if that field comes back.
       if (m.lyricsId) {
-        const r = await vkCall<{ lyrics?: { text?: string; lyrics_id?: number } }>('audio.getLyrics', {
-          lyrics_id: m.lyricsId,
-        });
+        const r = await vkCall<{ lyrics?: { text?: string; lyrics_id?: number } }>(
+          'audio.getLyrics',
+          {
+            lyrics_id: m.lyricsId,
+          },
+        );
         const parsed = r.ok ? parseLyricsResponse(r.data) : null;
         if (parsed) return { ok: true, lyrics: parsed };
       }
@@ -1036,7 +1074,8 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
         return { ok: false, error: 'сначала сохрани API key и secret', url: null, token: null };
       }
       const r = await requestToken(L);
-      if (!r.ok || !r.token) return { ok: false, error: r.error ?? 'токен не получен', url: null, token: null };
+      if (!r.ok || !r.token)
+        return { ok: false, error: r.error ?? 'токен не получен', url: null, token: null };
       lfPendingToken = r.token;
       persistLastfm();
       return { ok: true, url: authorizeUrl(L.apiKey, r.token), token: r.token };
@@ -1722,7 +1761,15 @@ async function resolveForPlayback(owner: string, id: string, key: string): Promi
 function persistPlayerQueue(): void {
   const st = playerSnapshot();
   if (!st) return;
-  S.settings.playerQueue = st.queue.map((t) => ({ key: t.key, id: t.id, owner: t.owner, artist: t.artist, title: t.title, duration: t.duration, cover: t.cover }));
+  S.settings.playerQueue = st.queue.map((t) => ({
+    key: t.key,
+    id: t.id,
+    owner: t.owner,
+    artist: t.artist,
+    title: t.title,
+    duration: t.duration,
+    cover: t.cover,
+  }));
   S.settings.playerQueueIndex = st.index;
   S.settings.playerShuffle = st.shuffle;
   S.settings.playerRepeat = st.repeat;
@@ -1894,7 +1941,10 @@ chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
           await sendToPlayer({
             t: 'P_PLAY_QUEUE',
             tracks: restored,
-            startIndex: Math.max(0, Math.min(S.settings.playerQueueIndex ?? 0, restored.length - 1)),
+            startIndex: Math.max(
+              0,
+              Math.min(S.settings.playerQueueIndex ?? 0, restored.length - 1),
+            ),
           });
           if (S.settings.playerShuffle) await sendToPlayer({ t: 'P_SHUFFLE', on: true });
           if (S.settings.playerRepeat && S.settings.playerRepeat !== 'off') {

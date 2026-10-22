@@ -450,13 +450,7 @@ export interface Track {
 
 /** Which list the UI is asking a provider for. */
 export type PlatformKind =
-  | 'my-tracks'
-  | 'playlists'
-  | 'playlist'
-  | 'recommendations'
-  | 'sections'
-  | 'section'
-  | 'search';
+  'my-tracks' | 'playlists' | 'playlist' | 'recommendations' | 'sections' | 'section' | 'search';
 
 /** A playlist or album the user can open. */
 export interface PlaylistRef {
@@ -654,7 +648,15 @@ export interface Settings {
    * The play queue and its controls, without stream URLs (those expire). A
    * recreated offscreen document re-resolves each entry before restoring it.
    */
-  playerQueue?: { key: string; id: string; owner: string; artist: string; title: string; duration: number | null; cover: string | null }[];
+  playerQueue?: {
+    key: string;
+    id: string;
+    owner: string;
+    artist: string;
+    title: string;
+    duration: number | null;
+    cover: string | null;
+  }[];
   playerQueueIndex?: number;
   playerShuffle?: boolean;
   playerRepeat?: RepeatMode;

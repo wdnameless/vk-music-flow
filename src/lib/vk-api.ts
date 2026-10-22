@@ -174,7 +174,8 @@ export async function vkCall<T>(
           authFailure: false,
           needsCaptcha: false,
           needsValidation: true,
-          redirectUri: json.error.redirect_uri != null ? String(json.error.redirect_uri) : undefined,
+          redirectUri:
+            json.error.redirect_uri != null ? String(json.error.redirect_uri) : undefined,
         };
       }
       if ((code === ERR_TOO_MANY || code === ERR_FLOOD) && attempt < max) {
@@ -344,7 +345,12 @@ export async function authState(): Promise<{
 }> {
   const t = await getToken();
   if (!t) {
-    return { signedIn: false, userId: null, expiresAt: null, reason: 'Не удалось войти в VK — проверь вход на vk.ru и прокси.' };
+    return {
+      signedIn: false,
+      userId: null,
+      expiresAt: null,
+      reason: 'Не удалось войти в VK — проверь вход на vk.ru и прокси.',
+    };
   }
   return { signedIn: true, userId: t.user_id, expiresAt: t.expires, reason: null };
 }

@@ -14,7 +14,13 @@ import {
   type BlockAccumulator,
   type LoudnessMeter,
 } from '../lib/loudness.js';
-import { advancePos, buildOrder, insertIntoOrder, moveInOrder, removeFromOrder } from './queue-order.js';
+import {
+  advancePos,
+  buildOrder,
+  insertIntoOrder,
+  moveInOrder,
+  removeFromOrder,
+} from './queue-order.js';
 
 /**
  * Audio player running inside the offscreen document.
@@ -178,7 +184,10 @@ export class Player {
 
     // Both elements report, but only the active one may drive the UI: the
     // silent partner still fires play/pause/timeupdate during a crossfade.
-    for (const [el, slot] of [[this.audio, 0], [this.audio2, 1]] as const) {
+    for (const [el, slot] of [
+      [this.audio, 0],
+      [this.audio2, 1],
+    ] as const) {
       el.addEventListener('ended', () => {
         if (slot === this.activeSlot) this.handleEnded();
       });
@@ -544,7 +553,12 @@ export class Player {
    */
   private async beginCrossfade(seconds: number): Promise<void> {
     this.crossfadeTimer = null;
-    const nextIdx = advancePos(this.pos, this.order.length, 1, this.repeat === 'all' || this.repeat === 'one');
+    const nextIdx = advancePos(
+      this.pos,
+      this.order.length,
+      1,
+      this.repeat === 'all' || this.repeat === 'one',
+    );
     if (nextIdx === null) return;
     const nextTrack = this.queue[this.order[nextIdx] ?? -1];
     if (!nextTrack) return;
@@ -577,16 +591,19 @@ export class Player {
 
     // Stop the outgoing element once the ramp is done, freeing it for the next
     // overlap. It must keep playing until then or the fade would cut out.
-    this.crossfadeTimer = setTimeout(() => {
-      this.crossfadeTimer = null;
-      const outEl = outgoing === 0 ? this.audio : this.audio2;
-      outEl.pause();
-      outEl.removeAttribute('src');
-      this.graph.setFade(outgoing, 0);
-      this.graph.setFade(incoming, 1);
-      this.scheduleCrossfade();
-      this.emit();
-    }, Math.max(50, seconds * 1000));
+    this.crossfadeTimer = setTimeout(
+      () => {
+        this.crossfadeTimer = null;
+        const outEl = outgoing === 0 ? this.audio : this.audio2;
+        outEl.pause();
+        outEl.removeAttribute('src');
+        this.graph.setFade(outgoing, 0);
+        this.graph.setFade(incoming, 1);
+        this.scheduleCrossfade();
+        this.emit();
+      },
+      Math.max(50, seconds * 1000),
+    );
   }
 
   /** Replace the queue and start at `startIndex` of the list. */
@@ -682,7 +699,9 @@ export class Player {
   async play(): Promise<void> {
     if (!this.current()) return;
     await this.resumeContext();
-    await this.el().play().catch(() => undefined);
+    await this.el()
+      .play()
+      .catch(() => undefined);
     this.startLoudnessSampling();
     this.emit();
   }
@@ -763,7 +782,11 @@ export class Player {
   }
 
   /** Loudness figures for the current track, sent by the worker once measured. */
-  setTrackLoudness(lufs: number | null, peakDb: number | null, albumLufs: number | null = null): void {
+  setTrackLoudness(
+    lufs: number | null,
+    peakDb: number | null,
+    albumLufs: number | null = null,
+  ): void {
     this.trackLufs = lufs;
     this.trackPeakDb = peakDb;
     this.albumLufs = albumLufs;

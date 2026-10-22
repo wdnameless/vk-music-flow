@@ -14,7 +14,8 @@ import type { HeaderRule } from '../types.js';
 
 /** Hostname of this extension (`<id>` for unpacked installs). */
 export function selfHost(): string {
-  const c = globalThis.chrome as unknown as { runtime?: { getURL?: (p: string) => string } } | undefined;
+  const c = globalThis.chrome as unknown as
+    { runtime?: { getURL?: (p: string) => string } } | undefined;
   try {
     return new URL(c?.runtime?.getURL?.('/') ?? 'https://invalid/').hostname;
   } catch {
@@ -33,11 +34,31 @@ export const GENIUS_VERSION = '4.2.1';
 export function headerRules(): HeaderRule[] {
   return [
     // 1-3: without the spoofed Origin, VK rejects token minting and the web API.
-    { id: 1, urlFilter: 'https://login.vk.ru/?act=web_token', headers: [{ name: 'origin', value: VK_ORIGIN }], ownOriginOnly: true },
-    { id: 2, urlFilter: 'https://vk.ru/al_audio.php*', headers: [{ name: 'origin', value: VK_ORIGIN }], ownOriginOnly: true },
-    { id: 3, urlFilter: 'https://api.vk.ru/*', headers: [{ name: 'origin', value: VK_ORIGIN }], ownOriginOnly: true },
+    {
+      id: 1,
+      urlFilter: 'https://login.vk.ru/?act=web_token',
+      headers: [{ name: 'origin', value: VK_ORIGIN }],
+      ownOriginOnly: true,
+    },
+    {
+      id: 2,
+      urlFilter: 'https://vk.ru/al_audio.php*',
+      headers: [{ name: 'origin', value: VK_ORIGIN }],
+      ownOriginOnly: true,
+    },
+    {
+      id: 3,
+      urlFilter: 'https://api.vk.ru/*',
+      headers: [{ name: 'origin', value: VK_ORIGIN }],
+      ownOriginOnly: true,
+    },
     // 3b: web.api.vk.ru is what the site itself calls; needed by any tabless client.
-    { id: 8, urlFilter: 'https://web.api.vk.ru/*', headers: [{ name: 'origin', value: VK_ORIGIN }], ownOriginOnly: true },
+    {
+      id: 8,
+      urlFilter: 'https://web.api.vk.ru/*',
+      headers: [{ name: 'origin', value: VK_ORIGIN }],
+      ownOriginOnly: true,
+    },
     // 4: Genius only serves lyrics to its Android client.
     {
       id: 4,
@@ -55,7 +76,12 @@ export function headerRules(): HeaderRule[] {
     // cannot do — it replaces the whole hostname and collapses every subdomain
     // onto the bare domain, so `api.vk.com/x` became `vk.ru/x`. Only the rule
     // ids and filters live here; the rewrite itself is built in `toDnrRules`.
-    { id: 7, urlFilter: '^https://([a-z0-9-]+\\.)?vk\\.com(/.*)?$', headers: [], ownOriginOnly: true },
+    {
+      id: 7,
+      urlFilter: '^https://([a-z0-9-]+\\.)?vk\\.com(/.*)?$',
+      headers: [],
+      ownOriginOnly: true,
+    },
   ];
 }
 
@@ -92,7 +118,11 @@ export function toDnrRules(host = selfHost()): unknown[] {
       priority: 1,
       action: {
         type: 'modifyHeaders',
-        requestHeaders: r.headers.map((h) => ({ header: h.name, operation: 'set', value: h.value })),
+        requestHeaders: r.headers.map((h) => ({
+          header: h.name,
+          operation: 'set',
+          value: h.value,
+        })),
       },
       condition: r.ownOriginOnly
         ? { urlFilter: r.urlFilter, initiatorDomains: [host] }
@@ -113,7 +143,11 @@ const dnrApi = (): DnrApi | null => {
 };
 
 /** Install (idempotently) every rule this extension owns. */
-export async function installDnrRules(): Promise<{ ok: boolean; ids: number[]; error: string | null }> {
+export async function installDnrRules(): Promise<{
+  ok: boolean;
+  ids: number[];
+  error: string | null;
+}> {
   const api = dnrApi();
   if (!api) return { ok: false, ids: [], error: 'declarativeNetRequest недоступен' };
   try {
@@ -128,7 +162,11 @@ export async function installDnrRules(): Promise<{ ok: boolean; ids: number[]; e
 }
 
 /** Inspect what is currently installed. */
-export async function readDnrRules(): Promise<{ ok: boolean; ids: number[]; error: string | null }> {
+export async function readDnrRules(): Promise<{
+  ok: boolean;
+  ids: number[];
+  error: string | null;
+}> {
   const api = dnrApi();
   if (!api) return { ok: false, ids: [], error: 'declarativeNetRequest недоступен' };
   try {

@@ -65,9 +65,9 @@ export function md5Hex(input: string): string {
   let c0 = 0x98badcfe;
   let d0 = 0x10325476;
   const S = [
-    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14,
-    20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6,
-    10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9,
+    14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21,
+    6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
   ];
   const K = new Uint32Array(64);
   for (let i = 0; i < 64; i++) K[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 0x100000000);
@@ -154,7 +154,13 @@ export async function lastfmCall<T = unknown>(
         })
       : await fetch(`${API}?${body.toString()}`, { signal: ctl.signal });
     const j = (await r.json()) as { error?: number; message?: string };
-    if (j.error) return { ok: false, data: null, code: j.error, error: j.message ?? `Last.fm error ${j.error}` };
+    if (j.error)
+      return {
+        ok: false,
+        data: null,
+        code: j.error,
+        error: j.message ?? `Last.fm error ${j.error}`,
+      };
     return { ok: true, data: j as T, error: undefined };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
