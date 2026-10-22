@@ -1,5 +1,6 @@
 import { buildTag, stripTag, type Id3Meta } from '../lib/id3.js';
 import { parseM3U8, type M3U8ParseResult } from '../lib/m3u8.js';
+import { demuxTsToMp3 } from '../lib/tsdemux.js';
 import { sanitize, pad, sniffExt, concatBytes, sanitizePath } from '../lib/util.js';
 import { computeBackoff, computeStartDelay } from '../lib/backoff.js';
 import { chromeStorageJournalKv, Journal, journalId } from '../lib/journal.js';
@@ -1319,6 +1320,9 @@ async function runItem(item: QueueItem): Promise<void> {
   if (S.done[doneKey]) return;
 
   let body = await getAudioBytes(a);
+  // VK's HLS carries MP3 inside MPEG-TS: demux to the source format instead of
+  // saving the transport container. A null means "not demuxable" — keep the .ts.
+  if (sniffExt(body) === 'ts') body = demuxTsToMp3(body) ?? body;
   const ext = sniffExt(body);
   // MPEG-TS and MP3 both accept a leading ID3v2 tag (and players skip it); the
   // AAC/ADTS container does not, so those stay untagged.
@@ -1569,10 +1573,17 @@ function bytesToDataUrl(bytes: Uint8Array, mime: string): string {
 }
 
 async function saveBlob(bytes: Uint8Array, fname: string): Promise<void> {
-  const mime = fname.endsWith('.mp3') ? 'audio/mpeg' : 'audio/aac';
+  const mime = fname.endsWith('.mp3')
+    ? 'audio/mpeg'
+    : fname.endsWith('.aac')
+      ? 'audio/aac'
+      : fname.endsWith('.ts')
+        ? 'video/mp2t'
+        : 'application/octet-stream';
   let url: string;
   let revoke: (() => void) | null = null;
   if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+    // SAFETY: BlobPart accepts Uint8Array at runtime; the DOM lib types lag behind.
     const blob = new Blob([bytes as unknown as BlobPart], { type: mime });
     url = URL.createObjectURL(blob);
     revoke = () => URL.revokeObjectURL(url);
@@ -1580,10 +1591,13 @@ async function saveBlob(bytes: Uint8Array, fname: string): Promise<void> {
     url = bytesToDataUrl(bytes, mime);
   }
   try {
+    // saveAs:false — the filename already carries the full subfolder path; asking
+    // the user again per track turns a playlist download into a dialog marathon.
     const id = await chrome.downloads.download({
       url,
       filename: fname,
       conflictAction: 'uniquify',
+      saveAs: false,
     });
     await waitDone(id);
   } finally {

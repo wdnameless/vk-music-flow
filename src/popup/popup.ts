@@ -306,13 +306,14 @@ function trackRow(t: Track, opts: { tick?: boolean; index?: number } = {}): stri
     `<button class="mini" data-next="${escapeHtml(t.key)}" title="Играть следующим"><svg class="ic"><use href="#i-next"/></svg></button>` +
     `<button class="mini" data-enqueue="${escapeHtml(t.key)}" title="В очередь"><svg class="ic"><use href="#i-download"/></svg></button>`;
   return (
-    `<li data-key="${escapeHtml(t.key)}" class="track${t.restricted ? ' muted' : ''}" style="--i:${opts.index ?? 0}">` +
+    `<li data-key="${escapeHtml(t.key)}" class="track${t.restricted ? ' muted' : ''}">` +
+    `<span class="t-num">${(opts.index ?? 0) + 1}</span>` +
     (opts.tick !== false
       ? `<input type="checkbox" data-tick="${escapeHtml(t.key)}"${isTicked ? ' checked' : ''}${t.restricted ? ' disabled' : ''}/>`
       : '') +
     // Artwork and play overlay share one box, so the cover can act as the button.
     `<span class="t-wrap">` +
-    `<span class="t-cover"${t.cover ? ` style="background-image:url('${escapeHtml(t.cover)}')"` : ''}></span>` +
+    `<span class="t-cover${t.cover ? '' : ' no-cover'}"${t.cover ? ` style="background-image:url('${escapeHtml(t.cover)}')"` : ''}></span>` +
     (t.restricted ? '' : play) +
     `</span>` +
     `<div class="t-body"><b>${escapeHtml(t.title || '—')}</b><span>${escapeHtml(t.artist)}</span></div>` +

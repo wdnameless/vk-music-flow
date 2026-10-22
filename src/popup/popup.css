@@ -135,6 +135,18 @@ body:not([data-host]) {
   .nav-item::before {
     left: 3px;
   }
+
+  /* The hero card stacks: artwork on top, text below. */
+  .featured {
+    grid-template-columns: 1fr;
+    max-width: none;
+  }
+  .feat-art {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1;
+    max-width: 280px;
+  }
 }
 
 .sprite {
@@ -265,49 +277,33 @@ body:not([data-host]) {
 }
 
 /* ---------------- Featured panel ----------------
-   The reference gives one artwork the whole stage. The cover is the subject;
-   text sits under it and never competes. */
+   A compact horizontal card: square artwork left, text right. The cover used
+   to stretch full-width (a banner, not a card) — now it stays 144px and the
+   rest is air. No gradients anywhere: text sits beside the art, not over it. */
 
 .featured {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: 144px 1fr;
   gap: 16px;
+  align-items: center;
+  max-width: 560px;
+  padding: 12px 16px 12px 12px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
 }
 
 .feat-art {
   position: relative;
-  aspect-ratio: 2.35 / 1;
-  border-radius: var(--r-lg);
-  background: var(--raised) center/cover no-repeat;
+  width: 144px;
+  height: 144px;
+  border-radius: var(--r-sm);
+  background: var(--sunken) center/cover no-repeat;
+  border: 1px solid var(--line-soft);
   overflow: hidden;
-  /* A slow ambient drift keeps the panel from feeling like a flat image. */
-  animation: artIn 0.6s var(--ease) both;
 }
 
-/* Legibility scrim: the title sits over artwork of unknown brightness, so the
-   bottom of the panel fades into the canvas. */
-.feat-art::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(to top, rgb(5 5 5 / 0.92) 2%, rgb(5 5 5 / 0.35) 42%, rgb(5 5 5 / 0) 78%);
-}
-
-.feat-art::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(120% 90% at 50% 0%, rgb(255 255 255 / 0.07), transparent 70%);
-  z-index: 1;
-}
-
-@keyframes artIn {
-  from {
-    opacity: 0;
-    transform: scale(1.02);
-    filter: blur(6px);
-  }
-}
+/* No entrance animation: a strict surface does not drift or blur in. */
 
 .feat-play {
   position: absolute;
@@ -598,14 +594,14 @@ input[type='checkbox'] {
 button {
   background: transparent;
   border: 1px solid var(--line);
-  border-radius: 100px;
+  border-radius: 8px;
   color: var(--text);
   font: inherit;
   font-size: 12.5px;
   padding: 8px 15px;
   cursor: pointer;
   transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease),
-    color var(--fast) var(--ease), transform var(--fast) var(--ease);
+    color var(--fast) var(--ease);
 }
 
 button:hover:not(:disabled) {
@@ -614,7 +610,7 @@ button:hover:not(:disabled) {
 }
 
 button:active:not(:disabled) {
-  transform: scale(0.97);
+  background: var(--veil-2);
 }
 
 button:disabled {
@@ -633,7 +629,6 @@ button:disabled {
 .btn-primary:hover:not(:disabled) {
   background: #fff;
   border-color: #fff;
-  transform: translateY(-1px);
 }
 
 .btn-danger {
@@ -655,9 +650,10 @@ button.chip:hover:not(:disabled) {
 }
 
 button.chip.active {
-  background: var(--veil-2);
-  border-color: rgb(255 255 255 / 0.14);
-  color: var(--text);
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--ink-text);
+  font-weight: 500;
 }
 
 button.mini {
@@ -723,18 +719,7 @@ button.mini:hover:not(:disabled) {
   gap: 12px;
   padding: 6px 10px 6px 6px;
   border-radius: var(--r-sm);
-  /* Staggered entrance: --i is set per row, so a long list cascades instead of
-     snapping in all at once. Capped so the last row is never late. */
-  animation: rowIn var(--slow) var(--ease) both;
-  animation-delay: calc(min(var(--i, 0), 12) * 26ms);
   transition: background var(--fast) var(--ease);
-}
-
-@keyframes rowIn {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
 }
 
 /* Honour the OS setting. `animation: none` alone is NOT enough: these keyframes
@@ -770,11 +755,24 @@ button.mini:hover:not(:disabled) {
 
 .t-cover,
 .pl-cover {
-  width: 34px;
-  height: 34px;
-  border-radius: var(--r-sm);
-  background: var(--raised) center/cover no-repeat;
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  background: var(--sunken) center/cover no-repeat;
+  border: 1px solid var(--line-soft);
   flex: 0 0 auto;
+}
+
+/* Empty cover: a thin frame with a note glyph, never a grey slab. Applied via
+   the no-cover class, because the play overlay keeps the box non-empty. */
+.t-cover.no-cover::before {
+  content: '♪';
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 15px;
+  color: var(--dim);
 }
 
 /* The cover IS the play button: hovering the row reveals it over the artwork,
@@ -821,8 +819,19 @@ button.mini:hover:not(:disabled) {
 .t-wrap {
   position: relative;
   flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
+  width: 40px;
+  height: 40px;
+}
+
+/* Tabular row numbers: the list reads as a table, not a pile. */
+.t-num {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+  min-width: 28px;
+  text-align: right;
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
 }
 
 .track:hover .t-cover::after,
@@ -877,8 +886,9 @@ button.mini:hover:not(:disabled) {
   color: var(--dim);
 }
 
+/* Unavailable reads as dim text, not a red shout: half the rows carry it. */
 .bad {
-  color: var(--danger);
+  color: var(--dim);
   font-size: 11px;
   flex: 0 0 auto;
 }
