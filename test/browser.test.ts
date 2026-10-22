@@ -19,7 +19,7 @@ const ROOT = path.resolve(HERE, '..');
 const MOCK_DIR = path.join(HERE, 'mock');
 
 const CHROMIUM_EXE =
-  process.env.VMF_CHROMIUM_EXE || 'D:\\progg\\pw-browsers\\chromium-1234\\chrome-win64\\chrome.exe';
+  process.env.VMF_CHROMIUM_EXE || 'D:\\progg\\NULLTRACE\\chromium\\fingerprint-chromium\\ungoogled-chromium_148.0.7778.215-1.1_windows_x64\\chrome.exe';
 const hasChromium = existsSync(CHROMIUM_EXE);
 const isCI = !!process.env.CI;
 
