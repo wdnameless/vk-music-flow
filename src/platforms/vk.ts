@@ -17,6 +17,7 @@ import {
   addAudio,
   authState,
   deleteAudio,
+  getBlockItems,
   getCatalogSection,
   getCatalogSections,
   getMyAudios,
@@ -84,7 +85,36 @@ function biggestCover(thumb: Record<string, string> | undefined): string | null 
   return best?.url ?? null;
 }
 
-/** Split `<owner>_<id>` back into the parts VK's API wants. */
+/** Convert a VK API playlist into the platform-neutral ref. */
+function toPlaylistRef(p: {
+  owner_id: number;
+  id: number;
+  title: string;
+  count?: unknown;
+  thumb?: Record<string, string>;
+  access_key?: string;
+}): PlaylistRef {
+  return {
+    key: trackKey('vk', `${p.owner_id}_${p.id}`),
+    platform: 'vk' as const,
+    nativeId: `${p.owner_id}_${p.id}`,
+    title: p.title,
+    trackCount: typeof p.count === 'number' ? p.count : null,
+    cover: biggestCover(p.thumb),
+    resolveToken: p.access_key,
+  };
+}
+
+/** Shelves that carry only id-references for `field`: bounded expansion set. */
+function lazyShelves(
+  blocks: { id: string; audios: unknown[]; playlists: unknown[]; rawKeys?: string[] }[],
+  field: 'audios' | 'playlists',
+): { id: string }[] {
+  return blocks
+    .filter((x) => !x[field].length && (x.rawKeys ?? []).some((k) => k.endsWith('_ids')))
+    .slice(0, 6);
+}
+
 function splitNativeId(nativeId: string): { owner: number; id: number } | null {
   const m = /^(-?\d+)_(\d+)$/.exec(nativeId);
   if (!m) return null;
@@ -120,16 +150,7 @@ class VkProvider implements MusicProvider {
   async playlists(): Promise<PlaylistRef[]> {
     const id = await this.accountId();
     if (!id) return [];
-    const items = await getPlaylists(id);
-    return items.map((p) => ({
-      key: trackKey('vk', `${p.owner_id}_${p.id}`),
-      platform: 'vk' as const,
-      nativeId: `${p.owner_id}_${p.id}`,
-      title: p.title,
-      trackCount: typeof p.count === 'number' ? p.count : null,
-      cover: biggestCover(p.thumb),
-      resolveToken: p.access_key,
-    }));
+    return (await getPlaylists(id)).map(toPlaylistRef);
   }
 
   async playlistTracks(ref: PlaylistRef): Promise<Track[]> {
@@ -159,7 +180,28 @@ class VkProvider implements MusicProvider {
 
   async sectionTracks(sectionId: string): Promise<Track[]> {
     const blocks = await getCatalogSection(sectionId);
-    return blocks.flatMap((b) => b.audios).map(toTrack);
+    const out: Track[] = blocks.flatMap((b) => b.audios).map(toTrack);
+    for (const b of lazyShelves(blocks, 'audios')) {
+      try {
+        out.push(...(await getBlockItems(b.id)).audios.map(toTrack));
+      } catch {
+        /* a dead shelf must not kill the section */
+      }
+    }
+    return out;
+  }
+
+  async sectionPlaylists(sectionId: string): Promise<PlaylistRef[]> {
+    const blocks = await getCatalogSection(sectionId);
+    const direct = blocks.flatMap((b) => b.playlists);
+    for (const b of lazyShelves(blocks, 'playlists')) {
+      try {
+        direct.push(...(await getBlockItems(b.id)).playlists);
+      } catch {
+        /* a dead shelf must not kill the section */
+      }
+    }
+    return direct.map(toPlaylistRef);
   }
 
   async resolve(track: Track): Promise<StreamRef> {

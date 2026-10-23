@@ -211,6 +211,7 @@ describe('player: удаление треков и подсветка при ш�
         onClip: () => {},
         onSpectrum: () => {},
         onNeedUrls: () => {},
+        onTrackError: () => {},
       });
 
       const tracks: PlayerTrack[] = [
@@ -287,6 +288,7 @@ describe('player: удаление треков и подсветка при ш�
         onClip: () => {},
         onSpectrum: () => {},
         onNeedUrls: () => {},
+        onTrackError: () => {},
       });
 
       const tracks: PlayerTrack[] = [

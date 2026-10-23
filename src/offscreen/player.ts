@@ -80,6 +80,15 @@ const PRELOAD_AHEAD = 3;
 const URL_REFRESH_MS = 5 * 60 * 1000;
 
 /**
+ * How long to wait for a recovery URL after an element error.
+ *
+ * A resolve round-trip is well under a second; ten seconds means the worker
+ * is gone or the track is unresolvable, and the listener should hear the
+ * next track instead of silence.
+ */
+const URL_RETRY_TIMEOUT_MS = 10_000;
+
+/**
  * How early the gapless switch is made, in seconds.
  *
  * The incoming stream needs a moment to buffer, and starting it too early would
@@ -104,6 +113,8 @@ export interface PlayerEvents {
   onSpectrum(left: number[], right: number[]): void;
   /** The player wants fresh URLs for these keys; it is about to reach them. */
   onNeedUrls(keys: string[]): void;
+  /** A track failed twice (stale URL + fresh URL) and was skipped. */
+  onTrackError(key: string, title: string): void;
 }
 
 export class Player {
@@ -191,7 +202,10 @@ export class Player {
       el.addEventListener('ended', () => {
         if (slot === this.activeSlot) this.handleEnded();
       });
-      el.addEventListener('error', () => this.emit());
+      el.addEventListener('error', () => {
+        if (slot === this.activeSlot) void this.handleElementError();
+        else this.emit();
+      });
       el.addEventListener('timeupdate', () => {
         if (slot === this.activeSlot) this.emit();
       });
@@ -819,6 +833,16 @@ export class Player {
         changed = true;
       }
     }
+    if (this.urlRetryKey === key) {
+      // Recovery URL for the track that just failed: restart it.
+      this.urlRetryKey = null;
+      if (this.urlRetryTimer !== null) {
+        clearTimeout(this.urlRetryTimer);
+        this.urlRetryTimer = null;
+      }
+      void this.playCurrent();
+      return;
+    }
     if (changed) this.emit();
   }
 
@@ -993,6 +1017,40 @@ export class Player {
   private loudnessReported = false;
   /** Clipping is reported at most once per track, for the same reason. */
   private clipReported = false;
+
+  /**
+   * The active element failed to load (expired one-shot CDN link, most often
+   * okcdn). Ask the worker for a fresh URL once; if it fails again, skip the
+   * track instead of hanging forever on `playing:true` at 0:00.
+   */
+  private async handleElementError(): Promise<void> {
+    const cur = this.current();
+    this.emit();
+    if (!cur) return;
+    if (this.urlRetryKey === cur.key) {
+      // Fresh URL failed too: the track itself is bad. Skip it.
+      this.urlRetryKey = null;
+      this.events.onTrackError(cur.key, cur.title);
+      await this.advance(1);
+      return;
+    }
+    this.urlRetryKey = cur.key;
+    this.events.onNeedUrls([cur.key]);
+    // If no fresh URL arrives, do not wait forever: skip the track.
+    if (this.urlRetryTimer !== null) clearTimeout(this.urlRetryTimer);
+    this.urlRetryTimer = setTimeout(() => {
+      this.urlRetryTimer = null;
+      if (this.urlRetryKey === cur.key) {
+        this.urlRetryKey = null;
+        this.events.onTrackError(cur.key, cur.title);
+        void this.advance(1);
+      }
+    }, URL_RETRY_TIMEOUT_MS);
+  }
+
+  /** Key awaiting a recovery re-resolve after an element error, if any. */
+  private urlRetryKey: string | null = null;
+  private urlRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
   private emit(): void {
     this.events.onState(this.state());

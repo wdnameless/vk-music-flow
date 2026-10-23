@@ -29,6 +29,9 @@ const player = new Player({
   onClip: (key) => {
     void chrome.runtime.sendMessage({ t: 'PLAYER_CLIP', key }).catch(() => undefined);
   },
+  onTrackError: (key, title) => {
+    void chrome.runtime.sendMessage({ t: 'PLAYER_TRACK_ERROR', key, title }).catch(() => undefined);
+  },
   onEnded: (track) => {
     void chrome.runtime.sendMessage({ t: 'PLAYER_ENDED', track }).catch(() => undefined);
   },

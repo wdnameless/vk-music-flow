@@ -135,18 +135,6 @@ body:not([data-host]) {
   .nav-item::before {
     left: 3px;
   }
-
-  /* The hero card stacks: artwork on top, text below. */
-  .featured {
-    grid-template-columns: 1fr;
-    max-width: none;
-  }
-  .feat-art {
-    width: 100%;
-    height: auto;
-    aspect-ratio: 1;
-    max-width: 280px;
-  }
 }
 
 .sprite {
@@ -1480,6 +1468,30 @@ button.icon.on {
     --player: 108px;
   }
 
+  /* The source picker has nowhere to go at this width. Lives here (after the
+     base rules) so it wins the cascade. */
+  .side-source {
+    display: none;
+  }
+
+  /* Rows go compact: hidden hover actions still occupy flex space, so remove
+     them from layout entirely and tighten the rest. */
+  .tracks > li {
+    gap: 8px;
+    padding: 5px 6px 5px 2px;
+  }
+  .tracks > li button.mini {
+    display: none;
+  }
+  .t-cover,
+  .t-wrap {
+    width: 34px;
+    height: 34px;
+  }
+  .t-num {
+    min-width: 20px;
+  }
+
   .content {
     padding: 16px 14px 120px;
   }
@@ -1488,8 +1500,17 @@ button.icon.on {
     font-size: 19px;
   }
 
+  /* The hero card stacks: artwork on top, text below. Lives here (not in the
+     first narrow block) because it must come after the base .featured rules. */
+  .featured {
+    grid-template-columns: 1fr;
+    max-width: none;
+  }
   .feat-art {
-    aspect-ratio: 16 / 9;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1;
+    max-width: 280px;
   }
 
   .stats {

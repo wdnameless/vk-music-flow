@@ -79,6 +79,9 @@ export interface MusicProvider {
   /** Tracks for one catalogue section. */
   sectionTracks(sectionId: string): Promise<Track[]>;
 
+  /** Playlists for one catalogue section (shelves that carry albums, not tracks). */
+  sectionPlaylists(sectionId: string): Promise<PlaylistRef[]>;
+
   /** Obtain a playable stream for a track, as fresh as possible. */
   resolve(track: Track): Promise<StreamRef>;
 

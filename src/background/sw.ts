@@ -493,7 +493,12 @@ type HandlerResult =
   | VkCatalogResult<VkAudio>
   | VkCatalogResult<VkPlaylist>
   | { ok: boolean; queued: number; skipped: number; total: number }
-  | { ok: boolean; state: PlayerState | null; skipped?: number }
+  | {
+      ok: boolean;
+      state: PlayerState | null;
+      skipped?: number;
+      trackError?: { key: string; title: string; ts: number } | null;
+    }
   | { ok: boolean; urls: string[]; via?: string; restricted?: boolean; reason?: string }
   | { ok: boolean; sections: VkCatalogSection[] }
   | { ok: boolean; platforms: ReturnType<typeof platformStatus> }
@@ -735,8 +740,13 @@ async function handle(
           return { ok: true, tracks: await p.recommendations() };
         case 'sections':
           return { ok: true, sections: await p.sections() };
-        case 'section':
-          return { ok: true, tracks: m.id ? await p.sectionTracks(m.id) : [] };
+        case 'section': {
+          const [tracks, playlists] = await Promise.all([
+            p.sectionTracks(m.id ?? ''),
+            p.sectionPlaylists(m.id ?? ''),
+          ]);
+          return { ok: true, tracks, playlists };
+        }
         case 'search':
           return { ok: true, tracks: (await p.search(m.id ?? '')).tracks };
         default:
@@ -1048,7 +1058,7 @@ async function handle(
     case 'GET_PLAYER_STATE': {
       const live = await sendToPlayer({ t: 'P_STATE' });
       if (live) rememberPlayerState(live as PlayerState);
-      return { ok: true, state: playerSnapshot() };
+      return { ok: true, state: playerSnapshot(), trackError: lastTrackError };
     }
     case 'RESOLVE_TRACK': {
       // One track, resolved on demand. Used by the player (which must not play a
@@ -1914,6 +1924,8 @@ const PRELOAD_MAX = 4;
 
 /** Tracks whose master was measured at full scale, for the UI to report. */
 const clipReported = new Set<string>();
+/** Last skipped-for-error track, for the UI to report once. */
+let lastTrackError: { key: string; title: string; ts: number } | null = null;
 
 /** Track the offscreen document is currently playing, for scrobbling (declared above). */
 
@@ -2012,8 +2024,18 @@ chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
     void (async () => {
       for (const key of m2.keys.slice(0, PRELOAD_MAX)) {
         const entry = S.audios[key];
-        if (!entry) continue;
-        const url = await resolveForPlayback(entry.owner, entry.id, key);
+        let owner = entry?.owner ?? '';
+        let id = entry?.id ?? '';
+        if ((!owner || !id) && key) {
+          // No catalog entry (cold start, pruned cache): the key itself
+          // carries `platform:owner_id`, which is all the API needs.
+          const native = key.includes(':') ? key.slice(key.indexOf(':') + 1) : key;
+          const [o, i] = native.split('_');
+          owner = owner || o || '';
+          id = id || i || '';
+        }
+        if (!owner || !id) continue;
+        const url = await resolveForPlayback(owner, id, key);
         if (url) await sendToPlayer({ t: 'P_URL', key, url });
       }
     })();
@@ -2025,6 +2047,14 @@ chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
     // but the listener deserves to know it is the recording, not the player.
     const m2 = m as { key: string };
     clipReported.add(m2.key);
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg?.t === 'PLAYER_TRACK_ERROR') {
+    // A track died twice and was skipped. The popup picks it up on its next
+    // poll and shows it once (it tracks the last seen timestamp itself).
+    const m2 = m as { key: string; title: string };
+    lastTrackError = { key: m2.key, title: m2.title, ts: Date.now() };
     sendResponse({ ok: true });
     return false;
   }

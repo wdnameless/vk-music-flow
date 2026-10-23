@@ -194,7 +194,7 @@ async function refreshPlatforms(): Promise<void> {
     $sel('platformPick').innerHTML = r.platforms
       .map(
         (p) =>
-          `<option value="${p.id}"${p.available ? '' : ' disabled'}>${escapeHtml(p.label)}${p.available ? '' : ' (скоро)'}</option>`,
+          `<option value="${escapeHtml(p.id)}"${p.available ? '' : ' disabled'}>${escapeHtml(p.label)}${p.available ? '' : ' (скоро)'}</option>`,
       )
       .join('');
     $sel('platformPick').value = activePlatform;
@@ -274,8 +274,17 @@ async function loadList(
         : '<span class="meta">Разделов нет.</span>';
       return;
     }
-    if (r.playlists) {
+    if (r.playlists?.length) {
       renderPlaylists(r.playlists, target);
+      // A section can carry both shelves and tracks: playlists render above,
+      // tracks append below instead of replacing them.
+      if (kind === 'section' && r.tracks?.length) {
+        const keep = host.innerHTML;
+        listTracks = r.tracks;
+        ticked.clear();
+        renderTracks(target);
+        host.innerHTML = keep + host.innerHTML;
+      }
       return;
     }
     listTracks = r.tracks ?? [];
@@ -458,7 +467,10 @@ $('btnMyPlaylists').addEventListener('click', () => {
 
 $('exploreSections').addEventListener('click', (e) => {
   const btn = (e.target as HTMLElement).closest('[data-section]') as HTMLElement | null;
-  if (btn?.dataset.section) void loadList('section', btn.dataset.section, 'exploreTracks');
+  if (!btn?.dataset.section) return;
+  document.querySelectorAll('#exploreSections .chip').forEach((c) => c.classList.remove('active'));
+  btn.classList.add('active');
+  void loadList('section', btn.dataset.section, 'exploreTracks');
 });
 
 $('btnSearch').addEventListener('click', () => {
@@ -835,10 +847,20 @@ function renderPlayer(): void {
   if (!$('queuePanel').hidden && !dragFrom) renderQueue();
 }
 
+let lastSeenTrackErrorTs = 0;
+
 async function refreshPlayer(): Promise<void> {
   try {
-    const r = await send<{ ok: boolean; state: PlayerState | null }>({ t: 'GET_PLAYER_STATE' });
+    const r = await send<{
+      ok: boolean;
+      state: PlayerState | null;
+      trackError?: { key: string; title: string; ts: number } | null;
+    }>({ t: 'GET_PLAYER_STATE' });
     pState = r.state;
+    if (r.trackError && r.trackError.ts > lastSeenTrackErrorTs) {
+      lastSeenTrackErrorTs = r.trackError.ts;
+      showNotice(getActiveView(), `Трек недоступен и пропущен: ${r.trackError.title}`);
+    }
   } catch {
     /* keep the last snapshot */
   }
@@ -1798,13 +1820,13 @@ function proxyRowHtml(e: ProxyEntry): string {
         ? '<span class="ok">доступен</span>'
         : '<span class="bad">недоступен</span>';
   return (
-    `<li data-id="${e.id}"${used ? ' class="cur"' : ''}>` +
+    `<li data-id="${escapeHtml(e.id)}"${used ? ' class="cur"' : ''}>` +
     `<b>${escapeHtml(e.label || e.host)}</b> ` +
     `<span class="mono">${escapeHtml(e.scheme)}://${escapeHtml(e.host)}:${e.port}</span> ` +
     `${e.username ? '<span class="muted">с логином</span> ' : ''}${status}` +
     `${stamp ? ` <span class="muted">· ${stamp}</span>` : ''}` +
-    `<button data-act="use" data-id="${e.id}">${used ? 'активен' : 'использовать'}</button>` +
-    `<button data-act="del" data-id="${e.id}">удалить</button>` +
+    `<button data-act="use" data-id="${escapeHtml(e.id)}">${used ? 'активен' : 'использовать'}</button>` +
+    `<button data-act="del" data-id="${escapeHtml(e.id)}">удалить</button>` +
     '</li>'
   );
 }

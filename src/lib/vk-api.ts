@@ -394,17 +394,86 @@ export async function getCatalogSection(sectionId: string): Promise<VkCatalogBlo
         data_type?: string;
         audios?: VkAudio[];
         playlists?: VkPlaylist[];
+        audios_ids?: (string | number)[];
+        playlists_ids?: (string | number)[];
+        items?: { audio?: VkAudio; playlist?: VkPlaylist }[];
+        layout?: { title?: string };
+        [k: string]: unknown;
       }[];
+      audios?: VkAudio[] | Record<string, VkAudio>;
+      playlists?: VkPlaylist[] | Record<string, VkPlaylist>;
     };
   }>('catalog.getSection', { section_id: sectionId, count: 20 });
-  const blocks = r.ok ? (r.data?.section?.blocks ?? []) : [];
-  return blocks.map((b, i) => ({
-    id: String(b.id ?? `block-${i}`),
-    title: String(b.title ?? ''),
-    type: String(b.data_type ?? 'none'),
-    audios: Array.isArray(b.audios) ? b.audios : [],
-    playlists: Array.isArray(b.playlists) ? b.playlists : [],
-  }));
+  const section = r.ok ? r.data?.section : undefined;
+  const blocks = section?.blocks ?? [];
+  // Shelf content arrives three ways: inline `audios`/`playlists`, a generic
+  // `items` list, or id-references (`audios_ids`) into section-level pools.
+  const audioPool = new Map<string, VkAudio>();
+  const plPool = new Map<string, VkPlaylist>();
+  const poolAudios = section?.audios;
+  const poolPls = section?.playlists;
+  const pushPool = (src: unknown, map: Map<string, VkAudio | VkPlaylist>): void => {
+    const list = Array.isArray(src)
+      ? src
+      : src && typeof src === 'object'
+        ? Object.values(src)
+        : [];
+    for (const e of list as { id?: unknown; owner_id?: unknown }[]) {
+      const id = e?.id;
+      if (id !== undefined && id !== null) map.set(String(id), e as never);
+    }
+  };
+  pushPool(poolAudios, audioPool);
+  pushPool(poolPls, plPool);
+  return blocks.map((b, i) => {
+    const fromItems = Array.isArray(b.items) ? b.items : [];
+    const audios = Array.isArray(b.audios) ? [...b.audios] : [];
+    const playlists = Array.isArray(b.playlists) ? [...b.playlists] : [];
+    for (const it of fromItems) {
+      if (it?.audio) audios.push(it.audio);
+      else if (it?.playlist) playlists.push(it.playlist);
+    }
+    for (const ref of b.audios_ids ?? []) {
+      const hit = audioPool.get(String(ref));
+      if (hit) audios.push(hit);
+    }
+    for (const ref of b.playlists_ids ?? []) {
+      const hit = plPool.get(String(ref));
+      if (hit) playlists.push(hit);
+    }
+    return {
+      id: String(b.id ?? `block-${i}`),
+      title: String(b.title ?? b.layout?.title ?? ''),
+      type: String(b.data_type ?? 'none'),
+      audios,
+      playlists,
+      rawKeys:
+        i === 0
+          ? [...Object.keys(b ?? {}), `section:${Object.keys(section ?? {}).join(',')}`]
+          : Object.keys(b ?? {}),
+    };
+  });
+}
+
+/** Load one block's items when getSection returned only id-references. */
+export async function getBlockItems(blockId: string): Promise<{
+  audios: VkAudio[];
+  playlists: VkPlaylist[];
+}> {
+  const r = await vkCall<{
+    items?: { audio?: VkAudio; playlist?: VkPlaylist }[];
+    audios?: VkAudio[];
+    playlists?: VkPlaylist[];
+  }>('catalog.getBlockItems', { block_id: blockId, count: 50 });
+  if (!r.ok) return { audios: [], playlists: [] };
+  const d = r.data ?? {};
+  const audios = Array.isArray(d.audios) ? [...d.audios] : [];
+  const playlists = Array.isArray(d.playlists) ? [...d.playlists] : [];
+  for (const it of Array.isArray(d.items) ? d.items : []) {
+    if (it?.audio) audios.push(it.audio);
+    else if (it?.playlist) playlists.push(it.playlist);
+  }
+  return { audios, playlists };
 }
 
 /* ------------------------------------------------------------------ */

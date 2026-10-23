@@ -174,6 +174,8 @@ export interface VkCatalogBlock {
   /** Tracks when the block carries any; VK often returns them lazily. */
   audios: VkAudio[];
   playlists: VkPlaylist[];
+  /** Top-level payload keys (debug shape discovery; VK changes it silently). */
+  rawKeys?: string[];
 }
 
 /** Generic VK API envelope. */
