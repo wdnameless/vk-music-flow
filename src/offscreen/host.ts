@@ -165,4 +165,15 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, reply) => {
 });
 
 // Tell the worker we are alive so it can push the current queue if it restarts.
-void chrome.runtime.sendMessage({ t: 'PLAYER_READY' }).catch(() => undefined);
+// Retried until acknowledged: a single fire-and-forget is lost when the worker
+// is still booting, leaving the queue unrestored (READY race).
+void (async () => {
+  for (let i = 0; i < 5; i++) {
+    try {
+      await chrome.runtime.sendMessage({ t: 'PLAYER_READY' });
+      return;
+    } catch {
+      await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+    }
+  }
+})();

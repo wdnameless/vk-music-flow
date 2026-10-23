@@ -2089,6 +2089,9 @@ chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
     // A fresh offscreen document starts at full volume with a flat equalizer,
     // so the saved preferences are pushed back in before anything plays.
     void (async () => {
+      // READY can arrive before cold-start hydration finishes: restoring from
+      // default settings would wipe the queue with an empty one. Gate on boot.
+      await boot();
       const vol = S.settings.playerVolume;
       if (typeof vol === 'number') await sendToPlayer({ t: 'P_VOLUME', volume: vol });
       if (S.settings.playerEqEnabled) {
