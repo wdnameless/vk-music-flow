@@ -70,8 +70,12 @@ export interface MusicProvider {
   /** Server-side search. */
   search(query: string): Promise<SearchResult>;
 
-  /** Personalised mix; empty when the platform has no equivalent. */
-  recommendations(limit?: number): Promise<Track[]>;
+  /**
+   * Personalised mix; empty when the platform has no equivalent. With
+   * `targetAudio` (the platform's native id) the mix is seeded by that
+   * track; an empty answer is valid and the UI shows an empty state.
+   */
+  recommendations(limit?: number, targetAudio?: string): Promise<Track[]>;
 
   /** Navigable catalogue sections, when the platform has a catalogue. */
   sections(): Promise<CatalogSection[]>;

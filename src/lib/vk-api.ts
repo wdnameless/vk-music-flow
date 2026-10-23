@@ -357,11 +357,16 @@ export async function resolveStreamUrls(
   return { urls, restricted, missing };
 }
 
-/** Recommendations derived from the user's own listening. */
-export async function getRecommendations(ownerId: number, count = 30): Promise<VkAudio[]> {
+/** Recommendations derived from the user's own listening, optionally seeded. */
+export async function getRecommendations(
+  ownerId: number,
+  count = 30,
+  targetAudio?: string,
+): Promise<VkAudio[]> {
   const r = await vkCall<{ items: VkAudio[] }>('audio.getRecommendations', {
     user_id: ownerId,
     count,
+    target_audio: targetAudio,
   });
   return r.ok ? (r.data?.items ?? []) : [];
 }

@@ -5,6 +5,7 @@ import { tokenUsable } from '../src/lib/vk-auth.js';
 import {
   CaptchaNeededError,
   getAudiosById,
+  getRecommendations,
   isRestricted,
   resolveStreamUrls,
   setPendingCaptcha,
@@ -392,5 +393,47 @@ describe('vk-api: getAudiosById', () => {
     assert.equal(first.get('captcha_sid'), 's1');
     assert.equal(first.get('captcha_key'), 'key9');
     assert.equal(second.get('captcha_sid'), null);
+  });
+});
+
+describe('vk-api: seeded recommendations (target_audio) [R04]', () => {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const seed = () =>
+    installChrome({
+      store: { vmf_vk_token_v1: { access_token: 'tok', user_id: 42, expires: nowSec + 3600 } },
+    });
+
+  it('seed уходит в тело как target_audio', async () => {
+    seed();
+    let body = '';
+    vi.stubGlobal('fetch', async (_u: string, init: RequestInit) => {
+      body = String(init.body);
+      return new Response(JSON.stringify({ response: { items: [] } }), { status: 200 });
+    });
+    await getRecommendations(42, 20, '1_2');
+    assert.equal(new URLSearchParams(body).get('target_audio'), '1_2');
+  });
+
+  it('без seed параметр не утекает в тело', async () => {
+    seed();
+    let body = '';
+    vi.stubGlobal('fetch', async (_u: string, init: RequestInit) => {
+      body = String(init.body);
+      return new Response(JSON.stringify({ response: { items: [] } }), { status: 200 });
+    });
+    await getRecommendations(42, 20);
+    assert.equal(new URLSearchParams(body).has('target_audio'), false);
+  });
+
+  it('ошибка API даёт пустой список, а не исключение', async () => {
+    seed();
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(JSON.stringify({ error: { error_code: 15, error_msg: 'Access denied' } }), {
+          status: 200,
+        }),
+    );
+    assert.deepEqual(await getRecommendations(42, 20, '1_2'), []);
   });
 });

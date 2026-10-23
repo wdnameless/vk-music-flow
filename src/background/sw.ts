@@ -744,6 +744,11 @@ async function handle(
         }
         case 'recommendations':
           return { ok: true, tracks: await p.recommendations() };
+        case 'similar': {
+          if (!m.id) return { ok: true, tracks: [] };
+          const parsed = parseTrackKey(m.id);
+          return { ok: true, tracks: await p.recommendations(20, parsed.nativeId) };
+        }
         case 'sections':
           return { ok: true, sections: await p.sections() };
         case 'section': {

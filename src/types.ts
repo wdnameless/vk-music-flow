@@ -157,6 +157,8 @@ export interface VkPlaylist {
   /** Present for community/album playlists. */
   access_key?: string;
   thumb?: Record<string, string>;
+  /** Artwork map (`photo_34` … `photo_1200`); the live shape for playlists. */
+  photo?: Record<string, string>;
 }
 
 /** One navigable section of the VK music catalogue ("My music", "Radio", …). */
@@ -452,7 +454,14 @@ export interface Track {
 
 /** Which list the UI is asking a provider for. */
 export type PlatformKind =
-  'my-tracks' | 'playlists' | 'playlist' | 'recommendations' | 'sections' | 'section' | 'search';
+  | 'my-tracks'
+  | 'playlists'
+  | 'playlist'
+  | 'recommendations'
+  | 'sections'
+  | 'section'
+  | 'search'
+  | 'similar';
 
 /** A playlist or album the user can open. */
 export interface PlaylistRef {
@@ -682,7 +691,7 @@ export interface Settings {
   maxBackoffMs: number;
   minIntervalMs: number;
   jitterMs: number;
-  /** Player bar dock: top of content or bottom (default). */
+  /** Player bar dock: top of content (default) or bottom. */
   playerBarPosition?: 'top' | 'bottom';
   /** Color theme: follow the OS or force one side. */
   theme?: 'auto' | 'dark' | 'light';
@@ -699,6 +708,7 @@ export const DEFAULT_SETTINGS: Settings = {
   maxBackoffMs: 30000,
   minIntervalMs: 500,
   jitterMs: 250,
+  playerBarPosition: 'top',
 };
 
 /** Full persisted service-worker state (S under key vmf_state_v1). */

@@ -215,7 +215,9 @@ export function showNotice(view: string, text: string): void {
   notice.hidden = !text;
 }
 
-document.querySelectorAll('.nav-item').forEach((b) => {
+// Only items with a data-view navigate. The sidebar theme toggle reuses
+// .nav-item styling but carries no view, so it must not trigger openView.
+document.querySelectorAll('.nav-item[data-view]').forEach((b) => {
   b.addEventListener('click', () => void openView((b as HTMLElement).dataset.view || 'home'));
 });
 
@@ -253,11 +255,24 @@ $sel('platformPick').addEventListener('change', (e) => {
   void loadHome();
 });
 
-$sel('themePick').addEventListener('change', async (e) => {
-  const theme = (e.target as HTMLSelectElement).value as 'auto' | 'dark' | 'light';
+const THEME_ORDER = ['auto', 'dark', 'light'] as const;
+
+/** Shared writer for the theme select and the sidebar toggle. */
+async function setTheme(theme: 'auto' | 'dark' | 'light'): Promise<void> {
   await send({ t: 'SETTINGS', patch: { theme } });
   const s = await send<StateSnapshot | null>({ t: 'GET_STATE' });
   applyAppearance(s?.settings ?? { theme });
+}
+
+$sel('themePick').addEventListener('change', (e) => {
+  void setTheme((e.target as HTMLSelectElement).value as 'auto' | 'dark' | 'light');
+});
+$('btnTheme').addEventListener('click', async () => {
+  // The effective setting lives in the select the appearance pass keeps in
+  // sync, so cycling from it cannot drift from the persisted value.
+  const cur = $sel('themePick').value as 'auto' | 'dark' | 'light';
+  const next = THEME_ORDER[(THEME_ORDER.indexOf(cur) + 1) % THEME_ORDER.length] ?? 'auto';
+  await setTheme(next);
 });
 $sel('playerBarPick').addEventListener('change', async (e) => {
   const playerBarPosition = (e.target as HTMLSelectElement).value as 'top' | 'bottom';
@@ -267,6 +282,14 @@ $sel('playerBarPick').addEventListener('change', async (e) => {
 });
 
 async function refreshPlatformAuth(): Promise<void> {
+  // Sidebar profile: one light + the account label, kept beside the auth text
+  // so the two can never disagree about who is signed in.
+  const profile = (signedIn: boolean, label: string): void => {
+    const name = document.getElementById('profileName');
+    const dot = document.getElementById('profileDot');
+    if (name) name.textContent = label;
+    if (dot) dot.classList.toggle('on', signedIn);
+  };
   try {
     const r = await send<{ ok: boolean; status?: VkAuthState; reason?: string }>({
       t: 'P_AUTH',
@@ -275,6 +298,7 @@ async function refreshPlatformAuth(): Promise<void> {
     const el = $('platformState');
     if (!r.ok || !r.status) {
       el.textContent = r.reason || 'не удалось проверить сессию';
+      profile(false, PLATFORM_LABELS[activePlatform]);
       return;
     }
     if (r.status.userId) {
@@ -284,8 +308,15 @@ async function refreshPlatformAuth(): Promise<void> {
     el.textContent = r.status.signedIn
       ? `${PLATFORM_LABELS[activePlatform]}: вошёл${r.status.userId ? ' (id ' + r.status.userId + ')' : ''}`
       : `${PLATFORM_LABELS[activePlatform]}: ` + (r.status.reason || 'не удалось войти');
+    profile(
+      r.status.signedIn,
+      r.status.signedIn && r.status.userId
+        ? `${PLATFORM_LABELS[activePlatform]} · id ${r.status.userId}`
+        : PLATFORM_LABELS[activePlatform],
+    );
   } catch {
     $('platformState').textContent = 'не удалось проверить сессию';
+    profile(false, PLATFORM_LABELS[activePlatform]);
   }
 }
 
@@ -494,7 +525,25 @@ function wireTrackList(target: string): void {
     }
   });
 }
-['myTracks', 'exploreTracks', 'radioTracks', 'searchResults', 'homeTracks'].forEach(wireTrackList);
+['myTracks', 'exploreTracks', 'radioTracks', 'searchResults', 'homeTracks', 'homeSimilar'].forEach(
+  wireTrackList,
+);
+
+// Shelf cards open in My music: the playlist grid there is the existing full
+// view for a playlist, so no new surface is needed for shelf navigation.
+$('homeShelves').addEventListener('click', async (e) => {
+  const el = e.target as HTMLElement;
+  if (el.closest('button')) return;
+  const card = el.closest('.pl') as HTMLElement | null;
+  const key = card?.dataset.pl;
+  if (!key) return;
+  $('myTracks').hidden = true;
+  $('myPlaylists').hidden = false;
+  $('btnMyPlaylists').classList.add('active');
+  $('btnMyTracks').classList.remove('active');
+  showView('my');
+  await loadList('playlist', key, 'myPlaylists');
+});
 
 /* ---------------- My music ---------------- */
 
@@ -1674,10 +1723,119 @@ $('baseDir').addEventListener('input', (e) => {
 
 /* ---------------- Home ---------------- */
 
+/** Fixed genre taxonomy: chips run the existing search flow, no new API. */
+const HOME_GENRES = ['Поп', 'Рок', 'Хип-хоп', 'Электроника', 'Джаз', 'Классика', 'R&B', 'Инди'];
+
+interface HomeSection {
+  id: string;
+  title: string;
+  action?: { label: string; view: string };
+}
+
+function renderHomeSection(host: string, section: HomeSection): HTMLElement | null {
+  const el = document.getElementById(host);
+  if (!el) return null;
+  el.setAttribute('data-section', section.id);
+  el.setAttribute('aria-label', section.title);
+  return el;
+}
+
+/** One track tile: cover, title, artist, duration, mono quality badge. */
+function trackTile(t: Track): string {
+  return (
+    `<li data-key="${escapeHtml(t.key)}" class="track${t.restricted ? ' muted' : ''}">` +
+    `<span class="t-wrap">` +
+    `<span class="t-cover${t.cover ? '' : ' no-cover'}">${coverImg(t.cover)}</span>` +
+    (t.restricted
+      ? ''
+      : `<span class="t-play" data-play="${escapeHtml(t.key)}" role="button" aria-label="Играть">` +
+        `<svg class="ic"><use href="#i-play"/></svg></span>`) +
+    `</span>` +
+    `<div class="t-body"><b>${escapeHtml(t.title || '—')}</b><span>${escapeHtml(t.artist)}</span></div>` +
+    `<div class="tile-meta"><span class="t-dur">${fmtDur(t.duration)}</span>` +
+    `<span class="q-badge">${t.restricted ? '—' : 'VK'}</span></div>` +
+    `</li>`
+  );
+}
+
+function renderTileGrid(host: string, tracks: Track[], empty: string): void {
+  const el = $(host);
+  el.innerHTML = tracks.length
+    ? tracks.map((t) => trackTile(t)).join('')
+    : `<li class="meta">${escapeHtml(empty)}</li>`;
+}
+
+function renderShelf(title: string, playlists: PlaylistRef[]): string {
+  if (!playlists.length) return '';
+  return (
+    `<div class="shelf"><h3 class="shelf-title">${escapeHtml(title)}</h3><div class="shelf-row">` +
+    playlists
+      .map(
+        (p) =>
+          `<div class="pl" data-pl="${escapeHtml(p.key)}">` +
+          `<div class="pl-cover">${coverImg(p.cover)}</div>` +
+          `<div class="pl-body"><b>${escapeHtml(p.title)}</b>` +
+          `<span class="meta">${p.trackCount ?? '?'} треков</span></div></div>`,
+      )
+      .join('') +
+    `</div></div>`
+  );
+}
+
+function renderGenreChips(host: string): void {
+  const el = $(host);
+  el.innerHTML = HOME_GENRES.map(
+    (g) => `<button class="chip" data-genre="${escapeHtml(g)}">${escapeHtml(g)}</button>`,
+  ).join('');
+}
+
+async function requestList(
+  kind:
+    | 'my-tracks'
+    | 'playlists'
+    | 'recommendations'
+    | 'sections'
+    | 'section'
+    | 'playlist'
+    | 'search'
+    | 'similar',
+  id?: string,
+): Promise<{
+  ok: boolean;
+  tracks?: Track[];
+  playlists?: PlaylistRef[];
+  sections?: CatalogSection[];
+  reason?: string;
+}> {
+  return await send({ t: 'P_LIST', platform: activePlatform, kind, id });
+}
+
 export async function loadHome(): Promise<void> {
-  // The home shelf mirrors what VK itself puts first: the account's own music.
-  await loadList('my-tracks', undefined, 'homeTracks');
-  const playable = listTracks.filter((t) => !t.restricted);
+  // Sectional home: hero + my-tracks tiles first (keeps #homeTracks/.track/
+  // [data-play] for tests and wireTrackList), shelves/genres/similar after.
+  const my = await requestList('my-tracks');
+  const myTracks = my.ok ? (my.tracks ?? []) : [];
+  listTracks = myTracks;
+  if (myTracks.length) {
+    for (const t of myTracks) {
+      likedKeys.add(t.key);
+      likedKeys.add(t.nativeId);
+    }
+    syncLikeButtons();
+  }
+  ticked.clear();
+  renderHomeSection('homeTracks', {
+    id: 'my',
+    title: 'Мои треки',
+    action: { label: 'Показать все', view: 'my' },
+  });
+  renderTileGrid(
+    'homeTracks',
+    myTracks.slice(0, 12),
+    my.ok ? 'Треков пока нет.' : my.reason || 'не удалось получить данные',
+  );
+  updateCount();
+  const playable = myTracks.filter((t) => !t.restricted);
   const head = playable[0];
   // One dominant artwork, the way the reference lays out its hero: the cover
   // carries the page and the text stays subordinate to it.
@@ -1692,16 +1850,99 @@ export async function loadHome(): Promise<void> {
       `<div class="feat-meta mono">${fmtDur(head.duration) || '—'} · ${escapeHtml(head.album || 'ВКонтакте')}</div>` +
       `</div>`
     : '';
-  $('homeCount').textContent = listTracks.length
-    ? `${listTracks.length} треков` +
-      (playable.length < listTracks.length ? ` · ${playable.length} играбельных` : '')
+  $('homeCount').textContent = myTracks.length
+    ? `${myTracks.length} треков` +
+      (playable.length < myTracks.length ? ` · ${playable.length} играбельных` : '')
     : '';
+  // Shelves: user playlists first, then the first catalogue section that
+  // carries albums. A dead shelf degrades to nothing, never an error.
+  renderHomeSection('homeShelves', {
+    id: 'shelves',
+    title: 'Плейлисты для вас',
+    action: { label: 'Настроить рекомендации', view: 'settings' },
+  });
+  const shelves: string[] = [];
+  try {
+    const pls = await requestList('playlists');
+    if (pls.ok && pls.playlists?.length)
+      shelves.push(renderShelf('Ваши плейлисты', pls.playlists.slice(0, 10)));
+  } catch {
+    /* shelf stays empty */
+  }
+  try {
+    const secs = await requestList('sections');
+    const first = secs.ok ? secs.sections?.[0]?.id : undefined;
+    if (first) {
+      const sec = await requestList('section', first);
+      if (sec.ok && sec.playlists?.length)
+        shelves.push(renderShelf('Из каталога', sec.playlists.slice(0, 10)));
+    }
+  } catch {
+    /* shelf stays empty */
+  }
+  $('homeShelves').innerHTML = shelves.join('') || '<p class="meta">Полок пока нет.</p>';
+  // Genres: fixed taxonomy over the existing search flow.
+  renderHomeSection('homeGenres', { id: 'genres', title: 'Жанры' });
+  renderGenreChips('homeGenres');
+  // Similar: seed is the playing track, else the hero head. No seed means no
+  // section query at all — an honest empty state instead of a random mix.
+  renderHomeSection('homeSimilar', {
+    id: 'similar',
+    title: 'Похожие',
+    action: { label: 'Показать все', view: 'radio' },
+  });
+  const seedKey = pState?.track?.key ?? head?.key;
+  if (!seedKey) {
+    $('homeSimilarTitle').textContent = 'Похожие';
+    renderTileGrid('homeSimilar', [], 'Включи трек — подберём похожие.');
+    return;
+  }
+  try {
+    const sim = await requestList('similar', seedKey);
+    const tracks = sim.ok ? (sim.tracks ?? []) : [];
+    const seedLabel = pState?.track
+      ? `${pState.track.artist} — ${pState.track.title}`
+      : head
+        ? `${head.artist} — ${head.title}`
+        : '';
+    $('homeSimilarTitle').textContent = seedLabel ? `Похожие на ${seedLabel}` : 'Похожие';
+    renderTileGrid('homeSimilar', tracks.slice(0, 12), 'Похожих пока нет.');
+    // Similar tiles play through the same list pipeline: append without
+    // disturbing the my-tracks order above.
+    for (const t of tracks) {
+      if (!listTracks.some((x) => x.key === t.key)) listTracks.push(t);
+    }
+  } catch {
+    $('homeSimilarTitle').textContent = 'Похожие';
+    renderTileGrid('homeSimilar', [], 'Похожих пока нет.');
+  }
 }
 
 $('homeHero').addEventListener('click', (e) => {
   const hero = (e.target as HTMLElement).closest('[data-play]') as HTMLElement | null;
   const key = hero?.dataset.play;
   if (key) void playTracks([key], key);
+});
+
+$('view-home').addEventListener('click', async (e) => {
+  const el = e.target as HTMLElement;
+  // Section "show all" links route to the matching full view.
+  const go = el.closest('[data-goto]') as HTMLElement | null;
+  if (go?.dataset.goto) {
+    e.preventDefault();
+    await openView(go.dataset.goto);
+    return;
+  }
+  // Genre chips: search the genre, open results, play the top hit.
+  const genre = el.closest('[data-genre]') as HTMLElement | null;
+  if (genre?.dataset.genre) {
+    const q = genre.dataset.genre;
+    $in('q').value = q;
+    showView('search');
+    await loadList('search', q, 'searchResults');
+    const top = listTracks.find((t) => !t.restricted);
+    if (top) await playTracks([top.key], top.key);
+  }
 });
 
 export async function openView(

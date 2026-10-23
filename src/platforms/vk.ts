@@ -23,6 +23,7 @@ import {
   getMyAudios,
   getPlaylistAudios,
   getPlaylists,
+  getRecommendations,
   getStreamMix,
   isRestricted,
   resolveStreamUrls,
@@ -92,15 +93,19 @@ function toPlaylistRef(p: {
   title: string;
   count?: unknown;
   thumb?: Record<string, string>;
+  photo?: Record<string, string>;
   access_key?: string;
 }): PlaylistRef {
+  // Playlists carry their artwork in `photo` (photo_34 … photo_1200), not in
+  // `thumb` like tracks; older responses may still send `thumb`.
+  const art = p.photo ?? p.thumb;
   return {
     key: trackKey('vk', `${p.owner_id}_${p.id}`),
     platform: 'vk' as const,
     nativeId: `${p.owner_id}_${p.id}`,
     title: p.title,
     trackCount: typeof p.count === 'number' ? p.count : null,
-    cover: biggestCover(p.thumb),
+    cover: biggestCover(art),
     resolveToken: p.access_key,
   };
 }
@@ -164,9 +169,19 @@ class VkProvider implements MusicProvider {
     return { query, tracks: (await searchAudios(query)).map(toTrack) };
   }
 
-  async recommendations(limit = 50): Promise<Track[]> {
+  async recommendations(limit = 50, targetAudio?: string): Promise<Track[]> {
     const id = await this.accountId();
     if (!id) return [];
+    // A seed asks audio.getRecommendations for neighbours of that track; an
+    // empty answer falls back to the plain mix rather than an empty shelf.
+    if (targetAudio) {
+      try {
+        const items = await getRecommendations(id, limit, targetAudio);
+        if (items.length) return items.map(toTrack);
+      } catch {
+        /* fall through to the plain mix */
+      }
+    }
     // The stream-mix endpoint needs an id VK no longer hands out, so the mix
     // helper falls back to recommendations internally.
     return (await getStreamMix(id, limit)).map(toTrack);

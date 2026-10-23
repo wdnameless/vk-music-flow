@@ -969,6 +969,148 @@ button.mini:hover:not(:disabled) {
   font-variant-numeric: tabular-nums;
 }
 
+/* Home sections: an adaptive tile grid for tracks, horizontal shelves for
+   playlists, genre chips reusing .chip. All Noir tokens; only the artwork
+   img stays in color. */
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.tile-grid.tracks > li {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 10px;
+  background: var(--veil);
+  border: 1px solid transparent;
+  border-radius: var(--r);
+}
+
+.tile-grid.tracks > li:hover {
+  background: var(--veil-2);
+  border-color: var(--line);
+}
+
+.tile-grid .t-wrap {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+}
+
+.tile-grid .t-cover {
+  width: 100%;
+  height: 100%;
+  border-radius: var(--r-sm);
+}
+
+.tile-grid .t-num,
+.tile-grid input[data-tick],
+.tile-grid .mini {
+  display: none;
+}
+
+.tile-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.q-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 4px;
+  flex: 0 0 auto;
+}
+
+.shelves {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.shelf-title {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.006em;
+  color: var(--text);
+}
+
+.shelf-row {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(230px, 300px);
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.shelf-row .pl {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.shelf-row .pl-cover {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--r-sm);
+}
+
+.list-head a {
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.list-head a:hover {
+  color: var(--text);
+}
+
+/* Sidebar foot: theme toggle reuses .nav-item; the profile dot is a single
+   8px status light (mono ink when signed in, dim otherwise). */
+.side-foot {
+  border-top: 1px solid var(--line);
+  margin-top: 10px;
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.profile-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  min-width: 0;
+}
+
+.profile-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dim);
+  flex: 0 0 auto;
+}
+
+.profile-dot.on {
+  background: var(--ink);
+}
+
+.profile-foot .meta {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .pl-grid {
   list-style: none;
   margin: 0;
@@ -977,7 +1119,6 @@ button.mini:hover:not(:disabled) {
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 6px;
 }
-
 .pl {
   display: flex;
   align-items: center;
@@ -1637,6 +1778,26 @@ button.icon.on {
 
   .pl-grid {
     grid-template-columns: 1fr;
+  }
+
+  /* Tile grids collapse to two columns; shelves keep scrolling. Metadata
+     never clips: tiles stack cover over text at any width. */
+  .tile-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+
+  .shelf-row {
+    grid-auto-columns: minmax(200px, 78vw);
+  }
+
+  .side-foot {
+    align-items: center;
+  }
+
+  .profile-foot .meta,
+  #btnTheme span {
+    display: none;
   }
 
   .q-overlay,

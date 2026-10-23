@@ -154,6 +154,16 @@
             </button>
           </div>
         </div>
+
+        <div class="side-foot">
+          <button id="btnTheme" class="nav-item" title="Переключить тему">
+            <svg class="ic"><use href="#i-sparkle" /></svg><span>Тема</span>
+          </button>
+          <div id="profileFoot" class="profile-foot">
+            <span id="profileDot" class="profile-dot"></span>
+            <span id="profileName" class="meta">ВКонтакте</span>
+          </div>
+        </div>
       </aside>
 
       <main class="content">
@@ -165,10 +175,27 @@
           <p class="view-notice meta" hidden></p>
           <div id="homeHero" class="featured"></div>
           <div class="list-head">
-            <h2>Недавние</h2>
-            <span id="homeCount" class="meta"></span>
+            <h2>Мои треки</h2>
+            <span
+              ><span id="homeCount" class="meta"></span>
+              <a href="#" data-goto="my">Показать все</a></span
+            >
           </div>
-          <ul id="homeTracks" class="tracks"></ul>
+          <ul id="homeTracks" class="tracks tile-grid"></ul>
+          <div class="list-head">
+            <h2>Плейлисты для вас</h2>
+            <a href="#" id="homeCustomize" data-goto="settings">Настроить рекомендации</a>
+          </div>
+          <div id="homeShelves" class="shelves"></div>
+          <div class="list-head">
+            <h2>Жанры</h2>
+          </div>
+          <div id="homeGenres" class="row"></div>
+          <div class="list-head">
+            <h2 id="homeSimilarTitle">Похожие</h2>
+            <a href="#" data-goto="radio">Показать все</a>
+          </div>
+          <ul id="homeSimilar" class="tracks tile-grid"></ul>
         </section>
 
         <section class="view" id="view-my">
