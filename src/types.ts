@@ -845,7 +845,7 @@ export type RuntimeMessage =
 
 /** Commands the worker relays into the offscreen document. */
 export type PlayerCommand =
-  | { t: 'P_PLAY_QUEUE'; tracks: PlayerTrack[]; startIndex?: number }
+  | { t: 'P_PLAY_QUEUE'; tracks: PlayerTrack[]; startIndex?: number; paused?: boolean }
   | { t: 'P_SHUFFLE'; on: boolean }
   | { t: 'P_REPEAT'; mode: RepeatMode }
   /** Insert after the current track, or append to the end. */

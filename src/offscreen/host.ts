@@ -41,7 +41,7 @@ chrome.runtime.onMessage.addListener((msg: unknown, _sender, reply) => {
     case 'P_PLAY_QUEUE': {
       const c = m as Extract<PlayerCommand, { t: 'P_PLAY_QUEUE' }>;
       void player
-        .setQueue(c.tracks as PlayerTrack[], c.startIndex ?? 0)
+        .setQueue(c.tracks as PlayerTrack[], c.startIndex ?? 0, c.paused ?? false)
         .then(() => reply(player.state()));
       return true;
     }

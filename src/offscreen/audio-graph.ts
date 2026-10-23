@@ -494,11 +494,13 @@ class StereoAnalyser {
   }
 
   /**
-   * True peak per channel, using 4x linear over-sampling.
+   * True peak per channel, using 4x Catmull-Rom oversampling.
    *
    * A sample peak of 0 dBFS can still hide inter-sample peaks of up to about
-   * 3 dB, which clip once a DAC reconstructs the waveform. Oversampling by four
-   * is what BS.1770 asks for and it is cheap at this buffer size.
+   * 3 dB, which clip once a DAC reconstructs the waveform. Linear interpolation
+   * provably cannot see them (|lerp| <= max(|s0|,|s1|)); a cubic through the
+   * two neighbours on each side can. This is not the full BS.1770 48-phase FIR
+   * — it is the cheap approximation that still catches real overshoots.
    */
   truePeakLevels(): [number, number] {
     const out: [number, number] = [0, 0];
@@ -506,15 +508,27 @@ class StereoAnalyser {
       const a = this.analysers[ch]!;
       a.getFloatTimeDomainData(this.buf);
       let peak = 0;
-      for (let i = 0; i < this.buf.length - 1; i++) {
+      const n = this.buf.length;
+      for (let i = 0; i < n - 1; i++) {
         const s0 = this.buf[i]!;
         const s1 = this.buf[i + 1]!;
-        for (let k = 0; k < OVERSAMPLE; k++) {
-          // Linear interpolation between neighbouring samples: an approximation
-          // of the reconstructed waveform, which is all that is needed to catch
-          // over-shoots.
+        // Endpoints count too: the cubic only covers the open interval.
+        const e = Math.abs(s0);
+        if (e > peak) peak = e;
+        const p0 = i > 0 ? this.buf[i - 1]! : s0;
+        const p3 = i + 2 < n ? this.buf[i + 2]! : s1;
+        for (let k = 1; k < OVERSAMPLE; k++) {
           const f = k / OVERSAMPLE;
-          const v = Math.abs(s0 + (s1 - s0) * f);
+          const f2 = f * f;
+          const f3 = f2 * f;
+          // Catmull-Rom: interpolates s0..s1 with C1 continuity from p0..p3.
+          const v = Math.abs(
+            0.5 *
+              (2 * s0 +
+                (-p0 + s1) * f +
+                (2 * p0 - 5 * s0 + 4 * s1 - p3) * f2 +
+                (-p0 + 3 * s0 - 3 * s1 + p3) * f3),
+          );
           if (v > peak) peak = v;
         }
       }

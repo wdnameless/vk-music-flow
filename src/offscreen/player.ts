@@ -369,7 +369,7 @@ export class Player {
     return this.activeSlot === 0 ? this.audio : this.audio2;
   }
 
-  private async playCurrent(): Promise<void> {
+  private async playCurrent(paused = false): Promise<void> {
     const t = this.current();
     if (!t) return;
     await this.resumeContext();
@@ -392,16 +392,18 @@ export class Player {
     const el = this.el();
     el.src = t.url;
     el.currentTime = 0;
-    try {
-      await el.play();
-    } catch {
-      /* autoplay policy; the caller can retry with a gesture */
+    if (!paused) {
+      try {
+        await el.play();
+      } catch {
+        /* autoplay policy; the caller can retry with a gesture */
+      }
     }
     // Both timers are armed; each declines to act when its own mode is off, so
     // the two can never fight over the boundary.
     this.scheduleGapless();
     this.scheduleCrossfade();
-    this.startLoudnessSampling();
+    if (!paused) this.startLoudnessSampling();
     // Ask for the next few links straight away: resolving them is a network
     // round-trip each, and waiting until the moment of the transition would mean
     // a gap or a failure.
@@ -615,7 +617,7 @@ export class Player {
   }
 
   /** Replace the queue and start at `startIndex` of the list. */
-  async setQueue(tracks: PlayerTrack[], startIndex = 0): Promise<void> {
+  async setQueue(tracks: PlayerTrack[], startIndex = 0, paused = false): Promise<void> {
     this.queue = tracks.slice();
     this.rebuildOrder(false);
     if (!this.queue.length) {
@@ -627,7 +629,7 @@ export class Player {
     const start = Math.max(0, Math.min(startIndex, this.queue.length - 1));
     // `order.indexOf` finds the cursor even when shuffled.
     this.pos = Math.max(0, this.order.indexOf(start));
-    await this.playCurrent();
+    await this.playCurrent(paused);
   }
 
   /** Turn shuffle on or off, keeping the current track playing. */

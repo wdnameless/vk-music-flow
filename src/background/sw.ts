@@ -218,49 +218,81 @@ async function rehydrateQueueFromJournal(): Promise<void> {
 }
 
 let saveT: ReturnType<typeof setTimeout> | undefined;
+/** Deep-clone state for storage. Throws on unserialisable values; callers catch. */
+function cloneForStorage<T>(v: T): T {
+  try {
+    return structuredClone(v);
+  } catch {
+    return JSON.parse(JSON.stringify(v)) as T;
+  }
+}
 function persist(): void {
   clearTimeout(saveT);
   saveT = setTimeout(() => {
-    chrome.storage.local.set({ [SKEY]: JSON.parse(JSON.stringify(S)) }).catch(() => {
+    let snap: FlowState;
+    try {
+      snap = cloneForStorage(S);
+    } catch {
+      return; // unserialisable state: skip this tick, retry on the next mutation
+    }
+    chrome.storage.local.set({ [SKEY]: snap }).catch(() => {
       /* best-effort */
     });
   }, 400);
 }
 
-let saveRT: number | undefined;
+let saveRT: ReturnType<typeof setTimeout> | undefined;
 function persistRules(): void {
   clearTimeout(saveRT);
   saveRT = setTimeout(() => {
-    chrome.storage.local.set({ [RKEY]: JSON.parse(JSON.stringify(R)) }).catch(() => {
+    let snap: BlockRules;
+    try {
+      snap = cloneForStorage(R);
+    } catch {
+      return;
+    }
+    chrome.storage.local.set({ [RKEY]: snap }).catch(() => {
       /* best-effort */
     });
-  }, 200) as unknown as number;
+  }, 200);
 }
 
-let saveLT: number | undefined;
+let saveLT: ReturnType<typeof setTimeout> | undefined;
 function persistLastfm(): void {
   clearTimeout(saveLT);
   saveLT = setTimeout(() => {
+    let snap: { l: LastfmAuth; q: ScrobbleQueueItem[] };
+    try {
+      snap = { l: cloneForStorage(L), q: cloneForStorage(scrobbleQ) };
+    } catch {
+      return;
+    }
     chrome.storage.local
       .set({
-        [LKEY]: JSON.parse(JSON.stringify(L)),
-        [SKEY_SCROBBLE]: JSON.parse(JSON.stringify(scrobbleQ)),
+        [LKEY]: snap.l,
+        [SKEY_SCROBBLE]: snap.q,
         [SKEY_LF_TOKEN]: lfPendingToken,
       })
       .catch(() => {
         /* best-effort */
       });
-  }, 200) as unknown as number;
+  }, 200);
 }
 
-let savePT: number | undefined;
+let savePT: ReturnType<typeof setTimeout> | undefined;
 function persistProxy(): void {
   clearTimeout(savePT);
   savePT = setTimeout(() => {
-    chrome.storage.local.set({ [PKEY]: JSON.parse(JSON.stringify(P)) }).catch(() => {
+    let snap: ProxySettings;
+    try {
+      snap = cloneForStorage(P);
+    } catch {
+      return;
+    }
+    chrome.storage.local.set({ [PKEY]: snap }).catch(() => {
       /* best-effort */
     });
-  }, 200) as unknown as number;
+  }, 200);
 }
 
 /** Proxy settings + what Chromium actually has installed. */
@@ -359,6 +391,9 @@ async function enqueueScrobble(item: ScrobbleQueueItem): Promise<void> {
 
 async function journalEnsureAll(items: QueueItem[]): Promise<void> {
   let changed = false;
+  // SAFETY: Journal.save exists but is private; this batch defers per-item
+  // saves into one. The original is restored in `finally`, so concurrent
+  // readers never observe the stub.
   const j = journal as unknown as { save: () => Promise<void> };
   const origSave = j.save.bind(journal);
   j.save = async () => {
@@ -2030,6 +2065,10 @@ chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
               0,
               Math.min(S.settings.playerQueueIndex ?? 0, restored.length - 1),
             ),
+            // D03: a restart restores the queue PAUSED — resuming sound
+            // without the user's gesture is a design decision, and the
+            // decision is no.
+            paused: true,
           });
           if (S.settings.playerShuffle) await sendToPlayer({ t: 'P_SHUFFLE', on: true });
           if (S.settings.playerRepeat && S.settings.playerRepeat !== 'off') {
