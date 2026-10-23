@@ -301,6 +301,9 @@ g.chrome = {
       if (msg.t === 'P_LIST') {
         return Promise.resolve({ ok: true, tracks: [] });
       }
+      if (msg.t === 'P_RESOLVE') {
+        return Promise.resolve({ ok: true, streams: {} });
+      }
       if (msg.t === 'GET_BLOCK_RULES') {
         return Promise.resolve({ ok: true, rules: { blockedArtists: [], disliked: ['123_456'] } });
       }
@@ -578,5 +581,37 @@ describe('S1 UI-Honesty (T1.1 - T1.4)', () => {
     popup.setPlayerStateForTest({ ...dummyState, track: null });
     assert.ok(!pLike.classList.contains('liked'), 'pLike is inactive when null');
     assert.ok(!pDislike.classList.contains('liked'), 'pDislike is inactive when null');
+  });
+
+  it('R04: click on row body resolves and plays the track', async () => {
+    popup.setListTracksForTest([
+      {
+        key: 'vk:1_2',
+        platform: 'vk',
+        nativeId: '1_2',
+        artist: 'A',
+        title: 'T',
+        album: '',
+        duration: 100,
+        cover: null,
+        restricted: false,
+      },
+    ]);
+    const host = elementsMap.get('homeTracks')!;
+    const li = new FakeElement('li');
+    li.setAttribute('class', 'track');
+    li.setAttribute('data-key', 'vk:1_2');
+    const body = new FakeElement('div');
+    body.setAttribute('class', 't-body');
+    const b = new FakeElement('b');
+    body.appendChild(b);
+    li.appendChild(body);
+    host.appendChild(li);
+    sentMessages = [];
+    b.click();
+    // Flush the async click handler chain (no timers involved).
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    const resolve = sentMessages.find((m) => m.t === 'P_RESOLVE');
+    assert.ok(resolve, 'row body click must issue P_RESOLVE');
   });
 });

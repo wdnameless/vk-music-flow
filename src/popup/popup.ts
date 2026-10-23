@@ -122,6 +122,33 @@ if (typeof document !== 'undefined' && document.body) {
   document.body.dataset.host = HOST;
 }
 
+/**
+ * Apply persisted appearance: player dock + theme (R02, R05).
+ *
+ * Theme resolves `auto` against the OS scheme at apply time; a change while
+ * open takes effect on next open (documented behaviour, not a bug).
+ */
+function applyAppearance(
+  settings?: {
+    playerBarPosition?: string;
+    theme?: string;
+  } | null,
+): void {
+  if (typeof document === 'undefined' || !document.body) return;
+  document.body.dataset.playerBar = settings?.playerBarPosition === 'top' ? 'top' : 'bottom';
+  const want = settings?.theme ?? 'auto';
+  const dark =
+    want === 'dark' ||
+    (want !== 'light' &&
+      typeof matchMedia === 'function' &&
+      matchMedia('(prefers-color-scheme: dark)').matches);
+  document.body.dataset.theme = dark ? 'dark' : 'light';
+  const tp = document.getElementById('themePick') as HTMLSelectElement | null;
+  if (tp) tp.value = want;
+  const pp = document.getElementById('playerBarPick') as HTMLSelectElement | null;
+  if (pp) pp.value = settings?.playerBarPosition === 'top' ? 'top' : 'bottom';
+}
+
 /** Open the player in its own window. */
 $('btnOpenWindow').addEventListener('click', async () => {
   await chrome.windows.create({
@@ -224,6 +251,19 @@ $sel('platformPick').addEventListener('change', (e) => {
   ticked.clear();
   void refreshPlatformAuth();
   void loadHome();
+});
+
+$sel('themePick').addEventListener('change', async (e) => {
+  const theme = (e.target as HTMLSelectElement).value as 'auto' | 'dark' | 'light';
+  await send({ t: 'SETTINGS', patch: { theme } });
+  const s = await send<StateSnapshot | null>({ t: 'GET_STATE' });
+  applyAppearance(s?.settings ?? { theme });
+});
+$sel('playerBarPick').addEventListener('change', async (e) => {
+  const playerBarPosition = (e.target as HTMLSelectElement).value as 'top' | 'bottom';
+  await send({ t: 'SETTINGS', patch: { playerBarPosition } });
+  const s = await send<StateSnapshot | null>({ t: 'GET_STATE' });
+  applyAppearance(s?.settings ?? { playerBarPosition });
 });
 
 async function refreshPlatformAuth(): Promise<void> {
@@ -430,6 +470,16 @@ function wireTrackList(target: string): void {
       await queueTracks([enqKey], false);
       return;
     }
+    // R04: a click anywhere on the row body plays it. Controls keep their own
+    // behaviour above; text selection survives because a drag is not a click.
+    if (!el.closest('input,button,a')) {
+      const row = el.closest('.track') as HTMLElement | null;
+      const key = row?.dataset.key;
+      if (key && !row.classList.contains('muted')) {
+        await playTracks([key], key);
+        return;
+      }
+    }
     // Shift-click a playlist card opens it; a plain click on the card body does
     // the same, which is the only affordance that reads as "this is a folder".
     if (el.closest('.pl') && !el.closest('button')) {
@@ -444,7 +494,6 @@ function wireTrackList(target: string): void {
     }
   });
 }
-
 ['myTracks', 'exploreTracks', 'radioTracks', 'searchResults', 'homeTracks'].forEach(wireTrackList);
 
 /* ---------------- My music ---------------- */
@@ -615,7 +664,10 @@ let pendingCaptchaSid: string | null = null;
 
 /** P_RESOLVE with a captcha round-trip: shows the modal, caller retries after. */
 async function resolveWithCaptcha(keys: string[]): Promise<ResolveResult | null> {
-  const r = await send<ResolveResult>({ t: 'P_RESOLVE', keys });
+  const r = await send<ResolveResult | undefined>({ t: 'P_RESOLVE', keys });
+  // No reply (worker asleep, message lost): behave like an empty resolve so
+  // callers show their standard "no links" notice instead of throwing.
+  if (!r) return { ok: false, streams: {} };
   if (r.captcha?.sid) {
     pendingCaptchaSid = r.captcha.sid;
     ($('captchaImg') as HTMLImageElement).src = r.captcha.img ?? '';
@@ -1745,6 +1797,9 @@ if (typeof document !== 'undefined') {
         if (s.settings.playerEqGains?.length) {
           pEqGains = s.settings.playerEqGains.slice();
         }
+        applyAppearance(s.settings);
+      } else {
+        applyAppearance(null);
       }
     } catch {
       /* state may be unavailable */

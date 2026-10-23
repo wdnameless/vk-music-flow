@@ -682,6 +682,10 @@ export interface Settings {
   maxBackoffMs: number;
   minIntervalMs: number;
   jitterMs: number;
+  /** Player bar dock: top of content or bottom (default). */
+  playerBarPosition?: 'top' | 'bottom';
+  /** Color theme: follow the OS or force one side. */
+  theme?: 'auto' | 'dark' | 'light';
 }
 
 /** Single source of truth for defaults (SW + tests). */

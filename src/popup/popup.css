@@ -474,6 +474,71 @@ body[data-host='window'] .host-actions #btnOpenPanel {
   border-top: 1px solid var(--line-soft);
 }
 
+/* Settings accordions: native <details>, styled as section headers. */
+.acc {
+  margin: 18px 0 0;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  padding: 0 14px;
+}
+.acc summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 12px 0;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.acc summary::-webkit-details-marker {
+  display: none;
+}
+.acc summary::before {
+  content: '+';
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--dim);
+  width: 12px;
+}
+.acc[open] summary::before {
+  content: '–';
+}
+.acc > *:not(summary) {
+  margin-bottom: 12px;
+}
+.acc > summary + * {
+  margin-top: 2px;
+}
+
+/* Light theme (R05): the same variables, inverted. Everything derives from
+   them, so one block re-skins the whole interface. */
+body[data-theme='light'] {
+  --canvas: #f4f4f5;
+  --raised: #ffffff;
+  --sunken: #e8e8ea;
+  --line: rgb(0 0 0 / 0.1);
+  --line-soft: rgb(0 0 0 / 0.06);
+  --text: #131316;
+  --muted: rgb(0 0 0 / 0.6);
+  --dim: rgb(0 0 0 / 0.4);
+  --ink: #131316;
+  --ink-text: #f4f4f5;
+  --danger: #b34038;
+  --veil: rgb(0 0 0 / 0.04);
+  --veil-2: rgb(0 0 0 / 0.08);
+}
+body[data-theme='light'] .player {
+  background: rgb(244 244 245 / 0.82);
+}
+body[data-theme='light'] .q-overlay,
+body[data-theme='light'] .eq-overlay,
+body[data-theme='light'] .fx-overlay {
+  background: rgb(255 255 255 / 0.92);
+}
 .meta {
   margin: 0;
   font-size: 11.5px;
@@ -526,6 +591,7 @@ body[data-host='window'] .host-actions #btnOpenPanel {
 input[type='text'],
 input[type='search'],
 input[type='number'],
+input[type='password'],
 select {
   background: var(--sunken);
   border: 1px solid var(--line);
@@ -1055,10 +1121,25 @@ a {
   backdrop-filter: blur(18px) saturate(140%);
   border-top: 1px solid var(--line-soft);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto max-content;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 12px;
   padding: 0 16px;
+}
+
+/* Symmetric transport: equal 1fr wings keep the controls truly centered. */
+
+/* Player bar docked on top (R02): rows swap, border follows the bar. */
+body[data-player-bar='top'] .app {
+  grid-template-rows: var(--player) minmax(0, 1fr);
+}
+body[data-player-bar='top'] .player {
+  grid-row: 1;
+  border-top: 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+body[data-player-bar='top'] .content {
+  grid-row: 2;
 }
 
 .p-left {
@@ -1783,7 +1864,7 @@ button.icon.on {
 
 .proxy-form {
   display: grid;
-  grid-template-columns: 110px 1fr 90px;
+  grid-template-columns: repeat(6, 1fr);
   gap: 8px;
 }
 
@@ -1792,13 +1873,26 @@ button.icon.on {
   margin-bottom: 8px;
 }
 
-.proxy-form #proxyUser,
-.proxy-form #proxyPass {
+/* Row 1: scheme/host/port; row 2: login/password split evenly. */
+.proxy-form .field:nth-child(1) {
+  grid-column: span 2;
+}
+.proxy-form .field:nth-child(2) {
+  grid-column: span 3;
+}
+.proxy-form .field:nth-child(3) {
   grid-column: span 1;
+}
+.proxy-form .field:nth-child(4),
+.proxy-form .field:nth-child(5) {
+  grid-column: span 3;
 }
 
 @media (max-width: 620px) {
   .proxy-form {
     grid-template-columns: 1fr;
+  }
+  .proxy-form .field:nth-child(n) {
+    grid-column: auto;
   }
 }
