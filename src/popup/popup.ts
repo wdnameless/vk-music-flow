@@ -65,6 +65,19 @@ function coverAttr(cover: string | null | undefined): string {
   return ` style="background-image:url('${cover}')"`;
 }
 
+/**
+ * Lazy cover image for lists (V1).
+ *
+ * Ninety-six full-size background-images block the first paint; `<img
+ * loading="lazy">` only fetches rows near the viewport. Same URL validation
+ * as coverAttr, plus self-hide on error so a dead link degrades to the
+ * no-cover glyph instead of a broken-image icon.
+ */
+function coverImg(cover: string | null | undefined): string {
+  if (typeof cover !== 'string' || !/^https:\/\/[^\s'")\\]+$/i.test(cover)) return '';
+  return `<img loading="lazy" decoding="async" src="${cover}" alt="" onerror="this.remove()" />`;
+}
+
 const fmtDur = (s: number | null): string => {
   if (typeof s !== 'number' || s <= 0) return '';
   const h = Math.floor(s / 3600);
@@ -312,7 +325,7 @@ function renderPlaylists(items: PlaylistRef[], target: string): void {
     .map(
       (p) =>
         `<li class="pl" data-pl="${escapeHtml(p.key)}">` +
-        `<div class="pl-cover"${coverAttr(p.cover)}></div>` +
+        `<div class="pl-cover">${coverImg(p.cover)}</div>` +
         `<div class="pl-body"><b>${escapeHtml(p.title)}</b>` +
         `<span class="meta">${p.trackCount ?? '?'} треков</span></div></li>`,
     )
@@ -335,7 +348,7 @@ function trackRow(t: Track, opts: { tick?: boolean; index?: number } = {}): stri
       : '') +
     // Artwork and play overlay share one box, so the cover can act as the button.
     `<span class="t-wrap">` +
-    `<span class="t-cover${t.cover ? '' : ' no-cover'}"${coverAttr(t.cover)}></span>` +
+    `<span class="t-cover${t.cover ? '' : ' no-cover'}">${coverImg(t.cover)}</span>` +
     (t.restricted ? '' : play) +
     `</span>` +
     `<div class="t-body"><b>${escapeHtml(t.title || '—')}</b><span>${escapeHtml(t.artist)}</span></div>` +
@@ -592,23 +605,51 @@ async function refresh(): Promise<void> {
 /* ---------------- Playback ---------------- */
 
 /** Resolve fresh URLs (VK links expire) then hand the list to the player. */
+type ResolveResult = {
+  ok: boolean;
+  streams: Record<string, { url: string }>;
+  captcha?: { sid?: string; img?: string };
+};
+
+let pendingCaptchaSid: string | null = null;
+
+/** P_RESOLVE with a captcha round-trip: shows the modal, caller retries after. */
+async function resolveWithCaptcha(keys: string[]): Promise<ResolveResult | null> {
+  const r = await send<ResolveResult>({ t: 'P_RESOLVE', keys });
+  if (r.captcha?.sid) {
+    pendingCaptchaSid = r.captcha.sid;
+    ($('captchaImg') as HTMLImageElement).src = r.captcha.img ?? '';
+    $in('captchaKey').value = '';
+    $('captchaPanel').hidden = false;
+    showNotice(getActiveView(), 'VK требует капчу — решите её и повторите.');
+    return null;
+  }
+  return r;
+}
+
+$('captchaClose').addEventListener('click', () => {
+  $('captchaPanel').hidden = true;
+  pendingCaptchaSid = null;
+});
+$('captchaSend').addEventListener('click', async () => {
+  const key = $in('captchaKey').value.trim();
+  if (!pendingCaptchaSid || !key) return;
+  await send({ t: 'VK_CAPTCHA', sid: pendingCaptchaSid, key });
+  $('captchaPanel').hidden = true;
+  pendingCaptchaSid = null;
+  showNotice(getActiveView(), 'Капча принята — повторите воспроизведение.');
+});
+
 /**
  * Add tracks to the playing queue without interrupting the current track.
  *
  * `next` inserts right after the cursor; otherwise they land at the end. Each
  * track needs a fresh URL, so it is resolved here rather than stored.
  */
-async function queueTracks(keys: string[], next: boolean): Promise<void> {
-  const wanted = new Set(keys);
-  const picked = listTracks.filter((t) => wanted.has(t.key) && !t.restricted);
-  if (!picked.length) return;
-  const r = await send<{ ok: boolean; streams: Record<string, { url: string }> }>({
-    t: 'P_RESOLVE',
-    keys: picked.map((t) => t.key),
-  });
-  const tracks = picked
+function toPlayerTracks(picked: Track[], streams: Record<string, { url: string }>): PlayerTrack[] {
+  return picked
     .map((t) => {
-      const st = r.streams[t.key];
+      const st = streams[t.key];
       if (!st) return null;
       return {
         key: t.key,
@@ -623,6 +664,15 @@ async function queueTracks(keys: string[], next: boolean): Promise<void> {
       };
     })
     .filter((x): x is NonNullable<typeof x> => !!x);
+}
+
+async function queueTracks(keys: string[], next: boolean): Promise<void> {
+  const wanted = new Set(keys);
+  const picked = listTracks.filter((t) => wanted.has(t.key) && !t.restricted);
+  if (!picked.length) return;
+  const r = await resolveWithCaptcha(picked.map((t) => t.key));
+  if (!r) return;
+  const tracks = toPlayerTracks(picked, r.streams);
   if (!tracks.length) return;
   const res = await send<{ ok: boolean; state: PlayerState | null }>({
     t: 'PLAY_INSERT',
@@ -659,28 +709,9 @@ async function playTracks(keys: string[], startKey?: string): Promise<void> {
   if (picked.length < keys.length) {
     showNotice(getActiveView(), `Пропущено недоступных: ${keys.length - picked.length}.`);
   }
-  const r = await send<{ ok: boolean; streams: Record<string, { url: string }> }>({
-    t: 'P_RESOLVE',
-    keys: picked.map((t) => t.key),
-  });
-  const tracks = picked
-    .map((t) => {
-      const s = r.streams[t.key];
-      return s
-        ? {
-            key: t.key,
-            id: t.nativeId.split('_')[1] ?? t.nativeId,
-            owner: t.nativeId.split('_')[0] ?? '0',
-            artist: t.artist,
-            title: t.title,
-            url: s.url,
-            duration: t.duration,
-            cover: t.cover,
-            album: t.album,
-          }
-        : null;
-    })
-    .filter((x): x is NonNullable<typeof x> => !!x);
+  const r = await resolveWithCaptcha(picked.map((t) => t.key));
+  if (!r) return;
+  const tracks = toPlayerTracks(picked, r.streams);
   if (!tracks.length) {
     showNotice(getActiveView(), 'Не удалось получить ссылки для воспроизведения.');
     return;
@@ -1306,7 +1337,7 @@ function renderQueue(): void {
       return (
         `<li class="q-item${cur ? ' cur' : ''}" draggable="true" data-slot="${slot}" data-qi="${qi}" style="--i:${slot}">` +
         `<span class="q-grip"><svg class="ic"><use href="#i-grip"/></svg></span>` +
-        `<span class="q-cover"${coverAttr(t.cover)}></span>` +
+        `<span class="q-cover">${coverImg(t.cover)}</span>` +
         `<span class="t-body"><b>${escapeHtml(t.title || '—')}</b><span>${escapeHtml(t.artist)}</span></span>` +
         `<span class="t-dur">${fmtDur(t.duration)}</span>` +
         `<button class="mini q-remove" data-remove="${qi}" title="Убрать"><svg class="ic"><use href="#i-cross"/></svg></button>` +

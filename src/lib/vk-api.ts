@@ -57,14 +57,38 @@ function errorCode(err: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/** One-shot captcha answer, set by the UI after the user solves the image. */
+let pendingCaptcha: { sid: string; key: string } | null = null;
+
+export function setPendingCaptcha(sid: string, key: string): void {
+  pendingCaptcha = { sid, key };
+}
+
+function consumePendingCaptcha(): { sid: string; key: string } | null {
+  const c = pendingCaptcha;
+  pendingCaptcha = null;
+  return c;
+}
+
 /**
  * Call one VK API method, retrying the transient failures VK reports in-band
  * (too many requests / flood) and re-minting the token once when it expires.
  */
+export class CaptchaNeededError extends Error {
+  readonly sid?: string;
+  readonly img?: string;
+  constructor(sid?: string, img?: string) {
+    super('VK требует капчу');
+    this.name = 'CaptchaNeededError';
+    this.sid = sid;
+    this.img = img;
+  }
+}
+
 export async function vkCall<T>(
   method: string,
   params: Record<string, string | number | undefined> = {},
-  opts: { token?: VkToken | null; retries?: number } = {},
+  opts: { token?: VkToken | null; retries?: number; captchaSid?: string; captchaKey?: string } = {},
 ): Promise<VkCallResponse<T>> {
   let token = opts.token ?? (await getToken());
   if (!token) {
@@ -86,6 +110,8 @@ export async function vkCall<T>(
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== null && v !== '') body.set(k, String(v));
     }
+    if (opts.captchaSid) body.set('captcha_sid', opts.captchaSid);
+    if (opts.captchaKey) body.set('captcha_key', opts.captchaKey);
 
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), REQUEST_TIMEOUT_MS);
@@ -232,12 +258,22 @@ export async function getMyAudios(ownerId: number, count = 50, offset = 0): Prom
  */
 export async function getAudiosById(
   triples: { owner_id: number; id: number; access_key?: string }[],
+  opts: { captchaSid?: string; captchaKey?: string } = {},
 ): Promise<VkAudio[]> {
   if (!triples.length) return [];
+  const cap = consumePendingCaptcha();
   const audios = triples
     .map((t) => `${t.owner_id}_${t.id}${t.access_key ? `_${t.access_key}` : ''}`)
     .join(',');
-  const r = await vkCall<VkAudio[]>('audio.getById', { audios });
+  const r = await vkCall<VkAudio[]>(
+    'audio.getById',
+    { audios },
+    {
+      captchaSid: opts.captchaSid ?? cap?.sid,
+      captchaKey: opts.captchaKey ?? cap?.key,
+    },
+  );
+  if (!r.ok && r.needsCaptcha) throw new CaptchaNeededError(r.captchaSid, r.captchaImg);
   return r.ok ? (r.data ?? []) : [];
 }
 

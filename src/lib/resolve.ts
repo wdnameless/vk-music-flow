@@ -1,5 +1,5 @@
 import type { AudioMeta } from '../types.js';
-import { isRestricted, resolveStreamUrls } from './vk-api.js';
+import { CaptchaNeededError, isRestricted, resolveStreamUrls } from './vk-api.js';
 
 /**
  * Stream-URL resolution at download time.
@@ -94,7 +94,10 @@ export async function resolveTrackUrls(a: AudioMeta): Promise<ResolveOutcome> {
       const r = await resolveStreamUrls([{ owner_id: owner, id, access_key: a.access_key }]);
       const url = r.urls[`${owner}_${id}`];
       if (url) return { urls: [url], via: 'api', restricted: false };
-    } catch {
+    } catch (e) {
+      // Captcha must surface, not fall through: cached links are dead too when
+      // VK gates the account, and silent retries never solve a human challenge.
+      if (e instanceof CaptchaNeededError) throw e;
       /* fall through to the hook-captured copy */
     }
   }

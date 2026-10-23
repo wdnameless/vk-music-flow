@@ -88,6 +88,7 @@ import {
 import { audioMetaListFromVk } from '../lib/vk-track.js';
 import {
   authState,
+  CaptchaNeededError,
   vkCall,
   getCatalogSection,
   getCatalogSections,
@@ -97,6 +98,7 @@ import {
   getPlaylists,
   getRecommendations,
   searchAudios,
+  setPendingCaptcha,
 } from '../lib/vk-api.js';
 import { clearToken } from '../lib/vk-auth.js';
 import { normalisationGain } from '../offscreen/audio-graph.js';
@@ -504,7 +506,7 @@ type HandlerResult =
   | { ok: boolean; platforms: ReturnType<typeof platformStatus> }
   | { ok: boolean; status?: unknown }
   | { ok: boolean; tracks?: Track[]; playlists?: unknown[]; sections?: CatalogSection[] }
-  | { ok: boolean; streams: Record<string, StreamRef> }
+  | { ok: boolean; streams: Record<string, StreamRef>; captcha?: { sid?: string; img?: string } }
   | { ok: boolean; presets: Record<string, number[]> }
   | { ok: boolean; clipped: string[] }
   | { ok: boolean }
@@ -671,6 +673,10 @@ async function handle(
     case 'VK_LOGOUT': {
       await clearToken();
       return await authState();
+    }
+    case 'VK_CAPTCHA': {
+      setPendingCaptcha(m.sid, m.key);
+      return { ok: true };
     }
     case 'VK_MY_AUDIOS': {
       const s = await authState();
@@ -888,7 +894,14 @@ async function handle(
       for (const [pid, tracks] of byPlatform) {
         const p = provider(pid);
         if (!p) continue;
-        Object.assign(out, await p.resolveMany(tracks));
+        try {
+          Object.assign(out, await p.resolveMany(tracks));
+        } catch (e) {
+          if (e instanceof CaptchaNeededError) {
+            return { ok: false, streams: out, captcha: { sid: e.sid, img: e.img } };
+          }
+          throw e;
+        }
       }
       return { ok: true, streams: out };
     }
@@ -1373,6 +1386,16 @@ async function workerLoop(): Promise<void> {
             await journal.noteError(id, msg);
             await journal.setStatus(id, 'failed');
             fail(item, msg);
+            break;
+          }
+          if (e instanceof CaptchaNeededError) {
+            // Retries cannot solve a human challenge: fail once with an
+            // actionable message. Solving it in the player UI unblocks the
+            // queue (the answer is one-shot, the user re-queues after).
+            const text = 'VK требует капчу — решите её и перезапустите загрузку';
+            await journal.noteError(id, text);
+            await journal.setStatus(id, 'failed');
+            fail(item, text);
             break;
           }
           attempts++;

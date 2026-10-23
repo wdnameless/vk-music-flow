@@ -751,6 +751,7 @@ export type RuntimeMessage =
   | { t: 'GET_VK_AUTH' }
   | { t: 'VK_LOGIN' }
   | { t: 'VK_LOGOUT' }
+  | { t: 'VK_CAPTCHA'; sid: string; key: string }
   | { t: 'VK_MY_AUDIOS'; count?: number; offset?: number }
   | { t: 'VK_PLAYLISTS' }
   | { t: 'VK_PLAYLIST_AUDIOS'; ownerId: number; playlistId: number; accessKey?: string }

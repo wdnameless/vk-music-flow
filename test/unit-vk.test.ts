@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import { afterEach, describe, it, vi } from 'vitest';
 
 import { tokenUsable } from '../src/lib/vk-auth.js';
-import { getAudiosById, isRestricted, resolveStreamUrls, vkCall } from '../src/lib/vk-api.js';
+import {
+  CaptchaNeededError,
+  getAudiosById,
+  isRestricted,
+  resolveStreamUrls,
+  setPendingCaptcha,
+  vkCall,
+} from '../src/lib/vk-api.js';
 import type { VkAudio, VkToken } from '../src/types.js';
 
 // Wave 2 unit tests: token lifecycle + VK API error handling.
@@ -338,5 +345,52 @@ describe('vk-api: getAudiosById', () => {
     });
     assert.deepEqual(await getAudiosById([]), []);
     assert.equal(called, false);
+  });
+
+  it('код 14 бросает CaptchaNeededError с sid/img', async () => {
+    installChrome({
+      store: { vmf_vk_token_v1: { access_token: 'tok', user_id: 42, expires: nowSec + 3600 } },
+    });
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              error_code: 14,
+              error_msg: 'Captcha needed',
+              captcha_sid: 's1',
+              captcha_img: 'https://api.vk.ru/captcha.php?sid=s1',
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+    await assert.rejects(
+      () => getAudiosById([{ owner_id: 1, id: 2 }]),
+      (e: Error) =>
+        e instanceof CaptchaNeededError &&
+        (e as CaptchaNeededError).sid === 's1' &&
+        (e as CaptchaNeededError).img === 'https://api.vk.ru/captcha.php?sid=s1',
+    );
+  });
+
+  it('сохранённая капча подставляется в следующий запрос (one-shot)', async () => {
+    installChrome({
+      store: { vmf_vk_token_v1: { access_token: 'tok', user_id: 42, expires: nowSec + 3600 } },
+    });
+    const bodies: string[] = [];
+    vi.stubGlobal('fetch', async (_u: string, init: RequestInit) => {
+      bodies.push(String(init.body));
+      return new Response(JSON.stringify({ response: [{ id: 2 }] }), { status: 200 });
+    });
+    setPendingCaptcha('s1', 'key9');
+    await getAudiosById([{ owner_id: 1, id: 2 }]);
+    await getAudiosById([{ owner_id: 1, id: 3 }]);
+    const first = new URLSearchParams(bodies[0]!);
+    const second = new URLSearchParams(bodies[1]!);
+    assert.equal(first.get('captcha_sid'), 's1');
+    assert.equal(first.get('captcha_key'), 'key9');
+    assert.equal(second.get('captcha_sid'), null);
   });
 });

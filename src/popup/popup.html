@@ -499,6 +499,25 @@
         </div>
       </div>
 
+      <div id="captchaPanel" class="q-overlay" hidden>
+        <div class="q-head">
+          <span>VK просит капчу</span>
+          <div class="q-head-actions">
+            <button id="captchaClose" class="icon" title="Закрыть">
+              <svg class="ic"><use href="#i-cross" /></svg>
+            </button>
+          </div>
+        </div>
+        <div class="captcha-body">
+          <img id="captchaImg" alt="Капча VK" />
+          <div class="row">
+            <input id="captchaKey" type="text" placeholder="Текст с картинки" autocomplete="off" />
+            <button id="captchaSend" class="btn-primary">Отправить</button>
+          </div>
+          <p class="meta">После решения повторите действие — ссылка запросится заново.</p>
+        </div>
+      </div>
+
       <div id="queuePanel" class="q-overlay" hidden>
         <div class="q-head">
           <span>Очередь</span>
