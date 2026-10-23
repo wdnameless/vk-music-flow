@@ -11,4 +11,5 @@ R06: ACCEPT — Artwork renders as un-filtered color img elements with object-fi
 R07: ACCEPT — Player bar defaults to top dock in DEFAULT_SETTINGS, sets data-player-bar attribute, and preserves bottom positioning via settings dropdown (src/types.ts:711, src/popup/popup.ts:138, src/popup/popup.ts:278-281, src/popup/popup.css:1274-1284).
 
 ## Verdict
+
 VERDICT: ACCEPT
