@@ -169,8 +169,8 @@ const audioA = {
   album: 'Альбом',
   year: 2024,
   duration: 289,
-  urls: ['https://cdn/direct.mp3'],
-  covers: ['https://cdn/cover.jpg'],
+  urls: ['https://x.vk-cdn.net/direct.mp3'],
+  covers: ['https://x.vk-cdn.net/cover.jpg'],
 };
 const audioB = {
   key: '55_102',
@@ -181,7 +181,7 @@ const audioB = {
   album: '',
   year: null,
   duration: 180,
-  urls: ['https://cdn/master.m3u8'],
+  urls: ['https://x.vk-cdn.net/master.m3u8'],
   covers: [],
 };
 
@@ -306,7 +306,12 @@ beforeAll(async () => {
       msgListeners.map(
         (f) =>
           new Promise<unknown>((res) => {
-            const done = f(m, null, res);
+            // Content mail (AUDIOS/LYRICS) must arrive from a VK tab: the SW
+            // rejects untrusted senders since the H2 audit fix.
+            const t = (m as { t?: string })?.t;
+            const sender =
+              t === 'AUDIOS' || t === 'LYRICS' ? { tab: { url: 'https://vk.com/audio' } } : null;
+            const done = f(m, sender, res);
             if (!done) res(null);
           }),
       ),
@@ -418,7 +423,7 @@ describe('Phase 1 (f): ENQUEUE не ставит треки без ссылок 
           album: '',
           year: null,
           duration: 10,
-          urls: ['https://cdn/realaudio.aac'],
+          urls: ['https://x.vk-cdn.net/realaudio.aac'],
           covers: [],
         },
       ],
@@ -506,7 +511,7 @@ const audioC = {
   album: '',
   year: null,
   duration: 60,
-  urls: ['https://cdn/flaky.mp3'],
+  urls: ['https://x.vk-cdn.net/flaky.mp3'],
   covers: [],
 };
 
@@ -631,7 +636,7 @@ describe('Phase 1 (e): HLS с AES-128 — сегменты расшифровы�
           album: '',
           year: null,
           duration: 9,
-          urls: ['https://cdn/enc.m3u8'],
+          urls: ['https://x.vk-cdn.net/enc.m3u8'],
           covers: [],
         },
       ],
@@ -743,7 +748,7 @@ describe('Phase 1 (pause/resume): PAUSE останавливает старты,
           album: '',
           year: null,
           duration: 600,
-          urls: ['https://cdn/slowtrack2.aac'],
+          urls: ['https://x.vk-cdn.net/slowtrack2.aac'],
           covers: [],
         },
         {
@@ -755,7 +760,7 @@ describe('Phase 1 (pause/resume): PAUSE останавливает старты,
           album: '',
           year: null,
           duration: 30,
-          urls: ['https://cdn/fasttrack.aac'],
+          urls: ['https://x.vk-cdn.net/fasttrack.aac'],
           covers: [],
         },
       ],
@@ -832,7 +837,7 @@ describe('Phase 1 (гонка): vmf-pump во время in-flight не порт
           album: '',
           year: null,
           duration: 600,
-          urls: ['https://cdn/slowtrack.aac'],
+          urls: ['https://x.vk-cdn.net/slowtrack.aac'],
           covers: [],
         },
       ],
@@ -899,7 +904,7 @@ describe('Phase 1 (гонка): RESUME во время in-flight не клони
           album: '',
           year: null,
           duration: 600,
-          urls: ['https://cdn/slowtrack4.aac'],
+          urls: ['https://x.vk-cdn.net/slowtrack4.aac'],
           covers: [],
         },
       ],
@@ -1065,7 +1070,7 @@ describe('S4 T4.3 R25: пакетная запись журнала при ENQUE
       album: '',
       year: null,
       duration: 100,
-      urls: [`https://cdn/b${i}.aac`],
+      urls: [`https://x.vk-cdn.net/b${i}.aac`],
       covers: [],
     }));
     await send({ t: 'AUDIOS', audios, pl: 'ПакетныйЖурнал', scanning: true });
@@ -1075,5 +1080,49 @@ describe('S4 T4.3 R25: пакетная запись журнала при ENQUE
     };
     const batchEntries = (jr.entries ?? []).filter((e) => e.pl === 'ПакетныйЖурнал');
     expect(batchEntries.length).toBe(5);
+  });
+});
+
+describe('H2: content-почта от недоверенного отправителя отклоняется', () => {
+  it('AUDIOS с sender=null не попадает в каталог', async () => {
+    const poison = {
+      key: '666_666',
+      id: '666',
+      owner: '666',
+      artist: 'Evil',
+      title: 'Spoofed',
+      album: '',
+      year: null,
+      duration: 10,
+      urls: ['https://evil.example/track.mp3'],
+      covers: [],
+    };
+    const resps = await Promise.all(
+      msgListeners.map(
+        (f) =>
+          new Promise<unknown>((res) => {
+            const done = f({ t: 'AUDIOS', audios: [poison] }, null, res);
+            if (!done) res(null);
+          }),
+      ),
+    );
+    expect((resps[0] as { ok: boolean })?.ok).toBe(false);
+    const st = ((await send({ t: 'GET_STATE' }))[0] ?? {}) as {
+      audios?: Record<string, unknown>;
+    };
+    expect(st.audios?.['666_666']).toBeUndefined();
+  });
+
+  it('LYRICS с sender=null не пишется', async () => {
+    const resps = await Promise.all(
+      msgListeners.map(
+        (f) =>
+          new Promise<unknown>((res) => {
+            const done = f({ t: 'LYRICS', map: { 666: 'x'.repeat(10) } }, null, res);
+            if (!done) res(null);
+          }),
+      ),
+    );
+    expect((resps[0] as { ok: boolean })?.ok).toBe(false);
   });
 });

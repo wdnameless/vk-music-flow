@@ -242,8 +242,9 @@ export function installProxyAuth(getSettings: () => ProxySettings): () => void {
     const s = getSettings();
     const host = details.challenger?.host ?? details.host;
     const port = details.challenger?.port ?? details.port;
-    const entry =
-      s.entries.find((e) => e.enabled && e.host === host && e.port === port) ?? pickActiveEntry(s);
+    // Exact match only: falling back to the active entry would hand our
+    // credentials to a stranger's proxy that happened to challenge first.
+    const entry = s.entries.find((e) => e.enabled && e.host === host && e.port === port);
     if (!entry?.username) return cb();
 
     const key = entry.id || `${host}:${port}`;

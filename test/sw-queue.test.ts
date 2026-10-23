@@ -52,7 +52,7 @@ const seedState = {
       album: '',
       year: null,
       duration: 120,
-      urls: ['https://cdn/r1.aac'],
+      urls: ['https://x.vk-cdn.net/r1.aac'],
       covers: [],
     },
     '88_302': {
@@ -64,7 +64,7 @@ const seedState = {
       album: '',
       year: null,
       duration: 90,
-      urls: ['https://cdn/r2.aac'],
+      urls: ['https://x.vk-cdn.net/r2.aac'],
       covers: [],
     },
   },

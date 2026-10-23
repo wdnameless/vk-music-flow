@@ -52,6 +52,19 @@ function escapeHtml(s: string): string {
   );
 }
 
+/**
+ * Safe cover-art style attribute (M4).
+ *
+ * HTML-escaping is decoded before CSS parsing, so escapeHtml alone cannot
+ * hold a `')};…` breakout inside `url('…')`. Covers come from VK API/hook
+ * payloads — attacker-influenced once the bridge is spoofed — so anything
+ * that is not a plain https URL renders no style at all.
+ */
+function coverAttr(cover: string | null | undefined): string {
+  if (typeof cover !== 'string' || !/^https:\/\/[^\s'")\\]+$/i.test(cover)) return '';
+  return ` style="background-image:url('${cover}')"`;
+}
+
 const fmtDur = (s: number | null): string => {
   if (typeof s !== 'number' || s <= 0) return '';
   const h = Math.floor(s / 3600);
@@ -290,7 +303,7 @@ function renderPlaylists(items: PlaylistRef[], target: string): void {
     .map(
       (p) =>
         `<li class="pl" data-pl="${escapeHtml(p.key)}">` +
-        `<div class="pl-cover"${p.cover ? ` style="background-image:url('${escapeHtml(p.cover)}')"` : ''}></div>` +
+        `<div class="pl-cover"${coverAttr(p.cover)}></div>` +
         `<div class="pl-body"><b>${escapeHtml(p.title)}</b>` +
         `<span class="meta">${p.trackCount ?? '?'} треков</span></div></li>`,
     )
@@ -313,7 +326,7 @@ function trackRow(t: Track, opts: { tick?: boolean; index?: number } = {}): stri
       : '') +
     // Artwork and play overlay share one box, so the cover can act as the button.
     `<span class="t-wrap">` +
-    `<span class="t-cover${t.cover ? '' : ' no-cover'}"${t.cover ? ` style="background-image:url('${escapeHtml(t.cover)}')"` : ''}></span>` +
+    `<span class="t-cover${t.cover ? '' : ' no-cover'}"${coverAttr(t.cover)}></span>` +
     (t.restricted ? '' : play) +
     `</span>` +
     `<div class="t-body"><b>${escapeHtml(t.title || '—')}</b><span>${escapeHtml(t.artist)}</span></div>` +
@@ -1271,7 +1284,7 @@ function renderQueue(): void {
       return (
         `<li class="q-item${cur ? ' cur' : ''}" draggable="true" data-slot="${slot}" data-qi="${qi}" style="--i:${slot}">` +
         `<span class="q-grip"><svg class="ic"><use href="#i-grip"/></svg></span>` +
-        `<span class="q-cover"${t.cover ? ` style="background-image:url('${escapeHtml(t.cover)}')"` : ''}></span>` +
+        `<span class="q-cover"${coverAttr(t.cover)}></span>` +
         `<span class="t-body"><b>${escapeHtml(t.title || '—')}</b><span>${escapeHtml(t.artist)}</span></span>` +
         `<span class="t-dur">${fmtDur(t.duration)}</span>` +
         `<button class="mini q-remove" data-remove="${qi}" title="Убрать"><svg class="ic"><use href="#i-cross"/></svg></button>` +
@@ -1564,7 +1577,7 @@ export async function loadHome(): Promise<void> {
   // One dominant artwork, the way the reference lays out its hero: the cover
   // carries the page and the text stays subordinate to it.
   $('homeHero').innerHTML = head
-    ? `<div class="feat-art"${head.cover ? ` style="background-image:url('${escapeHtml(head.cover)}')"` : ''}>` +
+    ? `<div class="feat-art"${coverAttr(head.cover)}>` +
       `<button class="feat-play" data-play="${escapeHtml(head.key)}" aria-label="Играть">` +
       `<svg class="ic"><use href="#i-play"/></svg></button></div>` +
       `<div class="feat-body">` +

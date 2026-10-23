@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it, vi } from 'vitest';
 
-import { RestrictedTrackError, resolveTrackUrls } from '../src/lib/resolve.js';
+import { isAllowedFetchUrl, RestrictedTrackError, resolveTrackUrls } from '../src/lib/resolve.js';
 import type { AudioMeta } from '../src/types.js';
 
 // Tests for download-time URL resolution: API first, hook-captured copy as the
@@ -166,5 +166,22 @@ describe('resolve: недоступные треки', () => {
       () => resolveTrackUrls(META),
       (e: Error) => !(e instanceof RestrictedTrackError) && /ссылку/i.test(e.message),
     );
+  });
+});
+
+describe('H3: allowlist хостов загрузки (isAllowedFetchUrl)', () => {
+  it('принимает CDN/API-хосты VK по https', () => {
+    assert.equal(isAllowedFetchUrl('https://cs1-65v4.vkuseraudio.ru/s/v1/x/index.m3u8'), true);
+    assert.equal(isAllowedFetchUrl('https://api.vk.ru/method/audio.get'), true);
+    assert.equal(isAllowedFetchUrl('https://sun1-23.vkuserphoto.ru/impg/x.jpg'), true);
+    assert.equal(isAllowedFetchUrl('https://cs1-1.vk-cdn.net/audio/x.ts'), true);
+  });
+
+  it('режет чужие хосты, http и мусор', () => {
+    assert.equal(isAllowedFetchUrl('https://evil.example/track.mp3'), false);
+    assert.equal(isAllowedFetchUrl('https://vkuseraudio.ru.evil.example/x'), false);
+    assert.equal(isAllowedFetchUrl('http://cs1-65v4.vkuseraudio.ru/x'), false);
+    assert.equal(isAllowedFetchUrl('not a url'), false);
+    assert.equal(isAllowedFetchUrl(''), false);
   });
 });

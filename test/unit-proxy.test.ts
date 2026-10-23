@@ -226,6 +226,27 @@ describe('proxy: ответ на запрос авторизации', () => {
     });
   });
 
+  it('не отдаёт креды чужому челленджеру без точного совпадения (H1)', () => {
+    resetProxyAuthFailures();
+    const handler = capture(() =>
+      settings({
+        entries: [
+          entry({ id: 'mine', host: '10.0.0.1', port: 1080, username: 'u', password: 'p' }),
+        ],
+      }),
+    );
+    assert.equal(asked(handler, { isProxy: true, host: 'evil.proxy', port: 3128 }), undefined);
+    assert.equal(
+      asked(handler, {
+        isProxy: true,
+        host: 'api.vk.ru',
+        port: 443,
+        challenger: { host: 'evil.proxy', port: 3128 },
+      }),
+      undefined,
+    );
+  });
+
   it('молчит, когда челлендж не от прокси', () => {
     const handler = capture(() => settings({ entries: [entry({ username: 'u', password: 'p' })] }));
     assert.equal(asked(handler, { isProxy: false, host: '10.0.0.1', port: 1080 }), undefined);

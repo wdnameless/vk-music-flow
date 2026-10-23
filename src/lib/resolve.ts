@@ -15,6 +15,40 @@ import { isRestricted, resolveStreamUrls } from './vk-api.js';
  * the browser demonstrably has a URL somewhere), and only then fail terminally.
  */
 
+/**
+ * SSRF capsule: hosts the downloader may fetch (H3).
+ *
+ * Stream/segment/key URLs arrive from VK API responses and the page hook —
+ * both attacker-influenced once the MAIN bridge is spoofed. Mirror of
+ * manifest.json host_permissions; the SW asserts every fetch against it.
+ */
+export const ALLOWED_FETCH_HOSTS = [
+  /(^|\.)vk\.com$/i,
+  /(^|\.)vk\.ru$/i,
+  /(^|\.)vk-cdn\.net$/i,
+  /(^|\.)userapi\.com$/i,
+  /(^|\.)mycdn\.me$/i,
+  /(^|\.)vkuser\.net$/i,
+  /(^|\.)vkuservideo\.net$/i,
+  /(^|\.)vkusercontent\.ru$/i,
+  /(^|\.)vkuseraudio\.ru$/i,
+  /(^|\.)vkuserphoto\.ru$/i,
+] as const;
+export const MAX_SEGMENT_BYTES = 50 * 1024 * 1024;
+export const MAX_TRACK_BYTES = 500 * 1024 * 1024;
+export const MAX_HLS_DEPTH = 2;
+
+/** True only for https URLs on an allowlisted CDN/API host. */
+export function isAllowedFetchUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'https:') return false;
+    return ALLOWED_FETCH_HOSTS.some((re) => re.test(u.hostname));
+  } catch {
+    return false;
+  }
+}
+
 /** Distinguishes "cannot ever work" from "try again later". */
 export class RestrictedTrackError extends Error {
   constructor(message = 'трек недоступен для скачивания (ограничение VK)') {
@@ -22,7 +56,6 @@ export class RestrictedTrackError extends Error {
     this.name = 'RestrictedTrackError';
   }
 }
-
 export interface ResolveOutcome {
   /** Fresh, playable URLs in preference order. */
   urls: string[];

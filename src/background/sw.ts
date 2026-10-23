@@ -54,11 +54,19 @@ import {
   normalizeProxySettings,
   pickActiveEntry,
   readApplied,
+  resetProxyAuthFailures,
 } from '../lib/proxy.js';
 import { installDnrRules, readDnrRules, toDnrRules } from '../lib/dnr.js';
 import { provider, providerForKey, platformStatus } from '../platforms/registry.js';
 import { parseTrackKey } from '../platforms/provider.js';
-import { RestrictedTrackError, resolveTrackUrls } from '../lib/resolve.js';
+import {
+  isAllowedFetchUrl,
+  MAX_HLS_DEPTH,
+  MAX_SEGMENT_BYTES,
+  MAX_TRACK_BYTES,
+  RestrictedTrackError,
+  resolveTrackUrls,
+} from '../lib/resolve.js';
 import { playerSnapshot, rememberPlayerState, sendToPlayer } from '../lib/player-bridge.js';
 import {
   fetchLyrics,
@@ -371,17 +379,23 @@ async function journalEnsureAll(items: QueueItem[]): Promise<void> {
 function mergeAudio(a: AudioMeta): boolean {
   const ex = S.audios[a.key];
   if (!ex) {
-    S.audios[a.key] = a;
+    // Cap what one message can plant: unbounded urls/covers from a spoofed
+    // bridge would otherwise grow memory and storage without limit.
+    S.audios[a.key] = {
+      ...a,
+      urls: (a.urls || []).slice(0, 8),
+      covers: (a.covers || []).slice(0, 4),
+    };
     return true;
   }
   let ch = false;
   for (const u of a.urls || [])
-    if (!ex.urls.includes(u)) {
+    if (ex.urls.length < 8 && !ex.urls.includes(u)) {
       ex.urls.push(u);
       ch = true;
     }
   for (const c of a.covers || [])
-    if (!ex.covers.includes(c)) {
+    if (ex.covers.length < 4 && !ex.covers.includes(c)) {
       ex.covers.push(c);
       ch = true;
     }
@@ -472,11 +486,19 @@ type HandlerResult =
     }
   | null;
 
-async function handle(m: RuntimeMessage): Promise<HandlerResult> {
+async function handle(
+  m: RuntimeMessage,
+  sender?: chrome.runtime.MessageSender,
+): Promise<HandlerResult> {
   switch (m.t) {
     case 'AUDIOS': {
+      // The content bridge is window.postMessage, which any page script can
+      // spoof — so the trust boundary is HERE: content mail must come from a
+      // VK tab, never from a bare context.
+      if (!isVkSender(sender)) return { ok: false, reason: 'untrusted sender' };
       let ch = false;
-      for (const a of m.audios || []) {
+      for (const a of (m.audios || []).slice(0, 500)) {
+        if (typeof a?.key !== 'string' || !a.key) continue;
         if (mergeAudio(a)) ch = true;
         if (m.scanning && m.pl) {
           attachToPlaylist(m.pl, a.key);
@@ -487,7 +509,11 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
       return { ok: true };
     }
     case 'LYRICS': {
-      Object.assign(S.lyrics, m.map || {});
+      if (!isVkSender(sender)) return { ok: false, reason: 'untrusted sender' };
+      const entries = Object.entries(m.map || {}).slice(0, 500);
+      for (const [k, v] of entries) {
+        if (typeof v === 'string' && v.length <= 20000) S.lyrics[k] = v;
+      }
       persist();
       return { ok: true };
     }
@@ -580,6 +606,9 @@ async function handle(m: RuntimeMessage): Promise<HandlerResult> {
           ),
         };
         persistProxy();
+        // A successful probe proves the credentials work: stale 407-failures
+        // from an earlier outage must not keep the entry locked out.
+        if (res.ok) resetProxyAuthFailures(entry.id || `${entry.host}:${entry.port}`);
       }
       return { ok: res.ok, status: res.status, latencyMs: res.latencyMs, error: res.error };
     }
@@ -1230,14 +1259,25 @@ async function pump(): Promise<void> {
 }
 
 /** Rate limiter: keep >= minIntervalMs (+ anti-ban jitter) between download starts. */
+let gateTail: Promise<void> = Promise.resolve();
 async function gateStart(): Promise<void> {
-  const wait = computeStartDelay(
-    lastStartAt,
-    Math.max(0, +S.settings.minIntervalMs || 0),
-    Math.max(0, +S.settings.jitterMs || 0),
-  );
-  if (wait > 0) await sleep(wait);
-  lastStartAt = Date.now();
+  // Serialise concurrent workers through a promise chain: without it N loops
+  // read the same lastStartAt and the limiter fires simultaneous bursts.
+  const prev = gateTail;
+  let release!: () => void;
+  gateTail = new Promise<void>((r) => (release = r));
+  await prev;
+  try {
+    const wait = computeStartDelay(
+      lastStartAt,
+      Math.max(0, +S.settings.minIntervalMs || 0),
+      Math.max(0, +S.settings.jitterMs || 0),
+    );
+    if (wait > 0) await sleep(wait);
+    lastStartAt = Date.now();
+  } finally {
+    release();
+  }
 }
 
 async function workerLoop(): Promise<void> {
@@ -1260,10 +1300,20 @@ async function workerLoop(): Promise<void> {
       for (;;) {
         try {
           await runItem(item);
-          await journal.setStatus(id, 'done');
+          // A cancel that landed mid-flight already wiped the queue; the S.done
+          // write is guarded inside runItem, the journal needs the same guard.
+          if (!stopFlag) await journal.setStatus(id, 'done');
           break;
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
+          if (e instanceof UserCanceledError) {
+            // The user killed it from Chrome's own shelf: abort immediately,
+            // record once, never retry a deliberate decision.
+            await journal.noteError(id, msg);
+            await journal.setStatus(id, 'failed');
+            fail(item, msg);
+            break;
+          }
           if (e instanceof StoragePermissionError) {
             // surface per-item, no silent downloads-fallback, no retry storm
             await journal.noteError(id, msg);
@@ -1374,9 +1424,16 @@ async function runItem(item: QueueItem): Promise<void> {
 }
 
 async function rawFetch(url: string): Promise<Uint8Array> {
+  assertAllowedUrl(url);
   const r = await fetch(url);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return new Uint8Array(await r.arrayBuffer());
+  const cl = Number(r.headers?.get('content-length'));
+  if (Number.isFinite(cl) && cl > MAX_SEGMENT_BYTES) {
+    throw new Error(`сегмент слишком большой (${cl} байт)`);
+  }
+  const buf = new Uint8Array(await r.arrayBuffer());
+  if (buf.length > MAX_SEGMENT_BYTES) throw new Error('сегмент слишком большой');
+  return buf;
 }
 
 /**
@@ -1470,16 +1527,23 @@ async function decryptAes128(
   return new Uint8Array(plain);
 }
 
-async function assembleHls(txt: string, baseUrl: string): Promise<Uint8Array> {
+async function assembleHls(txt: string, baseUrl: string, depth = 0): Promise<Uint8Array> {
+  if (depth > MAX_HLS_DEPTH) throw new Error('слишком глубокая вложенность плейлистов');
   let p: M3U8ParseResult = parseM3U8(txt, baseUrl);
   if (p.variant) {
+    assertAllowedUrl(p.variant);
     const r = await fetch(p.variant);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     p = parseM3U8(await r.text(), p.variant);
   }
   if (!p.segments.length) throw new Error('плейлист без сегментов');
   const parts: Uint8Array[] = [];
-  if (p.init) parts.push(await fetchSegmentWithRetry(p.init));
+  let total = 0;
+  if (p.init) {
+    const init = await fetchSegmentWithRetry(p.init);
+    parts.push(init);
+    total += init.length;
+  }
   const keys = new Map<string, Uint8Array>();
   let i = 0;
   for (const s of p.segments) {
@@ -1494,8 +1558,10 @@ async function assembleHls(txt: string, baseUrl: string): Promise<Uint8Array> {
       seg = await decryptAes128(seg, kb, s.key.iv ?? sequenceIv(s.seq));
     }
     if (seg[0] === 0x23 && seg[1] === 0x45 && seg[2] === 0x58) {
-      seg = await assembleHls(new TextDecoder().decode(seg), s.url);
+      seg = await assembleHls(new TextDecoder().decode(seg), s.url, depth + 1);
     }
+    total += seg.length;
+    if (total > MAX_TRACK_BYTES) throw new Error('трек слишком большой');
     parts.push(seg);
     i++;
   }
@@ -1527,7 +1593,12 @@ chrome.downloads.onChanged.addListener((d) => {
       w.res();
     } else if (d.state.current === 'interrupted') {
       pendingDl.delete(d.id);
-      w.rej(new Error((d.error as unknown as string) || 'прервано'));
+      // SAFETY: chrome.downloads.DownloadItem.error is typed as an enum but
+      // arrives as a string at runtime; the cast only recovers its value.
+      const err = (d.error as unknown as string) || 'прервано';
+      // A user cancel from Chrome's own shelf is a decision, not a failure:
+      // mark it so the worker aborts instead of retrying three times.
+      w.rej(err === 'USER_CANCELED' ? new UserCanceledError() : new Error(err));
     }
   }
 });
@@ -1970,7 +2041,7 @@ chrome.runtime.onMessage.addListener((m: unknown, _sender, sendResponse) => {
     sendResponse({ ok: true });
     return false;
   }
-  handle(m as RuntimeMessage)
+  handle(m as RuntimeMessage, _sender as chrome.runtime.MessageSender | undefined)
     .then((r) => sendResponse(r))
     .catch((e) => sendResponse({ error: String(e) }));
   return true;
@@ -1992,3 +2063,37 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 void boot().then(pump);
+
+/** Thrown when the user cancels a download from Chrome's own shelf. */
+class UserCanceledError extends Error {
+  constructor(message = 'отменено пользователем') {
+    super(message);
+    this.name = 'UserCanceledError';
+  }
+}
+
+/** True when a runtime message arrived from a VK tab's content script. */
+function isVkSender(sender?: chrome.runtime.MessageSender): boolean {
+  const url = sender?.tab?.url || sender?.url || '';
+  return /^https:\/\/([^/]*\.)?(vk\.com|vk\.ru)\//i.test(url);
+}
+
+/**
+ * SSRF capsule for the download pipeline (H3).
+ *
+ * Stream/segment/key URLs arrive from VK API responses and the page hook —
+ * both attacker-influenced once the MAIN bridge is spoofed. Every fetch
+ * goes through rawFetch/assertAllowedUrl, so a poisoned catalog entry
+ * cannot make the worker phone an arbitrary host or OOM on a giant body.
+ * Host list lives in resolve.ts (unit-tested); this only formats the error.
+ */
+function assertAllowedUrl(raw: string): void {
+  if (isAllowedFetchUrl(raw)) return;
+  let host: string;
+  try {
+    host = new URL(raw).hostname;
+  } catch {
+    throw new Error('недопустимый URL источника');
+  }
+  throw new Error(`хост вне allowlist: ${host}`);
+}

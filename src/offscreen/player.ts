@@ -195,7 +195,15 @@ export class Player {
       el.addEventListener('timeupdate', () => {
         if (slot === this.activeSlot) this.emit();
       });
-      el.addEventListener('loadedmetadata', () => this.emit());
+      el.addEventListener('loadedmetadata', () => {
+        // Duration arrives late on slow streams: schedule() calls in playCurrent
+        // bail on NaN, so re-arm here when the real duration lands.
+        if (slot === this.activeSlot) {
+          this.scheduleGapless();
+          this.scheduleCrossfade();
+        }
+        this.emit();
+      });
       el.addEventListener('play', () => {
         if (slot === this.activeSlot) this.syncMediaSessionState(true);
         this.emit();
